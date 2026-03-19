@@ -253,6 +253,20 @@ async function createGroup(name, iconUrl = null) {
   else { showToast('✅ グループを作成しました！'); await fetchUserGroups(); renderSettings(); }
 }
 
+async function uploadImage(file, bucket = 'avatars') {
+  if (!supabase || !session) return null;
+  const ext = file.name.split('.').pop();
+  const fileName = `${session.user.id}_${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from(bucket).upload(fileName, file);
+  if (error) {
+    console.error('Upload error:', error);
+    showToast('❌ アップロードに失敗しました: ' + error.message);
+    return null;
+  }
+  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(fileName);
+  return publicUrl;
+}
+
 async function joinGroup(code) {
   if (!supabase || !session) return;
   const { data: group, error: findErr } = await supabase.from('groups').select('*').eq('invite_code', code.trim().toUpperCase()).single();
@@ -1536,6 +1550,10 @@ function renderSettings(){
             <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🧪</button>
           </div>
           <input type="text" id="input-avatar" value="${currentUser.avatar_url || ''}" placeholder="例: 🩺 または https://..."/>
+          <div style="margin-top:8px">
+            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('input-avatar-file').click()" style="width:100%">📷 画像を選択・アップロード</button>
+            <input type="file" id="input-avatar-file" accept="image/*" style="display:none" />
+          </div>
         </div>
         <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${currentUser.name}" placeholder="例: 田中 太郎"/></div>
         <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="ログイン共通" disabled style="opacity:0.6"/></div>
@@ -1568,6 +1586,8 @@ function renderSettings(){
                 <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🦴</button>
               </div>
               <input type="text" id="new-group-icon" placeholder="アイコン (例: 🏥 または URL)" style="font-size:0.9rem" />
+              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;margin-top:4px;font-size:0.75rem">📷 画像を選択</button>
+              <input type="file" id="new-group-icon-file" accept="image/*" style="display:none" />
             </div>
           </div>
             <div style="display:flex;gap:8px"><input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" /><button class="btn btn-primary btn-sm" id="btn-create-group">作成</button></div>
@@ -1671,6 +1691,23 @@ function renderSettings(){
       updateAvatarPreview(inp.value);
     });
   });
+
+  // Profile icon file selection
+  document.getElementById('input-avatar-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const btn = e.target.previousElementSibling;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ アップロード中...'; btn.disabled = true;
+    const url = await uploadImage(file);
+    btn.textContent = orig; btn.disabled = false;
+    if (url) {
+      document.getElementById('input-avatar').value = url;
+      updateAvatarPreview(url);
+      showToast('✅ 画像をアップロードしました');
+    }
+  });
+
   // Live preview — univ/grade
   const updateRole=()=>{
     const u=document.getElementById('input-univ').value||'大学未設定';
@@ -1734,6 +1771,22 @@ function renderSettings(){
         updateGroupIconPreview(inp.value);
       }
     });
+  });
+
+  // Group icon file selection
+  document.getElementById('new-group-icon-file').addEventListener('change', async e => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const btn = e.target.previousElementSibling;
+    const orig = btn.textContent;
+    btn.textContent = '⏳ 処理中...'; btn.disabled = true;
+    const url = await uploadImage(file);
+    btn.textContent = orig; btn.disabled = false;
+    if (url) {
+      document.getElementById('new-group-icon').value = url;
+      updateGroupIconPreview(url);
+      showToast('✅ 画像を準備しました');
+    }
   });
 
   // Group Create/Join logic
