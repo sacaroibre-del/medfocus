@@ -319,8 +319,8 @@ async function deleteStudyLog(id) {
 async function fetchPosts() {
   if (!supabase) return posts;
   
-  // Try to fetch with full relationships first (Vite/Supabase standard join)
-  let { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(*, profiles(full_name))').order('created_at', { ascending: false });
+  // Try to fetch with full relationships including groups
+  let { data, error } = await supabase.from('posts').select('*, profiles(full_name), groups(name), post_replies(*, profiles(full_name))').order('created_at', { ascending: false });
   
   if (error) {
     console.warn('DEBUG: fetchPosts joined query failed. Trying robust secondary fetching strategy. Error:', error);
@@ -423,14 +423,14 @@ async function savePostReply(postId, body, isAnonymous) {
   return true;
 }
 
-async function savePost(title, body, type, isAnonymous) {
+async function savePost(title, body, type, isAnonymous, groupId = null) {
   if (!supabase || !session) {
-    console.log('DEBUG: savePost (local/demo mode)');
     const newPost = {
       id: 'local-' + Date.now(),
       created_at: new Date().toISOString(),
       user_id: session?.user?.id || currentUser.id,
       title, body, type, is_anonymous: isAnonymous,
+      group_id: groupId,
       likes: 0, post_replies: [],
       profiles: { full_name: currentUser.name }
     };
@@ -439,10 +439,12 @@ async function savePost(title, body, type, isAnonymous) {
     return;
   }
   
-  // Try inserting with is_anonymous
+  // Try inserting with is_anonymous and group_id
   let { error } = await supabase.from('posts').insert([{ 
     user_id: session.user.id, 
-    title, body, type, is_anonymous: isAnonymous 
+    title, body, type, 
+    is_anonymous: isAnonymous,
+    group_id: groupId
   }]);
   
   if (error && error.message && (error.message.includes('is_anonymous') || error.code === '42703')) {
@@ -676,7 +678,7 @@ function mockLogin(email) {
 // ==================== SIDEBAR ====================
 const navItems=[
   {route:'/',label:'ダッシュボード',icon:'<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>'},
-  {route:'/study',label:'学習タイマー',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>'},
+  {route:'/study',label:'学習記録',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>'},
   {route:'/community',label:'質問広場',icon:'<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'},
   {route:'/ranking',label:'ランキング',icon:'<svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5C7 4 7 7 7 7"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5C17 4 17 7 17 7"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>'},
   {route:'/settings',label:'設定',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'}
@@ -719,6 +721,7 @@ function renderPostCard(post){
   const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
   const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
+  const groupBadge = post.groups?.name ? `<span class="post-type-badge" style="background:rgba(187,143,206,0.1);color:var(--color-accent-purple);border:1px solid rgba(187,143,206,0.2)">👥 ${post.groups.name}</span>` : '';
   
   let cmts=''; 
   const replies = post.post_replies || [];
@@ -761,7 +764,7 @@ function renderPostCard(post){
     <div class="post-card-header">
       <div class="avatar" style="background:${col}">${ini}</div>
       <div class="post-author-info">
-        <div class="post-author-name">${name} ${badge}</div>
+        <div class="post-author-name">${name} ${badge} ${groupBadge}</div>
         <div class="post-author-meta">${timeAgo(post.created_at)}</div>
       </div>
       ${isMine ? `<button class="btn-delete-post" data-id="${post.id}" style="background:rgba(241,148,138,0.1);border:1px solid rgba(241,148,138,0.2);color:#f1948a;padding:4px 10px;border-radius:var(--radius-sm);font-size:0.75rem;cursor:pointer;" title="投稿を削除">削除</button>` : ''}
@@ -876,7 +879,7 @@ async function renderStudy(){
     const ds=new Date(d);ds.setHours(0,0,0,0);const de=new Date(d);de.setHours(23,59,59,999);
     logsByDay[key]=logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;});}
 
-  ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習タイマー</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
+  ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
       <!-- Timer Main Card -->
       <div class="stopwatch-card card animate-slide-up" style="position:relative; overflow:hidden;">
@@ -1206,7 +1209,10 @@ async function renderStudy(){
 async function renderCommunity(){
   const ct=document.getElementById('page-container');const col=getAvatarColor(currentUser.id);const ini=getInitials(currentUser.name);
   const realPosts = await fetchPosts();
-  const sorted=[...realPosts].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+  // Filter for privacy: Show Global (group_id null) OR if user is in that group
+  const joinedGroupIds = myGroups.map(g => g.id);
+  const visiblePosts = realPosts.filter(p => !p.group_id || joinedGroupIds.includes(p.group_id));
+  const sorted=[...visiblePosts].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">質問広場</h1><p class="page-subtitle">仲間と知識を共有し、疑問を解決しよう</p></div>
     <div class="filter-tabs"><button class="filter-tab active" data-filter="all">すべて</button><button class="filter-tab" data-filter="question">❓ 質問</button><button class="filter-tab" data-filter="activity">📢 アクティビティ</button></div>
@@ -1221,7 +1227,16 @@ async function renderCommunity(){
           <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">いいね</span><span style="font-weight:700;color:#F1948A">${realPosts.reduce((s,p)=>s+p.likes,0)}</span></div></div></div>
       </div>
     </div>
-    <div class="modal-overlay" id="post-modal" style="display:none"><div class="modal-content"><div class="modal-header"><div class="modal-title">新しい投稿</div><button class="modal-close" id="close-post-modal">✕</button></div><div class="modal-body"><input type="text" id="post-title-input" placeholder="タイトル（質問の場合）"/><textarea id="post-body-input" placeholder="質問内容や近況を書いてください..."></textarea></div><div class="modal-footer"><label class="anonymous-toggle"><input type="checkbox" id="post-anonymous"/> 匿名で投稿</label><button class="btn btn-primary" id="submit-post">投稿する</button></div></div></div>`;
+    <div class="modal-overlay" id="post-modal" style="display:none"><div class="modal-content"><div class="modal-header"><div class="modal-title">新しい投稿</div><button class="modal-close" id="close-post-modal">✕</button></div>
+    <div class="modal-body">
+      <div class="settings-field" style="margin-bottom:var(--space-md)">
+        <label style="font-size:0.75rem;color:var(--color-text-tertiary);display:block;margin-bottom:4px;">投稿先</label>
+        <select id="post-group-select" style="width:100%;background:var(--color-bg-input);border:1px solid var(--color-border);color:var(--color-text-primary);padding:8px;border-radius:var(--radius-sm);">
+          <option value="">🌍 全体 (質問広場)</option>
+          ${myGroups.map(g=>`<option value="${g.id}">👥 ${g.name}</option>`).join('')}
+        </select>
+      </div>
+      <input type="text" id="post-title-input" placeholder="タイトル（質問の場合）"/><textarea id="post-body-input" placeholder="質問内容や近況を書いてください..."></textarea></div><div class="modal-footer"><label class="anonymous-toggle"><input type="checkbox" id="post-anonymous"/> 匿名で投稿</label><button class="btn btn-primary" id="submit-post">投稿する</button></div></div></div>`;
 
   const modal=document.getElementById('post-modal');
   document.getElementById('open-post-modal').addEventListener('click',()=>modal.style.display='flex');
@@ -1231,8 +1246,9 @@ async function renderCommunity(){
     const b=document.getElementById('post-body-input').value;
     const t=document.getElementById('post-title-input').value;
     const anon=document.getElementById('post-anonymous').checked;
+    const gid=document.getElementById('post-group-select').value || null;
     if(b.trim()){
-      await savePost(t || null, b, t ? 'question' : 'activity', anon);
+      await savePost(t || null, b, t ? 'question' : 'activity', anon, gid);
       modal.style.display='none';
       renderCommunity();
     }
