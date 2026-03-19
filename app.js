@@ -3,22 +3,29 @@ console.log('DEBUG: app.js loaded');
 // MedFocus - Complete Application (No Build Tools)
 // ============================================================
 
-// ==================== CONFIG & SUPABASE ====================
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://your-project.supabase.co';
-const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || 'your-anon-key';
 let supabase = null;
+// Initialize Supabase with storage fallback
+function initSupabase() {
+  const savedUrl = localStorage.getItem('medfocus-supabase-url');
+  const savedKey = localStorage.getItem('medfocus-supabase-key');
+  
+  const url = savedUrl || import.meta.env.VITE_SUPABASE_URL || '';
+  const key = savedKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
-try {
-  console.log('DEBUG: Checking Supabase initialization...', {available: !!window.supabase, url: SUPABASE_URL});
-  if (window.supabase && !SUPABASE_URL.includes('your-project')) {
-    supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-    console.log('DEBUG: Supabase client created');
-  } else {
-    console.log('DEBUG: Supabase bypassed (demo mode)');
+  try {
+    if (url && key && !url.includes('your-project') && key !== 'your-anon-key') {
+      supabase = window.supabase.createClient(url, key);
+      console.log('DEBUG: Supabase initialized connected to:', url);
+    } else {
+      console.log('DEBUG: Supabase bypassing (missing config)');
+      supabase = null;
+    }
+  } catch (e) {
+    console.error('DEBUG: Supabase initialization error:', e);
+    supabase = null;
   }
-} catch (e) {
-  console.error('DEBUG: Supabase error:', e);
 }
+initSupabase();
 
 async function fetchUserProfile(userId) {
   if (!supabase) return null;
@@ -331,6 +338,7 @@ async function fetchPosts() {
 
 async function deletePost(postId) {
   if (!supabase || !session) {
+    console.log('DEBUG: deletePost (local/demo mode)', postId);
     const idx = posts.findIndex(p => p.id === postId);
     if (idx !== -1) {
       posts.splice(idx, 1);
@@ -339,13 +347,25 @@ async function deletePost(postId) {
     }
     return;
   }
+  
+  // Try to delete replies first to satisfy foreign key constraints (if any)
+  const { error: replyErr } = await supabase.from('post_replies').delete().eq('post_id', postId);
+  if (replyErr) console.warn('Note: Failed to pre-delete replies, but proceeding to delete post. Error:', replyErr);
+
   const { error } = await supabase.from('posts').delete().match({ id: postId, user_id: session.user.id });
-  if (error) showToast('❌ 削除に失敗しました: ' + error.message);
-  else { showToast('✅ 投稿を削除しました'); await renderCommunity(); }
+  
+  if (error) {
+    console.error('DEBUG: Supabase deletePost failed:', error);
+    showToast('❌ 削除に失敗しました: ' + (error.message || '権限がありません'));
+  } else {
+    showToast('✅ 投稿を削除しました');
+    await renderCommunity();
+  }
 }
 
 async function savePostReply(postId, body) {
   if (!supabase || !session) {
+    console.log('DEBUG: savePostReply (local/demo mode)', postId);
     const post = posts.find(p => p.id === postId);
     if (post) {
       if (!post.post_replies) post.post_replies = [];
@@ -361,21 +381,35 @@ async function savePostReply(postId, body) {
     }
     return false;
   }
-  const { error } = await supabase.from('post_replies').insert([{ post_id: postId, user_id: session.user.id, body }]);
-  if (error) { showToast('❌ 返信の失敗: ' + error.message); return false; }
-  showToast('✅ 返信を投稿しました！'); return true;
+  
+  const { error } = await supabase.from('post_replies').insert([{ 
+    post_id: postId, 
+    user_id: session.user.id, 
+    body 
+  }]);
+  
+  if (error) {
+    console.error('DEBUG: Supabase savePostReply failed:', error);
+    showToast('❌ 返信の失敗: ' + (error.message || 'エラーが発生しました'));
+    return false;
+  }
+  
+  showToast('✅ 返信を投稿しました！');
+  return true;
 }
 
 async function savePost(title, body, type, isAnonymous) {
   if (!supabase || !session) {
-    posts.unshift({
-      id: 'post-' + Date.now(),
+    console.log('DEBUG: savePost (local/demo mode)');
+    const newPost = {
+      id: 'local-' + Date.now(),
       created_at: new Date().toISOString(),
       user_id: session?.user?.id || currentUser.id,
       title, body, type, is_anonymous: isAnonymous,
       likes: 0, post_replies: [],
       profiles: { full_name: currentUser.name }
-    });
+    };
+    posts.unshift(newPost);
     showToast('✅ 投稿しました！(デモ)');
     return;
   }
@@ -386,8 +420,8 @@ async function savePost(title, body, type, isAnonymous) {
     title, body, type, is_anonymous: isAnonymous 
   }]);
   
-  if (error && error.message && error.message.includes('is_anonymous')) {
-    console.warn('DEBUG: is_anonymous column probably missing. Trying without it.');
+  if (error && error.message && (error.message.includes('is_anonymous') || error.code === '42703')) {
+    console.warn('DEBUG: is_anonymous column missing or ambiguous. retrying without it.');
     const fallback = await supabase.from('posts').insert([{ 
       user_id: session.user.id, 
       title, body, type 
@@ -395,8 +429,12 @@ async function savePost(title, body, type, isAnonymous) {
     error = fallback.error;
   }
 
-  if (error) showToast('❌ 投稿に失敗しました: ' + error.message);
-  else showToast('✅ 投稿しました！');
+  if (error) {
+    console.error('DEBUG: Supabase savePost failed:', error);
+    showToast('❌ 投稿に失敗しました: ' + (error.message || 'データベースエラー'));
+  } else {
+    showToast('✅ 投稿しました！');
+  }
 }
 
 Chart.defaults.color='#94a3b8';
