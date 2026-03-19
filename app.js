@@ -556,17 +556,23 @@ let pendingLogDuration=0;
 function startSW(onTick){
   if(isRunning) return;
   isRunning=true;
+  const startTime = Date.now() - (elapsedSeconds * 1000);
+  localStorage.setItem('medfocus_timer_start', startTime.toString());
+  localStorage.setItem('medfocus_timer_running', 'true');
+  localStorage.setItem('medfocus_timer_is_countdown', isCountdown.toString());
+  localStorage.setItem('medfocus_timer_initial_countdown', initialCountdownSeconds.toString());
+
   timerInterval=setInterval(()=>{
+    const now = Date.now();
+    elapsedSeconds = Math.floor((now - startTime) / 1000);
     if(isCountdown) {
-      if(countdownSeconds > 0) {
-        countdownSeconds--;
-        elapsedSeconds++; // Still track total elapsed for logs
+      const remaining = initialCountdownSeconds - elapsedSeconds;
+      if (remaining > 0) {
+        countdownSeconds = remaining;
       } else {
-        // Countdown Finished
+        countdownSeconds = 0;
         finishSession();
       }
-    } else {
-      elapsedSeconds++;
     }
     if(onTick) onTick(isCountdown ? countdownSeconds : elapsedSeconds);
   }, 1000);
@@ -576,20 +582,20 @@ function finishSession() {
   pauseSW();
   pendingLogDuration = Math.floor(elapsedSeconds / 60);
   isConfirmingLog = true;
-  // Try to play a notification sound (beep)
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = audioCtx.createOscillator();
     osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
     osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
-  } catch(e) { console.warn('Could not play notification sound:', e); }
-  
+  } catch(e) {}
   if (typeof renderStudy === 'function') renderStudy();
 }
 
 function pauseSW(){
   isRunning=false;
   if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+  localStorage.setItem('medfocus_timer_running', 'false');
+  localStorage.setItem('medfocus_timer_elapsed', elapsedSeconds.toString());
 }
 
 function resetSW(){
@@ -597,6 +603,9 @@ function resetSW(){
   elapsedSeconds=0;
   countdownSeconds=0;
   isConfirmingLog=false;
+  localStorage.removeItem('medfocus_timer_start');
+  localStorage.removeItem('medfocus_timer_running');
+  localStorage.removeItem('medfocus_timer_elapsed');
 }
 
 function fmtSW(t){
@@ -973,7 +982,16 @@ async function renderStudy(){
         </div>
 
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
-        <div class="stopwatch-subject-selector"><select id="study-subject"><option value="">-- 科目を選択 --</option>${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}</select></div>
+        <div class="stopwatch-subject-selector">
+          <select id="study-subject">
+            <option value="">-- 科目を選択 --</option>
+            ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
+            <option value="custom">✏️ 自由入力</option>
+          </select>
+          <div id="custom-subject-container" style="display:none; margin-top:12px">
+            <input type="text" id="input-custom-subject" placeholder="学習内容を入力..." style="width:100%; max-width:300px; text-align:center;" />
+          </div>
+        </div>
         
         <!-- Countdown Settings (only if not running) -->
         ${isCountdown && !isRunning ? `
@@ -1025,7 +1043,11 @@ async function renderStudy(){
                 <select id="confirm-subject" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);">
                   <option value="">-- 未選択 --</option>
                   ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
+                  <option value="custom" ${document.getElementById('study-subject')?.value === 'custom' ? 'selected' : ''}>✏️ 自由入力</option>
                 </select>
+                <div id="confirm-custom-container" style="display:${document.getElementById('study-subject')?.value === 'custom' ? 'block' : 'none'}; margin-top:8px">
+                  <input type="text" id="confirm-custom-subject" value="${document.getElementById('input-custom-subject')?.value || ''}" placeholder="自由入力の内容..." style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);" />
+                </div>
               </div>
               <div class="field">
                 <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">振り返りメモ</label>
@@ -1141,6 +1163,16 @@ async function renderStudy(){
     });
   });
 
+  // --- Logic ---
+  document.getElementById('study-subject')?.addEventListener('change', (e)=>{
+    const custom = document.getElementById('custom-subject-container');
+    if (custom) custom.style.display = e.target.value === 'custom' ? 'block' : 'none';
+  });
+  document.getElementById('confirm-subject')?.addEventListener('change', (e)=>{
+    const custom = document.getElementById('confirm-custom-container');
+    if (custom) custom.style.display = e.target.value === 'custom' ? 'block' : 'none';
+  });
+
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
   const status=document.getElementById('timer-status');const btnT=document.getElementById('btn-toggle');
   const circ=2*Math.PI*140;
@@ -1245,8 +1277,11 @@ async function renderStudy(){
     const memoEle = document.getElementById('confirm-memo');
     
     const dur = parseInt(durEle.value);
-    const subId = subEle.value;
-    const subName = subEle.options[subEle.selectedIndex]?.text || '未選択';
+    const isCustom = subEle.value === 'custom';
+    const subId = isCustom ? null : subEle.value;
+    const subName = isCustom 
+      ? (document.getElementById('confirm-custom-subject')?.value.trim() || '自由学習')
+      : (subEle.options[subEle.selectedIndex]?.text || '未選択');
     const memo = memoEle.value.trim();
     
     if(isNaN(dur) || dur <= 0) { showToast('⚠️ 正しい時間を入力してください'); return; }
@@ -1958,6 +1993,23 @@ async function initApp(){
           currentUser.avatar_url = profile.avatar_url;
           currentUser.daily_goal = profile.daily_goal || 60;
         }
+      }
+
+      // Restore Timer State
+      const wasRunning = localStorage.getItem('medfocus_timer_running') === 'true';
+      const savedStart = localStorage.getItem('medfocus_timer_start');
+      const savedElapsed = localStorage.getItem('medfocus_timer_elapsed');
+      
+      if (wasRunning && savedStart) {
+        const startTime = parseInt(savedStart);
+        elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
+        isCountdown = localStorage.getItem('medfocus_timer_is_countdown') === 'true';
+        initialCountdownSeconds = parseInt(localStorage.getItem('medfocus_timer_initial_countdown')) || 0;
+        isRunning = false; // startSW will set it to true
+        startSW();
+      } else if (savedElapsed) {
+        elapsedSeconds = parseInt(savedElapsed);
+        isRunning = false;
       }
       supabase.auth.onAuthStateChange(async (_event, newSession) => {
         session = newSession;
