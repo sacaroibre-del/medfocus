@@ -44,8 +44,7 @@ const currentUser = {
 
 const users = [];
 
-const groups = [{id:'group-001',name:'個人学習',inviteCode:'NONE',university:'未設定'}];
-const groupMembers = [];
+let myGroups = []; // Array of groups the current user has joined
 
 const subjectCategories = [
   {id:'cat-basic',name:'基礎医学',color:'#4ECDC4',subjects:[
@@ -122,6 +121,61 @@ function getAvatarColor(id){let h=0;for(let i=0;i<id.length;i++)h=id.charCodeAt(
 const chartInstances = {};
 function destroyChart(id){if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];}}
 function destroyAllCharts(){Object.keys(chartInstances).forEach(destroyChart);}
+Chart.defaults.color='#94a3b8';
+
+// ==================== GROUP HELPERS ====================
+function generateInviteCode() { return Math.random().toString(36).substring(2, 8).toUpperCase(); }
+
+async function fetchUserGroups() {
+  if (!supabase || !session) return;
+  const { data, error } = await supabase.from('group_members').select('role, groups(*)').eq('user_id', session.user.id).order('joined_at', { ascending: true });
+  if (!error && data) myGroups = data.map(d => ({ ...d.groups, role: d.role }));
+}
+
+async function createGroup(name) {
+  if (!supabase || !session) return;
+  const code = generateInviteCode();
+  const { data: group, error: gErr } = await supabase.from('groups').insert([{ name, invite_code: code, created_by: session.user.id }]).select().single();
+  if (gErr) { showToast('❌ グループ作成失敗'); return; }
+  const { error: mErr } = await supabase.from('group_members').insert([{ group_id: group.id, user_id: session.user.id, role: 'admin' }]);
+  if (mErr) showToast('❌ メンバー追加失敗');
+  else { showToast('✅ グループを作成しました！'); await fetchUserGroups(); renderSettings(); }
+}
+
+async function joinGroup(code) {
+  if (!supabase || !session) return;
+  const { data: group, error: findErr } = await supabase.from('groups').select('*').eq('invite_code', code.trim().toUpperCase()).single();
+  if (findErr || !group) { showToast('❌ 無効な招待コードです'); return; }
+  const { error: mErr } = await supabase.from('group_members').insert([{ group_id: group.id, user_id: session.user.id }]);
+  if (mErr) {
+    if (mErr.code === '23505') showToast('⚠️ 既に参加しているグループです');
+    else showToast('❌ 参加に失敗しました');
+  } else { showToast('✅ グループに参加しました！'); await fetchUserGroups(); renderSettings(); }
+}
+
+async function leaveGroup(groupId) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('group_members').delete().match({ group_id: groupId, user_id: session.user.id });
+  if (error) showToast('❌ 退室に失敗しました');
+  else { showToast('✅ 退室しました'); await fetchUserGroups(); renderSettings(); }
+}
+
+async function fetchGroupRanking(groupId, period) {
+  if (!supabase) return [];
+  const { data: members, error: memErr } = await supabase.from('group_members').select('user_id, profiles(full_name)').eq('group_id', groupId);
+  if (memErr || !members) return [];
+  const userIds = members.map(m => m.user_id);
+  if (userIds.length === 0) return [];
+  const timeLimit = new Date();
+  if (period === 'weekly') timeLimit.setDate(timeLimit.getDate() - 7);
+  else timeLimit.setHours(0,0,0,0);
+  const { data: logs, error: logErr } = await supabase.from('study_logs').select('user_id, duration_minutes').in('user_id', userIds).gte('started_at', timeLimit.toISOString());
+  const safeLogs = (logErr || !logs) ? [] : logs;
+  const totals = {};
+  userIds.forEach(uid => totals[uid] = 0);
+  safeLogs.forEach(l => { totals[l.user_id] += l.duration_minutes; });
+  return members.map(m => ({ userId: m.user_id, name: m.profiles?.full_name || '名前未設定', total: totals[m.user_id] })).sort((a,b) => b.total - a.total);
+}
 
 // ==================== SUPABASE DATA HELPERS ====================
 async function fetchStudyLogs() {
@@ -455,7 +509,7 @@ async function renderCommunity(){
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">質問広場</h1><p class="page-subtitle">仲間と知識を共有し、疑問を解決しよう</p></div>
     <div class="filter-tabs"><button class="filter-tab active" data-filter="all">すべて</button><button class="filter-tab" data-filter="question">❓ 質問</button><button class="filter-tab" data-filter="activity">📢 アクティビティ</button></div>
     <div class="community-layout"><div class="community-main">
-      <div class="post-creator-input" id="open-post-modal"><div class="avatar" style="background:${col}">${ini}</div><span class="post-creator-placeholder">質問や近況を投稿する...</span></div>
+      <div class="post-creator-input" id="open-post-modal"><div class="avatar" style="background:${col}">${ini}</div><span class="post-creator-placeholder">質問内容や近況を書いてください...</span></div>
       <div class="post-feed" id="post-feed">${sorted.map(p=>renderPostCard(p)).join('')}</div></div>
       <div class="community-sidebar">
         <div class="card"><div class="card-header"><div class="card-title">🔔 最新アクティビティ</div></div><div class="activity-list">${activityFeed.slice(0,5).map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
@@ -489,40 +543,73 @@ async function renderCommunity(){
 }
 
 // --- Ranking ---
-function renderRanking(){
+let currentRankingGroup = null;
+async function renderRanking(){
   const ct=document.getElementById('page-container');let period='weekly';
-  function getSorted(p){const k=p==='weekly'?'weeklyMinutes':'dailyMinutes';return[...userStudyTotals].sort((a,b)=>b[k]-a[k]);}
-  function getMins(u,p){return p==='weekly'?u.weeklyMinutes:u.dailyMinutes;}
+  if (myGroups.length > 0 && !currentRankingGroup) currentRankingGroup = myGroups[0].id;
   function posClass(i){return i===0?'gold':i===1?'silver':i===2?'bronze':'normal';}
 
-  function renderMain(p){
-    const s=getSorted(p);const t3=s.slice(0,3);const pod=t3.length>=3?[t3[1],t3[0],t3[2]]:t3;
-    return`<div class="card animate-slide-up"><div class="card-header"><div class="card-title">🏆 表彰台</div>
+  async function renderMain(p, gid){
+    if (myGroups.length === 0) return `<div class="card"><div class="card-body" style="padding:var(--space-2xl);text-align:center;color:var(--color-text-secondary)">設定画面からグループを作成または参加すると<br>ランキングが表示されます。</div></div>`;
+    if (!gid) return `<div class="card"><div class="card-body" style="padding:var(--space-2xl);text-align:center;color:var(--color-text-secondary)">グループを選択してください。</div></div>`;
+    
+    const s = await fetchGroupRanking(gid, p);
+    const groupTabs = `<div class="tabs" style="margin-bottom:var(--space-lg);overflow-x:auto;white-space:nowrap;justify-content:flex-start;scrollbar-width:none">
+      ${myGroups.map(g => `<button class="tab ${g.id === gid ? 'active' : ''}" data-group="${g.id}" style="flex:none">${g.name}</button>`).join('')}</div>`;
+    if (s.length === 0) return groupTabs + `<div class="card"><div class="card-body" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">データが見つかりません</div></div>`;
+
+    const t3=s.slice(0,3);const pod=t3.length>=3?[t3[1],t3[0],t3[2]]:t3;
+    const podiumHtml = `<div class="card animate-slide-up"><div class="card-header"><div class="card-title">🏆 表彰台</div>
       <div class="tabs" style="max-width:240px;margin:0"><button class="tab ${p==='daily'?'active':''}" data-period="daily">今日</button><button class="tab ${p==='weekly'?'active':''}" data-period="weekly">今週</button></div></div>
-      <div class="ranking-podium">${pod.map((u,di)=>{const ar=di===0?2:di===1?1:3;const cr=ar===1?'👑':'';const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
+      <div class="ranking-podium">${pod.map((u,di)=>{const ar=di===0?(pod.length>1?2:1):di===1?1:3;const cr=ar===1?'👑':'';const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
         return`<div class="podium-item"><div class="podium-avatar">${cr?`<span class="podium-crown">${cr}</span>`:''}
           <div class="avatar avatar-lg" style="background:${c}">${ini}</div></div>
-          <div class="podium-name">${u.name}</div><div class="podium-time">${formatMinutes(getMins(u,p))}</div>
-          <div class="podium-bar">${ar}</div></div>`;}).join('')}</div></div>
-      <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 全体ランキング</div></div>
+          <div class="podium-name">${u.name}</div><div class="podium-time">${formatMinutes(u.total)}</div>
+          <div class="podium-bar">${ar}</div></div>`;}).join('')}</div></div>`;
+          
+    const listHtml = `<div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 メンバーランキング</div></div>
         ${s.map((u,i)=>{const me=u.userId===currentUser.id;const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
-          return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div><div class="avatar avatar-sm" style="background:${c}">${ini}</div><div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(getMins(u,p))}</div></div>`;}).join('')}</div>`;
+          return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div><div class="avatar avatar-sm" style="background:${c}">${ini}</div><div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(u.total)}</div></div>`;}).join('')}</div>`;
+    return groupTabs + podiumHtml + listHtml;
   }
 
-  ct.innerHTML=`<div class="page-header"><h1 class="page-title">ランキング</h1><p class="page-subtitle">仲間の頑張りをチェックして、モチベーションを高めよう</p></div>
-    <div class="ranking-layout"><div id="ranking-main">${renderMain(period)}</div>
-      <div class="countdown-section"><div style="font-size:1.125rem;font-weight:600;margin-bottom:8px">⏰ 試験カウントダウン</div>
-        ${examCountdowns.map(e=>{const d=daysUntil(e.date);const dt=new Date(e.date).toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'});
-          return`<div class="countdown-card"><div style="position:absolute;top:0;left:0;right:0;height:3px;background:${e.color}"></div><div class="countdown-name">${e.name}</div><div class="countdown-date">${dt}</div><div class="countdown-days"><span class="countdown-number" style="color:${e.color}">${d}</span><span class="countdown-label">日</span></div></div>`;}).join('')}
+  ct.innerHTML=`<div class="page-header"><h1 class="page-title">ランキング</h1><p class="page-subtitle">グループメンバーと学習時間を競い合おう</p></div>
+    <div class="ranking-layout"><div id="ranking-main"><div style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>
+      <div class="countdown-section"><div style="font-size:1.125rem;font-weight:600;margin-bottom:8px">⏰ 各種設定</div>
+        <div class="card"><div class="card-body" style="color:var(--color-text-secondary);font-size:0.9rem">新しいグループに参加したい場合は左下の「設定画面」から操作を行ってください。<br><br>※ 試験カウントダウン機能は現在メンテナンス中です。</div></div>
       </div></div>`;
-  ct.addEventListener('click',e=>{const t=e.target.closest('[data-period]');if(t){period=t.dataset.period;document.getElementById('ranking-main').innerHTML=renderMain(period);}});
+      
+  const mainWrapper = document.getElementById('ranking-main');
+  mainWrapper.innerHTML = await renderMain(period, currentRankingGroup);
+
+  mainWrapper.addEventListener('click', async (e)=>{
+    const tp=e.target.closest('[data-period]');const tg=e.target.closest('[data-group]');
+    if(tp) period=tp.dataset.period;
+    if(tg) currentRankingGroup=tg.dataset.group;
+    if(tp||tg){
+      mainWrapper.innerHTML='<div style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">よみこみ中...</div>';
+      mainWrapper.innerHTML=await renderMain(period, currentRankingGroup);
+    }
+  });
 }
+
 
 // --- Settings ---
 function renderSettings(){
-  const ct=document.getElementById('page-container');const g=groups[0];
+  const ct=document.getElementById('page-container');
   const c=getAvatarColor(currentUser.id);const ini=getInitials(currentUser.name);
-  const members=groupMembers.map(gm=>{const u=users.find(u=>u.id===gm.userId);return{...gm,...u};});
+
+  // Dynamic Group Cards Build
+  const groupsHtml = myGroups.length === 0 
+    ? `<div style="text-align:center;padding:var(--space-xl);color:var(--color-text-secondary);border:1px dashed var(--color-border);border-radius:var(--radius-lg)">現在参加しているグループはありません。下から作成するか参加してください。</div>`
+    : myGroups.map(g => `
+      <div class="settings-card" style="border-color:var(--color-border);margin-bottom:var(--space-sm);padding:var(--space-md) var(--space-lg)">
+        <div class="settings-row">
+          <div><h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4><div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div></div>
+          ${g.role === 'admin' ? '<span class="badge badge-teal" style="font-weight:700">👑 管理者</span>' : `<button class="btn btn-secondary btn-sm btn-leave-group" data-id="${g.id}" style="color:var(--color-accent-pink);border-color:rgba(241,148,138,0.3)">退出</button>`}
+        </div>
+      </div>
+    `).join('');
 
   ct.innerHTML=`
   <div class="page-header">
@@ -548,64 +635,45 @@ function renderSettings(){
       <h3 class="settings-section-title">👤 プロフィール設定</h3>
       <div class="settings-form">
         <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${currentUser.name}" placeholder="例: 田中 太郎"/></div>
-        <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="例: tanaka@med.ac.jp"/></div>
-        <div class="settings-field"><label>大学・医学部名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
+        <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="ログイン共通" disabled style="opacity:0.6"/></div>
+        <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
         <div class="settings-field"><label>学年</label>
-          <select id="input-grade">${[1,2,3,4,5,6].map(gr=>`<option value="${gr}" ${gr===currentUser.grade?'selected':''}>医学部${gr}年</option>`).join('')}</select>
-        </div>
-        <div class="settings-field"><label>自己紹介（任意）</label>
-          <textarea id="input-bio" rows="3" placeholder="例: 循環器が得意です。模試は毎月受けています。" style="width:100%;resize:vertical">${currentUser.bio||''}</textarea>
+          <select id="input-grade">${[1,2,3,4,5,6].map(gr=>`<option value="${gr}" ${gr===currentUser.grade?'selected':''}>${gr}年</option>`).join('')}</select>
         </div>
         <div class="settings-row">
-          <button class="btn btn-primary" id="save-profile-btn">💾 保存する</button>
-          <button class="btn btn-secondary" id="reset-profile-btn">元に戻す</button>
+          <button class="btn btn-primary" id="save-profile-btn" style="width:100%;justify-content:center">💾 プロフィールを保存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Group Manage -->
+    <div class="settings-card animate-slide-up" style="animation-delay:.16s">
+      <h3 class="settings-section-title">👥 所属グループ管理</h3>
+      <div style="margin-bottom:var(--space-lg)">${groupsHtml}</div>
+      <div class="settings-row" style="gap:var(--space-md);flex-wrap:wrap;border-top:1px solid var(--color-border);padding-top:var(--space-lg)">
+        <div style="flex:1;min-width:240px">
+          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">➕ 新しいグループを作成</label>
+          <div style="display:flex;gap:8px"><input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" /><button class="btn btn-primary btn-sm" id="btn-create-group">作成</button></div>
+        </div>
+        <div style="flex:1;min-width:240px">
+          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">🤝 既存のグループに参加</label>
+          <div style="display:flex;gap:8px"><input type="text" id="join-group-code" placeholder="招待コード (6文字)" style="flex:1;text-transform:uppercase;font-size:0.9rem" /><button class="btn btn-secondary btn-sm" id="btn-join-group">参加</button></div>
         </div>
       </div>
     </div>
 
     <!-- Appearance -->
-    <div class="settings-card animate-slide-up" style="animation-delay:.16s">
+    <div class="settings-card animate-slide-up" style="animation-delay:.24s">
       <h3 class="settings-section-title">🎨 外観設定</h3>
-      <div class="settings-row" style="padding:var(--space-sm) 0">
+      <div class="settings-row" style="padding:0">
         <div>
           <div style="font-size:var(--font-size-base);font-weight:500;margin-bottom:var(--space-xs)">${isDark?'ダークモード':'ライトモード'}</div>
-          <div style="font-size:var(--font-size-xs);color:var(--color-text-secondary)">ライト・ダークを切り替えます</div>
         </div>
         <button class="theme-toggle" id="theme-btn-settings"></button>
       </div>
     </div>
-
-    <!-- Group -->
-    <div class="settings-card animate-slide-up" style="animation-delay:.24s">
-      <h3 class="settings-section-title">👥 グループ管理 — ${g.name}</h3>
-      <div style="margin-bottom:var(--space-lg)">
-        <label style="display:block;font-size:var(--font-size-sm);font-weight:500;color:var(--color-text-secondary);margin-bottom:var(--space-sm)">招待コード</label>
-        <div class="invite-code-display">
-          <span class="invite-code-value">${g.inviteCode}</span>
-          <button class="btn btn-secondary btn-sm" id="copy-invite">コピー</button>
-        </div>
-      </div>
-      <div>
-        <label style="display:block;font-size:var(--font-size-sm);font-weight:500;color:var(--color-text-secondary);margin-bottom:var(--space-sm)">メンバー (${members.length}名)</label>
-        <div class="member-list">${members.map(m=>{
-          const mc=getAvatarColor(m.id);const mi=getInitials(m.name);
-          return`<div class="member-item"><div class="avatar avatar-sm" style="background:${mc}">${mi}</div><span class="member-name">${m.name}</span><span class="member-role">${m.role==='admin'?'👑 管理者':'メンバー'}</span></div>`;
-        }).join('')}</div>
-      </div>
-    </div>
-
-    <!-- Danger zone -->
-    <div class="settings-card animate-slide-up" style="animation-delay:.32s;border-color:rgba(241,148,138,0.2)">
-      <h3 class="settings-section-title" style="color:var(--color-accent-pink)">⚠️ 危険な操作</h3>
-      <div class="settings-row">
-        <div>
-          <div style="font-size:var(--font-size-sm);font-weight:500;">グループから退出する</div>
-          <div style="font-size:var(--font-size-xs);color:var(--color-text-secondary)">この操作は取り消せません</div>
-        </div>
-        <button class="settings-danger-btn" id="leave-group-btn">退出する</button>
-      </div>
-    </div>
-
+    
+    <div style="text-align:center;padding:40px 0;"><button id="btn-logout" class="btn btn-secondary" style="border-color:rgba(241,148,138,0.4);color:var(--color-accent-pink)">ログアウト</button></div>
   </div>`;
 
   // ---- Event Listeners ----
@@ -629,15 +697,14 @@ function renderSettings(){
     document.getElementById('display-email').textContent = e.target.value;
   });
 
-  // Save button
-  document.getElementById('save-profile-btn').addEventListener('click', async ()=>{
+  // Save profile button
+  document.getElementById('save-profile-btn').addEventListener('click', async (e)=>{
     const newName=document.getElementById('input-name').value.trim();
-    const newEmail=document.getElementById('input-email').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
     const newGrade=parseInt(document.getElementById('input-grade').value);
-    const newBio=document.getElementById('input-bio').value;
     if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
     
+    e.target.textContent = '保存中...';
     if (supabase && session) {
       const { error } = await supabase.from('profiles').upsert({
         id: session.user.id,
@@ -645,53 +712,50 @@ function renderSettings(){
         university: newUniv,
         grade: newGrade
       });
-      
-      if (error) {
-        showToast('❌ 保存に失敗しました: ' + error.message);
-        return;
-      }
+      if (error) { showToast('❌ 保存に失敗しました: ' + error.message); e.target.textContent = '💾 プロフィールを保存'; return; }
     }
 
     currentUser.name=newName;
-    currentUser.email=newEmail;
     currentUser.university=newUniv||'未設定';
     currentUser.grade=newGrade;
-    currentUser.bio=newBio;
-    // Update sidebar profile
     renderSidebar();
     showToast('✅ プロフィールを保存しました！');
+    e.target.textContent = '💾 プロフィールを保存';
   });
 
-  // Reset button
-  document.getElementById('reset-profile-btn').addEventListener('click', ()=>{
-    document.getElementById('input-name').value=origName;
-    document.getElementById('input-email').value=origEmail;
-    document.getElementById('input-univ').value=origUniv;
-    document.getElementById('input-grade').value=origGrade;
-    document.getElementById('display-name').textContent=origName;
-    document.getElementById('display-email').textContent=origEmail;
-    document.getElementById('display-role').textContent=`${origUniv} 医学部${origGrade}年`;
-    document.getElementById('settings-avatar').textContent=getInitials(origName);
-    showToast('↩️ 変更を元に戻しました');
+  // Group Create/Join logic
+  document.getElementById('btn-create-group')?.addEventListener('click', async (e) => {
+    const nm = document.getElementById('new-group-name').value.trim();
+    if(!nm) { showToast('⚠️ グループ名を入力してください'); return; }
+    e.target.textContent = '作成中...'; e.target.disabled = true;
+    await createGroup(nm);
+  });
+  
+  document.getElementById('btn-join-group')?.addEventListener('click', async (e) => {
+    const cd = document.getElementById('join-group-code').value.trim();
+    if(cd.length < 4) { showToast('⚠️ 正しい招待コードを入力してください'); return; }
+    e.target.textContent = '参加中...'; e.target.disabled = true;
+    await joinGroup(cd);
+  });
+  
+  document.querySelectorAll('.btn-leave-group').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      if (confirm('本当にこのグループから退出しますか？')) {
+        e.target.textContent = '処理中...'; e.target.disabled = true;
+        await leaveGroup(e.target.dataset.id);
+      }
+    });
   });
 
-  // Theme toggle in settings page
-  document.getElementById('theme-btn-settings').addEventListener('click', ()=>{ toggleTheme(); renderSettings(); });
-
-  // Invite code copy
-  document.getElementById('copy-invite').addEventListener('click',()=>{
-    navigator.clipboard?.writeText(g.inviteCode);
-    const b=document.getElementById('copy-invite');b.textContent='コピーしました！';
-    setTimeout(()=>b.textContent='コピー',2000);
-    showToast('📋 招待コードをコピーしました');
-  });
-
-  // Leave group
-  document.getElementById('leave-group-btn').addEventListener('click',()=>{
-    if(confirm('本当にグループ「'+g.name+'」から退出しますか？\nこの操作は取り消せません。')){
-      showToast('グループから退出しました（デモモード）');
+  // Logout Logic
+  document.getElementById('btn-logout')?.addEventListener('click', async () => {
+    if (confirm('ログアウトしますか？')) {
+      if (supabase) await supabase.auth.signOut();
+      else { session = null; renderRoute('/'); }
     }
   });
+  // Theme toggle in settings page
+  document.getElementById('theme-btn-settings')?.addEventListener('click', ()=>{ toggleTheme(); renderSettings(); });
 }
 
 // ==================== REGISTER & INIT ====================
@@ -727,9 +791,11 @@ async function initApp(){
             currentUser.university = profile.university;
             currentUser.grade = profile.grade;
           }
+          await fetchUserGroups();
         }
         renderRoute(currentRoute);
       });
+
     } catch(e) {
       console.error('DEBUG: Auth session error:', e);
     }
