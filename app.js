@@ -238,10 +238,15 @@ async function toggleChecklistItem(category, topic, checked) {
   }, { onConflict: 'user_id, category, topic' });
 }
 
-async function createGroup(name) {
+async function createGroup(name, iconUrl = null) {
   if (!supabase || !session) return;
   const code = generateInviteCode();
-  const { data: group, error: gErr } = await supabase.from('groups').insert([{ name, invite_code: code, created_by: session.user.id }]).select().single();
+  const { data: group, error: gErr } = await supabase.from('groups').insert([{ 
+    name, 
+    invite_code: code, 
+    created_by: session.user.id,
+    icon_url: iconUrl 
+  }]).select().single();
   if (gErr) { showToast('❌ グループ作成失敗: ' + gErr.message); console.error('Group create error:', gErr); return; }
   const { error: mErr } = await supabase.from('group_members').insert([{ group_id: group.id, user_id: session.user.id, role: 'admin' }]);
   if (mErr) showToast('❌ メンバー追加失敗: ' + mErr.message);
@@ -340,6 +345,7 @@ async function fetchPosts() {
     data = resPosts.data;
   }
   
+  console.log('DEBUG: fetchPosts raw data:', data);
   return data;
 }
 
@@ -435,6 +441,7 @@ async function savePost(title, body, type, isAnonymous, groupId = null) {
     return;
   }
   
+  console.log('DEBUG: savePost called', { title, body, type, isAnonymous, groupId });
   // Try inserting with is_anonymous and group_id
   let { error } = await supabase.from('posts').insert([{ 
     user_id: session.user.id, 
@@ -443,11 +450,14 @@ async function savePost(title, body, type, isAnonymous, groupId = null) {
     group_id: groupId
   }]);
   
+  if (error) console.warn('DEBUG: savePost first attempt error:', error);
+  
   if (error && error.message && (error.message.includes('is_anonymous') || error.code === '42703')) {
     console.warn('DEBUG: is_anonymous column missing or ambiguous. retrying without it.');
     const fallback = await supabase.from('posts').insert([{ 
       user_id: session.user.id, 
-      title, body, type 
+      title, body, type,
+      group_id: groupId
     }]);
     error = fallback.error;
   }
@@ -685,11 +695,22 @@ function renderSidebar(){
   const c=getAvatarColor(currentUser.id);const ini=getInitials(currentUser.name);
   const themeIcon=isDark?'🌙':'☀️';
   const themeLabel=isDark?'ダークモード':'ライトモード';
+
+  let avatarHtml = `<div class="sidebar-avatar" style="background:${c}">${ini}</div>`;
+  if (currentUser.avatar_url) {
+    const isEmoji = !currentUser.avatar_url.startsWith('http') && currentUser.avatar_url.length <= 4;
+    if (isEmoji) {
+      avatarHtml = `<div class="sidebar-avatar" style="background:rgba(148,163,184,0.1); font-size:1.4rem; display:flex; align-items:center; justify-content:center;">${currentUser.avatar_url}</div>`;
+    } else {
+      avatarHtml = `<div class="sidebar-avatar" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${currentUser.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+    }
+  }
+
   sb.innerHTML=`<div class="sidebar-header"><div class="sidebar-logo"><div class="sidebar-logo-icon">M</div><span class="sidebar-logo-text">MedFocus</span></div></div>
     <nav class="sidebar-nav">${navItems.map(i=>`<div class="nav-item ${path===i.route?'active':''}" data-route="${i.route}"><div class="nav-item-icon">${i.icon}</div><span>${i.label}</span></div>`).join('')}</nav>
     <div class="sidebar-theme-row"><span class="sidebar-theme-label">${themeIcon} ${themeLabel}</span><button class="theme-toggle" id="theme-btn" title="テーマ切り替え"></button></div>
     <div class="sidebar-profile" id="logout-btn" title="クリックでログアウト" style="cursor:pointer">
-      <div class="sidebar-avatar" style="background:${c}">${ini}</div>
+      ${avatarHtml}
       <div class="sidebar-profile-info">
         <div class="sidebar-profile-name">${currentUser.name}</div>
         <div class="sidebar-profile-role">${currentUser.university} ${currentUser.grade}年</div>
@@ -713,12 +734,47 @@ function initRouter(){
 // ==================== POST CARD ====================
 function renderPostCard(post){
   const isMine = post.user_id === session?.user?.id || post.user_id === currentUser.id;
-  const name=post.is_anonymous?'匿名ユーザー':(post.profiles?.full_name || (isMine ? currentUser.name : '名前未設定'));
-  const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
-  const ini=post.is_anonymous?'匿':getInitials(name);
-  const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
-  const groupBadge = post.groups?.name 
-    ? `<span class="post-type-badge" style="background:rgba(187,143,206,0.1);color:var(--color-accent-purple);border:1px solid rgba(187,143,206,0.2);font-weight:700">🔒 ${post.groups.name} 限定</span>` 
+  const isAnon = post.is_anonymous;
+  const name = isAnon ? '匿名ユーザー' : (post.profiles?.full_name || (isMine ? currentUser.name : '名前未設定'));
+  
+  // Icon Logic
+  let col = isAnon ? '#64748b' : getAvatarColor(post.user_id);
+  let ini = isAnon ? '👻' : getInitials(name);
+  let avatarHtml = `<div class="avatar" style="background:${col}">${ini}</div>`;
+  
+  if (!isAnon && post.profiles?.avatar_url) {
+    const avatarUrl = post.profiles.avatar_url;
+    const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
+    if (isEmoji) {
+      avatarHtml = `<div class="avatar" style="background:rgba(148,163,184,0.1); font-size:1.2rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`;
+    } else {
+      avatarHtml = `<div class="avatar" style="background:var(--color-bg-elevated);overflow:hidden;"><img src="${avatarUrl}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+    }
+  } else if (isAnon) {
+    avatarHtml = `<div class="avatar" style="background:rgba(148,163,184,0.15);color:var(--color-text-tertiary);font-size:1.2rem;">👻</div>`;
+  }
+
+  const badge = post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
+  
+  // Group Display Logic (with robust fallback)
+  let groupName = post.groups?.name;
+  let groupIcon = post.groups?.icon_url;
+  if (!groupName && post.group_id && Array.isArray(myGroups)) {
+    const found = myGroups.find(g => g.id === post.group_id);
+    if (found) {
+      groupName = found.name;
+      groupIcon = found.icon_url;
+    }
+  }
+  
+  let gIconHtml = '';
+  if (groupIcon) {
+    const isEmoji = !groupIcon.startsWith('http') && groupIcon.length <= 4;
+    gIconHtml = isEmoji ? `<span style="margin-right:2px">${groupIcon}</span>` : `<img src="${groupIcon}" style="width:14px;height:14px;object-fit:cover;border-radius:2px;vertical-align:middle;margin-right:4px;" />`;
+  }
+
+  const groupBadge = groupName 
+    ? `<span class="post-type-badge" style="background:rgba(187,143,206,0.1);color:var(--color-accent-purple);border:1px solid rgba(187,143,206,0.2);font-weight:700">${gIconHtml}🔒 ${groupName} 限定</span>` 
     : `<span class="post-type-badge" style="background:rgba(78,205,196,0.08);color:var(--color-accent-teal);border:1px solid rgba(78,205,196,0.2)">🌍 全体</span>`;
   
   let cmts=''; 
@@ -760,7 +816,7 @@ function renderPostCard(post){
   
   return `<article class="post-card animate-slide-up">
     <div class="post-card-header">
-      <div class="avatar" style="background:${col}">${ini}</div>
+      ${avatarHtml}
       <div class="post-author-info">
         <div class="post-author-name">${name} ${badge} ${groupBadge}</div>
         <div class="post-author-meta">${timeAgo(post.created_at)}</div>
@@ -1246,6 +1302,7 @@ async function renderCommunity(){
     const anon=document.getElementById('post-anonymous').checked;
     const gid=document.getElementById('post-group-select').value || null;
     if(b.trim()){
+      console.log('DEBUG: Submitting post from UI', { t, b, anon, gid });
       await savePost(t || null, b, t ? 'question' : 'activity', anon, gid);
       modal.style.display='none';
       renderCommunity();
@@ -1308,17 +1365,33 @@ async function renderRanking(){
     if (s.length === 0) return groupTabs + `<div class="card"><div class="card-body" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">データが見つかりません</div></div>`;
 
     const t3=s.slice(0,3);const pod=t3.length>=3?[t3[1],t3[0],t3[2]]:t3;
-    const podiumHtml = `<div class="card animate-slide-up"><div class="card-header"><div class="card-title">🏆 表彰台</div>
+      const podiumHtml = `<div class="card animate-slide-up"><div class="card-header"><div class="card-title">🏆 表彰台</div>
       <div class="tabs" style="max-width:240px;margin:0"><button class="tab ${p==='daily'?'active':''}" data-period="daily">今日</button><button class="tab ${p==='weekly'?'active':''}" data-period="weekly">今週</button></div></div>
       <div class="ranking-podium">${pod.map((u,di)=>{const ar=di===0?(pod.length>1?2:1):di===1?1:3;const cr=ar===1?'👑':'';const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
+        const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
+        let avHtml = `<div class="avatar avatar-lg" style="background:${c}">${ini}</div>`;
+        if (avatarUrl) {
+          const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
+          avHtml = isEmoji 
+            ? `<div class="avatar avatar-lg" style="background:rgba(148,163,184,0.1); font-size:2rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`
+            : `<div class="avatar avatar-lg" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+        }
         return`<div class="podium-item"><div class="podium-avatar">${cr?`<span class="podium-crown">${cr}</span>`:''}
-          <div class="avatar avatar-lg" style="background:${c}">${ini}</div></div>
+          ${avHtml}</div>
           <div class="podium-name">${u.name}</div><div class="podium-time">${formatMinutes(u.total)}</div>
           <div class="podium-bar">${ar}</div></div>`;}).join('')}</div></div>`;
 
     const listHtml = `<div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 メンバーランキング</div></div>
         ${s.map((u,i)=>{const me=u.userId===currentUser.id;const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
-          return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div><div class="avatar avatar-sm" style="background:${c}">${ini}</div><div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(u.total)}</div></div>`;}).join('')}</div>`;
+          const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
+          let avHtml = `<div class="avatar avatar-sm" style="background:${c}">${ini}</div>`;
+          if (avatarUrl) {
+            const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
+            avHtml = isEmoji 
+              ? `<div class="avatar avatar-sm" style="background:rgba(148,163,184,0.1); font-size:1rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`
+              : `<div class="avatar avatar-sm" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+          }
+          return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div>${avHtml}<div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(u.total)}</div></div>`;}).join('')}</div>`;
     return groupTabs + podiumHtml + listHtml;
   }
 
@@ -1410,7 +1483,19 @@ function renderSettings(){
     : myGroups.map(g => `
       <div class="settings-card" style="border-color:var(--color-border);margin-bottom:var(--space-sm);padding:var(--space-md) var(--space-lg)">
         <div class="settings-row">
-          <div><h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4><div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div></div>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <div class="avatar" style="background:var(--color-bg-elevated);width:32px;height:32px;font-size:0.9rem; overflow:hidden;">
+              ${g.icon_url 
+                ? (g.icon_url.startsWith('http') 
+                    ? `<img src="${g.icon_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.innerHTML='👥'"/>` 
+                    : g.icon_url)
+                : '👥'}
+            </div>
+            <div>
+              <h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4>
+              <div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div>
+            </div>
+          </div>
           ${g.role === 'admin' ? '<span class="badge badge-teal" style="font-weight:700">👑 管理者</span>' : `<button class="btn btn-secondary btn-sm btn-leave-group" data-id="${g.id}" style="color:var(--color-accent-pink);border-color:rgba(241,148,138,0.3)">退出</button>`}
         </div>
       </div>
@@ -1426,7 +1511,9 @@ function renderSettings(){
     <!-- Profile Hero Card -->
     <div class="settings-card animate-slide-up">
       <div class="settings-profile-header">
-        <div class="avatar avatar-xl" id="settings-avatar" style="background:${c}">${ini}</div>
+        <div class="avatar avatar-xl" id="settings-avatar" style="background:${currentUser.avatar_url ? 'var(--color-bg-elevated)' : c}">
+          ${currentUser.avatar_url ? `<img src="${currentUser.avatar_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/>` : ini}
+        </div>
         <div class="settings-profile-info">
           <h2 id="display-name">${currentUser.name}</h2>
           <p id="display-role">${currentUser.university} 医学部${currentUser.grade}年</p>
@@ -1439,6 +1526,17 @@ function renderSettings(){
     <div class="settings-card animate-slide-up" style="animation-delay:.08s">
       <h3 class="settings-section-title">👤 プロフィール設定</h3>
       <div class="settings-form">
+        <div class="settings-field">
+          <label>アイコンURL / 絵文字</label>
+          <div style="display:flex; gap:8px; margin-bottom:8px;">
+            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🩺</button>
+            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🏥</button>
+            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">📚</button>
+            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">✍️</button>
+            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🧪</button>
+          </div>
+          <input type="text" id="input-avatar" value="${currentUser.avatar_url || ''}" placeholder="例: 🩺 または https://..."/>
+        </div>
         <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${currentUser.name}" placeholder="例: 田中 太郎"/></div>
         <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="ログイン共通" disabled style="opacity:0.6"/></div>
         <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
@@ -1458,7 +1556,22 @@ function renderSettings(){
       <div class="settings-row" style="gap:var(--space-md);flex-wrap:wrap;border-top:1px solid var(--color-border);padding-top:var(--space-lg)">
         <div style="flex:1;min-width:240px">
           <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">➕ 新しいグループを作成</label>
-          <div style="display:flex;gap:8px"><input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" /><button class="btn btn-primary btn-sm" id="btn-create-group">作成</button></div>
+          <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:grid;grid-template-columns:50px 1fr;gap:12px;align-items:center">
+            <div id="new-group-icon-preview" class="avatar" style="background:var(--color-bg-elevated);width:50px;height:50px;font-size:1.5rem;display:flex;align-items:center;justify-content:center;overflow:hidden;">👥</div>
+            <div>
+              <div style="display:flex; gap:6px; margin-bottom:6px;">
+                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🏥</button>
+                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🧬</button>
+                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🧠</button>
+                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🩸</button>
+                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🦴</button>
+              </div>
+              <input type="text" id="new-group-icon" placeholder="アイコン (例: 🏥 または URL)" style="font-size:0.9rem" />
+            </div>
+          </div>
+            <div style="display:flex;gap:8px"><input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" /><button class="btn btn-primary btn-sm" id="btn-create-group">作成</button></div>
+          </div>
         </div>
         <div style="flex:1;min-width:240px">
           <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">🤝 既存のグループに参加</label>
@@ -1526,8 +1639,37 @@ function renderSettings(){
   // Live preview — name
   document.getElementById('input-name').addEventListener('input', e=>{
     document.getElementById('display-name').textContent = e.target.value || '（名前未設定）';
-    const ini2=getInitials(e.target.value||'?');
-    document.getElementById('settings-avatar').textContent = ini2;
+    if (!document.getElementById('input-avatar').value) {
+      const ini2=getInitials(e.target.value||'?');
+      document.getElementById('settings-avatar').textContent = ini2;
+    }
+  });
+
+  // Live preview — avatar
+  const updateAvatarPreview = (val) => {
+    const el = document.getElementById('settings-avatar');
+    if (!val) {
+      el.textContent = getInitials(document.getElementById('input-name').value || '?');
+      el.style.background = getAvatarColor(currentUser.id);
+      return;
+    }
+    const isEmoji = !val.startsWith('http') && val.length <= 4;
+    el.innerHTML = isEmoji ? val : `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
+    el.style.fontSize = isEmoji ? '2rem' : '';
+    el.style.display = 'flex';
+    el.style.alignItems = 'center';
+    el.style.justifyContent = 'center';
+    if (!isEmoji) el.style.overflow = 'hidden';
+  };
+  document.getElementById('input-avatar').addEventListener('input', e => updateAvatarPreview(e.target.value));
+  
+  // Preset buttons
+  document.querySelectorAll('.preset-emoji').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const inp = document.getElementById('input-avatar');
+      inp.value = btn.textContent;
+      updateAvatarPreview(inp.value);
+    });
   });
   // Live preview — univ/grade
   const updateRole=()=>{
@@ -1544,6 +1686,7 @@ function renderSettings(){
   // Save profile button
   document.getElementById('save-profile-btn').addEventListener('click', async (e)=>{
     const newName=document.getElementById('input-name').value.trim();
+    const newAvatar=document.getElementById('input-avatar').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
     const newGrade=parseInt(document.getElementById('input-grade').value);
     const isPublic = document.getElementById('input-public').checked;
@@ -1554,6 +1697,7 @@ function renderSettings(){
       const { error } = await supabase.from('profiles').upsert({
         id: session.user.id,
         full_name: newName,
+        avatar_url: newAvatar,
         university: newUniv,
         grade: newGrade,
         is_public: isPublic
@@ -1562,6 +1706,7 @@ function renderSettings(){
     }
 
     currentUser.name=newName;
+    currentUser.avatar_url=newAvatar;
     currentUser.university=newUniv||'未設定';
     currentUser.grade=newGrade;
     currentUser.is_public=isPublic;
@@ -1571,13 +1716,34 @@ function renderSettings(){
     renderDashboard();
   });
 
+  // Group Icon Preview
+  const updateGroupIconPreview = (val) => {
+    const el = document.getElementById('new-group-icon-preview');
+    if (!el) return;
+    if (!val) { el.innerHTML = '👥'; el.style.fontSize = '1.5rem'; return; }
+    const isEmoji = !val.startsWith('http') && val.length <= 4;
+    el.innerHTML = isEmoji ? val : `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
+    el.style.fontSize = isEmoji ? '1.5rem' : '';
+  };
+  document.getElementById('new-group-icon')?.addEventListener('input', e => updateGroupIconPreview(e.target.value));
+  document.querySelectorAll('.group-preset-emoji').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const inp = document.getElementById('new-group-icon');
+      if (inp) {
+        inp.value = btn.textContent;
+        updateGroupIconPreview(inp.value);
+      }
+    });
+  });
+
   // Group Create/Join logic
   document.getElementById('btn-create-group')?.addEventListener('click', async (e) => {
     const nm = document.getElementById('new-group-name').value.trim();
+    const pic = document.getElementById('new-group-icon').value.trim();
     if(!nm) { showToast('⚠️ グループ名を入力してください'); return; }
     const btn = e.target; const origText = btn.textContent;
     btn.textContent = '作成中...'; btn.disabled = true;
-    try { await createGroup(nm); } finally { btn.textContent = origText; btn.disabled = false; }
+    try { await createGroup(nm, pic); } finally { btn.textContent = origText; btn.disabled = false; }
   });
   
   document.getElementById('btn-join-group')?.addEventListener('click', async (e) => {
@@ -1672,6 +1838,7 @@ async function initApp(){
           currentUser.name = profile.full_name;
           currentUser.university = profile.university;
           currentUser.grade = profile.grade;
+          currentUser.avatar_url = profile.avatar_url;
         }
       }
       supabase.auth.onAuthStateChange(async (_event, newSession) => {
@@ -1683,6 +1850,7 @@ async function initApp(){
             currentUser.name = profile.full_name;
             currentUser.university = profile.university;
             currentUser.grade = profile.grade;
+            currentUser.avatar_url = profile.avatar_url;
           }
           await fetchUserGroups();
         }
