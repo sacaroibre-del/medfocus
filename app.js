@@ -457,9 +457,27 @@ async function savePost(title, body, type, isAnonymous) {
   if (error) {
     console.error('DEBUG: Supabase savePost failed:', error);
     showToast('❌ 投稿に失敗しました: ' + (error.message || 'データベースエラー'));
-  } else {
-    showToast('✅ 投稿しました！');
   }
+}
+
+async function saveFeedback(title, body, category, isAnonymous) {
+  if (!supabase || !session) {
+    console.log('DEBUG: saveFeedback (local/demo mode)', { title, body, category, isAnonymous });
+    showToast('✅ 貴重なご意見ありがとうございます！（デモ）');
+    return true;
+  }
+  const { error } = await supabase.from('feedbacks').insert([{ 
+    user_id: session.user.id, 
+    title, body, category, 
+    is_anonymous: isAnonymous 
+  }]);
+  if (error) {
+    console.error('DEBUG: Supabase saveFeedback failed:', error);
+    showToast('❌ 送信に失敗しました: ' + (error.message || 'Error'));
+    return false;
+  }
+  showToast('✅ 貴重なご意見ありがとうございます！');
+  return true;
 }
 
 Chart.defaults.color='#94a3b8';
@@ -1240,6 +1258,30 @@ function renderSettings(){
       </div>
     </div>
     
+    <!-- Feedback / Suggestion Box -->
+    <div class="settings-card animate-slide-up" style="animation-delay:.30s">
+      <h3 class="settings-section-title">📮 製作者への意見箱</h3>
+      <p style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-md)">
+        不具合の報告や、追加してほしい機能など、開発者へ直接メッセージを送れます。
+      </p>
+      <div class="settings-form">
+        <div class="settings-field">
+          <label>カテゴリ</label>
+          <select id="feedback-category">
+            <option value="機能要望">✨ 機能要望</option>
+            <option value="バグ報告">🐛 バグ報告</option>
+            <option value="その他">💬 その他</option>
+          </select>
+        </div>
+        <div class="settings-field"><label>件名</label><input type="text" id="feedback-title" placeholder="（例）タイマーの音を消したい"/></div>
+        <div class="settings-field"><label>内容</label><textarea id="feedback-body" placeholder="具体的な内容を教えてください..." style="min-height:100px;width:100%;background:var(--color-bg-base);color:white;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px"></textarea></div>
+        <div class="settings-row" style="margin-bottom:var(--space-md)">
+          <label class="anonymous-toggle" style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer"><input type="checkbox" id="feedback-anonymous"/> 匿名で送信する</label>
+        </div>
+        <button class="btn btn-primary" id="btn-submit-feedback" style="width:100%;justify-content:center">🚀 フィードバックを送信</button>
+      </div>
+    </div>
+    
     <div style="text-align:center;padding:40px 0;"><button id="btn-logout" class="btn btn-secondary" style="border-color:rgba(241,148,138,0.4);color:var(--color-accent-pink)">ログアウト</button></div>
   </div>`;
 
@@ -1330,6 +1372,34 @@ function renderSettings(){
   });
   // Theme toggle in settings page
   document.getElementById('theme-btn-settings')?.addEventListener('click', ()=>{ toggleTheme(); renderSettings(); });
+
+  // Feedback Event Listener
+  document.getElementById('btn-submit-feedback')?.addEventListener('click', async (e) => {
+    const titleEle = document.getElementById('feedback-title');
+    const bodyEle = document.getElementById('feedback-body');
+    const catEle = document.getElementById('feedback-category');
+    const anonEle = document.getElementById('feedback-anonymous');
+    
+    const title = titleEle.value.trim();
+    const body = bodyEle.value.trim();
+    const category = catEle.value;
+    const isAnon = anonEle.checked;
+    
+    if (!body) { showToast('⚠️ 内容を入力してください'); return; }
+    
+    const btn = e.target;
+    btn.disabled = true;
+    const origText = btn.textContent;
+    btn.textContent = '送信中...';
+    
+    const success = await saveFeedback(title || '無題', body, category, isAnon);
+    if (success) {
+      titleEle.value = '';
+      bodyEle.value = '';
+    }
+    btn.disabled = false;
+    btn.textContent = origText;
+  });
 }
 
 // ==================== REGISTER & INIT ====================
