@@ -717,7 +717,9 @@ function renderPostCard(post){
   const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
   const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
-  const groupBadge = post.groups?.name ? `<span class="post-type-badge" style="background:rgba(187,143,206,0.1);color:var(--color-accent-purple);border:1px solid rgba(187,143,206,0.2)">👥 ${post.groups.name}</span>` : '';
+  const groupBadge = post.groups?.name 
+    ? `<span class="post-type-badge" style="background:rgba(187,143,206,0.1);color:var(--color-accent-purple);border:1px solid rgba(187,143,206,0.2);font-weight:700">🔒 ${post.groups.name} 限定</span>` 
+    : `<span class="post-type-badge" style="background:rgba(78,205,196,0.08);color:var(--color-accent-teal);border:1px solid rgba(78,205,196,0.2)">🌍 全体</span>`;
   
   let cmts=''; 
   const replies = post.post_replies || [];

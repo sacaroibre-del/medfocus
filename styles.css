@@ -320,7 +320,7 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 .post-card:hover { border-color:var(--color-border-hover); box-shadow:var(--shadow-md); }
 .post-card-header { display:flex; align-items:center; gap:var(--space-md); margin-bottom:var(--space-md); }
 .post-author-info { flex:1; }
-.post-author-name { font-size:var(--font-size-sm); font-weight:600; }
+.post-author-name { font-size:var(--font-size-sm); font-weight:600; display:flex; align-items:center; gap:var(--space-sm); flex-wrap:wrap; }
 .post-author-meta { font-size:var(--font-size-xs); color:var(--color-text-tertiary); }
 .post-card-title { font-size:var(--font-size-lg); font-weight:600; margin-bottom:var(--space-sm); }
 .post-card-body { font-size:var(--font-size-base); color:var(--color-text-secondary); line-height:1.7; margin-bottom:var(--space-md); }
@@ -335,7 +335,7 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 .comment-author { font-size:var(--font-size-sm); font-weight:600; margin-bottom:var(--space-xs); }
 .comment-body { font-size:var(--font-size-sm); color:var(--color-text-secondary); line-height:1.6; }
 .comment-time { font-size:var(--font-size-xs); color:var(--color-text-tertiary); margin-top:var(--space-xs); }
-.post-type-badge { display:inline-flex; align-items:center; gap:var(--space-xs); padding:2px 8px; border-radius:var(--radius-full); font-size:var(--font-size-xs); font-weight:600; }
+.post-type-badge { display:inline-flex; align-items:center; gap:var(--space-xs); padding:2px 8px; border-radius:var(--radius-full); font-size:var(--font-size-xs); font-weight:600; white-space:nowrap; }
 .post-type-question { background:rgba(69,183,209,0.12); color:var(--color-accent-blue); }
 .post-type-activity { background:rgba(130,224,170,0.12); color:var(--color-accent-green); }
 .community-sidebar { display:flex; flex-direction:column; gap:var(--space-lg); }
