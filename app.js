@@ -639,11 +639,12 @@ function renderSettings(){
     if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
     
     if (supabase && session) {
-      const { error } = await supabase.from('profiles').update({
+      const { error } = await supabase.from('profiles').upsert({
+        id: session.user.id,
         full_name: newName,
         university: newUniv,
         grade: newGrade
-      }).eq('id', session.user.id);
+      });
       
       if (error) {
         showToast('❌ 保存に失敗しました: ' + error.message);
