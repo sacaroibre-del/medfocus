@@ -267,6 +267,11 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 .study-log-day-header .day-total { color:var(--color-accent-teal); font-weight:700; }
 .study-log-entry { display:flex; align-items:center; gap:var(--space-md); padding:var(--space-sm) var(--space-md); background:var(--color-bg-elevated); border-radius:var(--radius-md); font-size:var(--font-size-sm); border:1px solid transparent; transition:all var(--transition-fast); }
 .study-log-entry:hover { border-color:var(--color-border-hover); }
+.study-log-actions { display:flex; gap:var(--space-xs); opacity:0; transition:opacity var(--transition-fast); }
+.study-log-entry:hover .study-log-actions { opacity:1; }
+.btn-log-action { background:transparent; border:none; color:var(--color-text-tertiary); padding:4px; border-radius:4px; cursor:pointer; font-size:1.1rem; display:flex; align-items:center; justify-content:center; transition:all var(--transition-fast); }
+.btn-log-action:hover { background:var(--color-bg-primary); color:var(--color-text-primary); }
+.btn-log-action.delete:hover { color:var(--color-accent-pink); }
 .study-log-subject { flex:1; font-weight:500; }
 .study-log-duration { font-weight:600; color:var(--color-accent-teal); }
 .study-log-time { color:var(--color-text-tertiary); font-size:var(--font-size-xs); }

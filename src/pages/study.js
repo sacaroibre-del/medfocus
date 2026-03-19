@@ -82,10 +82,14 @@ export function renderStudy() {
                 ${logs.map(l => {
                   const subj = allSubjects.find(s => s.id === l.subjectId);
                   const time = new Date(l.startedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
-                  return `<div class="study-log-entry">
+                  return `<div class="study-log-entry" data-id="${l.id}">
                     <span class="study-log-subject">${subj?.name || '不明'}</span>
                     <span class="study-log-duration">${formatMinutes(l.durationMinutes)}</span>
                     <span class="study-log-time">${time}</span>
+                    <div class="study-log-actions">
+                      <button class="btn-log-action edit" data-id="${l.id}" data-subject="${subj?.name || '不明'}" data-duration="${l.durationMinutes}" title="編集">✏️</button>
+                      <button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button>
+                    </div>
                   </div>`;
                 }).join('')}
               </div>`;
@@ -155,8 +159,10 @@ export function renderStudy() {
     const s = getStopwatchState();
     if (s.elapsedSeconds > 0) {
       const subjectSelect = document.getElementById('study-subject');
+      const subjectId = subjectSelect.value;
       const subjectName = subjectSelect.options[subjectSelect.selectedIndex]?.text || '未選択';
       const mins = Math.ceil(s.elapsedSeconds / 60);
+      studyLogs.push({ id: 'log-' + Date.now(), subjectId: subjectId || 'sub-unknown', durationMinutes: mins, startedAt: new Date().toISOString() });
       alert(`✅ ${subjectName}の勉強記録を保存しました！\n勉強時間: ${formatMinutes(mins)}`);
       resetStopwatch();
       display.innerHTML = formatStopwatchTime(0);
@@ -165,6 +171,35 @@ export function renderStudy() {
       btnToggle.textContent = '▶';
       status.className = 'stopwatch-status';
       status.textContent = '記録を保存しました 🎉';
+      renderStudy();
     }
+  });
+
+  document.querySelectorAll('.btn-log-action.delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.currentTarget.dataset.id;
+      if (confirm('本当にこの記録を削除しますか？')) {
+        const idx = studyLogs.findIndex(log => log.id === id);
+        if (idx !== -1) studyLogs.splice(idx, 1);
+        renderStudy();
+      }
+    });
+  });
+
+  document.querySelectorAll('.btn-log-action.edit').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const ds = e.currentTarget.dataset;
+      const newDurStr = prompt(`【${ds.subject}】の新しい勉強時間（分）を入力してください:`, ds.duration);
+      if (newDurStr !== null) {
+        const dur = parseInt(newDurStr);
+        if (!isNaN(dur) && dur > 0) {
+          const log = studyLogs.find(log => log.id === ds.id);
+          if (log) log.durationMinutes = dur;
+          renderStudy();
+        } else {
+          alert('⚠️ 正しい分数を入力してください');
+        }
+      }
+    });
   });
 }

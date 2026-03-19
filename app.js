@@ -201,6 +201,20 @@ async function saveStudyLog(subjectId, durationMinutes) {
   else showToast('✅ 勉強記録を保存しました！');
 }
 
+async function updateStudyLog(id, subjectName, durationMinutes) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('study_logs').update({ subject_name: subjectName, duration_minutes: durationMinutes }).eq('id', id);
+  if (error) showToast('❌ 更新に失敗しました');
+  else showToast('✅ 記録を更新しました！');
+}
+
+async function deleteStudyLog(id) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('study_logs').delete().eq('id', id);
+  if (error) showToast('❌ 削除に失敗しました');
+  else showToast('✅ 記録を削除しました！');
+}
+
 async function fetchPosts() {
   if (!supabase) return [];
   const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
@@ -489,7 +503,7 @@ async function renderStudy(){
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
         <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
           return`<div class="study-log-day"><div class="study-log-day-header">${day} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subject_name);const tm=new Date(l.started_at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
-            return`<div class="study-log-entry"><span class="study-log-subject">${sub?.name||l.subject_name}</span><span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span><span class="study-log-time">${tm}</span></div>`;}).join('')}</div>`;}).join('')}</div></div>
+            return`<div class="study-log-entry" data-id="${l.id}"><span class="study-log-subject">${sub?.name||l.subject_name}</span><span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span><span class="study-log-time">${tm}</span><div class="study-log-actions"><button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集">✏️</button><button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button></div></div>`;}).join('')}</div>`;}).join('')}</div></div>
     </div>`;
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
@@ -504,6 +518,24 @@ async function renderStudy(){
     else{startSW(upd);btnT.className='stopwatch-btn stopwatch-btn-pause';btnT.textContent='⏸';status.className='stopwatch-status recording';status.innerHTML='<span class="status-dot"></span>記録中...';}});
   document.getElementById('btn-reset').addEventListener('click',()=>{resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='開始ボタンを押して勉強を始めましょう';});
   document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60));resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
+
+  document.querySelectorAll('.btn-log-action.delete').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const id = e.currentTarget.dataset.id;
+      if(confirm('本当にこの記録を削除しますか？')) { await deleteStudyLog(id); renderStudy(); }
+    });
+  });
+  document.querySelectorAll('.btn-log-action.edit').forEach(btn => {
+    btn.addEventListener('click', async (e) => {
+      const ds = e.currentTarget.dataset;
+      const newDurStr = prompt(`【${ds.subject}】の新しい勉強時間（分）を入力してください:`, ds.duration);
+      if(newDurStr !== null) {
+        const dur = parseInt(newDurStr);
+        if(!isNaN(dur) && dur > 0) { await updateStudyLog(ds.id, ds.subject, dur); renderStudy(); }
+        else { showToast('⚠️ 正しい分数を入力してください'); }
+      }
+    });
+  });
 }
 
 // --- Community ---
@@ -752,22 +784,25 @@ function renderSettings(){
   document.getElementById('btn-create-group')?.addEventListener('click', async (e) => {
     const nm = document.getElementById('new-group-name').value.trim();
     if(!nm) { showToast('⚠️ グループ名を入力してください'); return; }
-    e.target.textContent = '作成中...'; e.target.disabled = true;
-    await createGroup(nm);
+    const btn = e.target; const origText = btn.textContent;
+    btn.textContent = '作成中...'; btn.disabled = true;
+    try { await createGroup(nm); } finally { btn.textContent = origText; btn.disabled = false; }
   });
   
   document.getElementById('btn-join-group')?.addEventListener('click', async (e) => {
     const cd = document.getElementById('join-group-code').value.trim();
     if(cd.length < 4) { showToast('⚠️ 正しい招待コードを入力してください'); return; }
-    e.target.textContent = '参加中...'; e.target.disabled = true;
-    await joinGroup(cd);
+    const btn = e.target; const origText = btn.textContent;
+    btn.textContent = '参加中...'; btn.disabled = true;
+    try { await joinGroup(cd); } finally { btn.textContent = origText; btn.disabled = false; }
   });
   
   document.querySelectorAll('.btn-leave-group').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       if (confirm('本当にこのグループから退出しますか？')) {
-        e.target.textContent = '処理中...'; e.target.disabled = true;
-        await leaveGroup(e.target.dataset.id);
+        const targetBtn = e.target; const origText = targetBtn.textContent;
+        targetBtn.textContent = '処理中...'; targetBtn.disabled = true;
+        try { await leaveGroup(targetBtn.dataset.id); } finally { targetBtn.textContent = origText; targetBtn.disabled = false; }
       }
     });
   });
@@ -785,11 +820,24 @@ function renderSettings(){
 
 // ==================== REGISTER & INIT ====================
 console.log('DEBUG: Registering routes and starting app');
-registerRoute('/',()=>{if(!session){renderLogin();return;}document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderDashboard();});
-registerRoute('/study',()=>{if(!session){renderLogin();return;}document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderStudy();});
-registerRoute('/community',()=>{if(!session){renderLogin();return;}document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCommunity();});
-registerRoute('/ranking',()=>{if(!session){renderLogin();return;}document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderRanking();});
-registerRoute('/settings',()=>{if(!session){renderLogin();return;}document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
+
+function ensureAppLayout() {
+  const app = document.getElementById('app');
+  if (!document.getElementById('sidebar')) {
+    app.innerHTML = `
+      <aside id="sidebar"></aside>
+      <main id="main-content">
+        <div id="page-container"></div>
+      </main>
+    `;
+  }
+}
+
+registerRoute('/',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderDashboard();});
+registerRoute('/study',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderStudy();});
+registerRoute('/community',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCommunity();});
+registerRoute('/ranking',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderRanking();});
+registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
 
 async function initApp(){
   console.log('DEBUG: initApp started');
