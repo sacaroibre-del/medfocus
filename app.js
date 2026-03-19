@@ -1583,24 +1583,30 @@ function renderSettings(){
     <div class="settings-card animate-slide-up" style="animation-delay:.16s">
       <h3 class="settings-section-title">👥 所属グループ管理</h3>
       <div style="margin-bottom:var(--space-lg)">${groupsHtml}</div>
-      <div class="settings-row" style="gap:var(--space-md);flex-wrap:wrap;border-top:1px solid var(--color-border);padding-top:var(--space-lg)">
-        <div style="flex:1;min-width:240px">
-          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">➕ 新しいグループを作成</label>
-          <div style="display:flex;flex-direction:column;gap:8px">
-          <div style="display:grid;grid-template-columns:50px 1fr;gap:12px;align-items:center">
-            <div id="new-group-icon-preview" class="avatar" style="background:var(--color-bg-elevated);width:50px;height:50px;font-size:1.5rem;display:flex;align-items:center;justify-content:center;overflow:hidden;">👥</div>
-            <div>
-              <input type="hidden" id="new-group-icon" value="" />
-              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;font-size:0.75rem">📷 画像を選択・アップロード</button>
-              <input type="file" id="new-group-icon-file" accept="image/*" style="display:none" />
+      <div style="display:flex; flex-direction:column; gap:var(--space-xl); border-top:1px solid var(--color-border); padding-top:var(--space-lg)">
+        <div>
+          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:12px">➕ 新しいグループを作成</label>
+          <div style="display:flex;flex-direction:column;gap:12px;background:var(--color-bg-elevated);padding:var(--space-md);border-radius:var(--radius-md)">
+            <div style="display:grid;grid-template-columns:50px 1fr;gap:16px;align-items:center">
+              <div id="new-group-icon-preview" class="avatar" style="background:var(--color-bg-input);width:50px;height:50px;font-size:1.5rem;display:flex;align-items:center;justify-content:center;overflow:hidden;">👥</div>
+              <div>
+                <input type="hidden" id="new-group-icon" value="" />
+                <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;font-size:0.75rem">📷 画像を選択・アップロード</button>
+                <input type="file" id="new-group-icon-file" accept="image/*" style="display:none" />
+              </div>
+            </div>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" />
+              <button class="btn btn-primary btn-sm" id="btn-create-group" style="padding:0 20px">作成</button>
             </div>
           </div>
-            <div style="display:flex;gap:8px"><input type="text" id="new-group-name" placeholder="グループ名..." style="flex:1;font-size:0.9rem" /><button class="btn btn-primary btn-sm" id="btn-create-group">作成</button></div>
-          </div>
         </div>
-        <div style="flex:1;min-width:240px">
-          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:8px">🤝 既存のグループに参加</label>
-          <div style="display:flex;gap:8px"><input type="text" id="join-group-code" placeholder="招待コード (6文字)" style="flex:1;text-transform:uppercase;font-size:0.9rem" /><button class="btn btn-secondary btn-sm" id="btn-join-group">参加</button></div>
+        <div>
+          <label style="font-size:var(--font-size-xs);font-weight:600;color:var(--color-text-secondary);display:block;margin-bottom:12px">🤝 既存のグループに参加</label>
+          <div style="display:flex;gap:12px;background:var(--color-bg-elevated);padding:var(--space-md);border-radius:var(--radius-md);align-items:center">
+            <input type="text" id="join-group-code" placeholder="招待コード (6文字)" style="flex:1;text-transform:uppercase;font-size:0.9rem;background:var(--color-bg-input)" />
+            <button class="btn btn-secondary btn-sm" id="btn-join-group" style="padding:0 20px">参加</button>
+          </div>
         </div>
       </div>
     </div>
