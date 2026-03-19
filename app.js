@@ -10,8 +10,8 @@ function initSupabase() {
   const savedUrl = localStorage.getItem('medfocus-supabase-url');
   const savedKey = localStorage.getItem('medfocus-supabase-key');
   
-  SUPABASE_URL = savedUrl || import.meta.env.VITE_SUPABASE_URL || '';
-  SUPABASE_KEY = savedKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  SUPABASE_URL = savedUrl || (typeof import.meta.env !== 'undefined' ? import.meta.env.VITE_SUPABASE_URL : '') || '';
+  SUPABASE_KEY = savedKey || (typeof import.meta.env !== 'undefined' ? import.meta.env.VITE_SUPABASE_ANON_KEY : '') || '';
 
   try {
     if (SUPABASE_URL && SUPABASE_KEY && !SUPABASE_URL.includes('your-project') && SUPABASE_KEY !== 'your-anon-key') {
@@ -628,7 +628,15 @@ function finishSession() {
     osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
     osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
   } catch(e) { console.warn('Could not play notification sound:', e); }
-  if (typeof renderStudy === 'function') renderStudy();
+  
+  // Only trigger re-render if we are already on the study page
+  if (currentRoute === '/study') {
+    renderStudy();
+  } else if (currentRoute) {
+    // If we are on another page, just update the route to show the confirmation (optional)
+    // For now, let's at least make sure it doesn't crash if renderStudy is called elsewhere
+    showToast('🎉 学習セッションが終了しました！記録を確認してください。');
+  }
 }
 
 function pauseSW(){
@@ -1006,6 +1014,7 @@ async function renderDashboard(){
 // --- Study ---
 async function renderStudy(){
   const ct=document.getElementById('page-container');
+  if(!ct) return;
   const logs = await fetchStudyLogs();
   const checks = await fetchChecklists();
   const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s,category:c.name})));
