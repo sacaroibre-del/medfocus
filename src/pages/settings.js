@@ -2,6 +2,7 @@
 // Settings Page
 // ============================================================
 import { currentUser, groups, groupMembers, users } from '../data/mockData.js';
+import { saveToStorage } from '../utils/persistence.js';
 import { getInitials, getAvatarColor } from '../utils/helpers.js';
 
 export function renderSettings() {
@@ -101,6 +102,7 @@ export function renderSettings() {
     
     currentUser.grade = newGrade;
     currentUser.is_public = isPublic;
+    saveToStorage({ currentUser });
     
     alert('✅ 設定を保存しました！');
     renderSettings();

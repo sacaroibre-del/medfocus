@@ -1,7 +1,8 @@
 // ============================================================
 // Study Timer Page
 // ============================================================
-import { subjectCategories, studyLogs, CBT_CHECKLIST, KOKUSHI_CHECKLIST, userChecklistProgress } from '../data/mockData.js';
+import { CBT_CHECKLIST, KOKUSHI_CHECKLIST, userChecklistProgress, studyLogs, subjectCategories } from '../data/mockData.js';
+import { saveToStorage } from '../utils/persistence.js';
 import { startStopwatch, pauseStopwatch, resetStopwatch, formatStopwatchTime, getStopwatchState } from '../components/stopwatch.js';
 import { createBarChart } from '../components/charts.js';
 import { formatMinutes } from '../utils/helpers.js';
@@ -270,6 +271,7 @@ export function renderStudy() {
       if (confirm('本当にこの記録を削除しますか？')) {
         const idx = studyLogs.findIndex(log => log.id === id);
         if (idx !== -1) studyLogs.splice(idx, 1);
+        saveToStorage({ studyLogs });
         renderStudy();
       }
     });
@@ -284,6 +286,7 @@ export function renderStudy() {
         if (!isNaN(dur) && dur > 0) {
           const log = studyLogs.find(log => log.id === ds.id);
           if (log) log.durationMinutes = dur;
+          saveToStorage({ studyLogs });
           renderStudy();
         } else {
           alert('⚠️ 正しい分数を入力してください');
@@ -320,9 +323,10 @@ export function renderStudy() {
       const cat = e.target.dataset.cat;
       const top = e.target.dataset.topic;
       const checked = e.target.checked;
-      const ex = userChecklistProgress.find(c => c.category === cat && c.topic === top);
+      const ex = userChecklistProgress.find(c => c.category === cat && c.item === top);
       if (ex) ex.completed = checked;
-      else userChecklistProgress.push({ category: cat, topic: top, completed: checked });
+      else userChecklistProgress.push({ category: cat, item: top, completed: checked });
+      saveToStorage({ userChecklistProgress });
       renderStudy(); // Re-render to update percentages
     });
   });

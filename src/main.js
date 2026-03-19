@@ -1,6 +1,7 @@
-// ============================================================
-// MedFocus - Main Entry Point
-// ============================================================
+import * as mockData from './data/mockData.js';
+import { initializeData } from './utils/persistence.js';
+
+// Styles
 import './styles/index.css';
 import './styles/dashboard.css';
 import './styles/study.css';
@@ -16,6 +17,9 @@ import { renderCommunity } from './pages/community.js';
 import { renderRanking } from './pages/ranking.js';
 import { renderSettings } from './pages/settings.js';
 import { destroyAllCharts } from './components/charts.js';
+
+// Initialize Persistence
+initializeData(mockData);
 
 // Register routes
 registerRoute('/', () => {

@@ -122,7 +122,7 @@ export const CBT_CHECKLIST = [
   { category: '内科系: 神経', color: '#45B7D1', topics: ["脳血管障害", "変性疾患", "てんかん", "脱髄疾患"] },
   { category: '外科系: 外科総論', color: '#F7DC6F', topics: ["術前・術後管理", "輸液・輸血", "ショック対応", "麻酔"] },
   { category: '外科系: 消化器外科', color: '#F7DC6F', topics: ["消化器癌", "虫垂炎", "ヘルニア", "急性腹症"] },
-  { category: '産科・婦人科: 産科', color: '#BB8FCE', topics: ["正常妊娠・分娩", "妊娠高血圧症候群", "前置胎盤", "早産・流産"] },
+  { category: '産科・婦人科: 産科', color: '#BB8FCE', topics: ["正常妊娠・分娩", "妊娠高血圧症を開く", "前置胎盤", "早産・流産"] },
   { category: '産科・婦人科: 婦人科', color: '#BB8FCE', topics: ["子宮癌", "卵巣腫瘍", "内膜症", "不妊症"] },
   { category: '小児・精神: 小児科', color: '#F1948A', topics: ["発達・発育", "先天奇形", "新生児疾患", "小児感染症"] },
   { category: '小児・精神: 精神科', color: '#F1948A', topics: ["統合失調症", "気分障害", "不安障害", "認知症"] },
@@ -157,7 +157,7 @@ export const KOKUSHI_CHECKLIST = [
   { category: '救急科: 救急医学', color: '#E17055', topics: ["BLS・ACLS", "JATEC", "中毒・熱中症", "人工呼吸"] }
 ];
 
-export const userChecklistProgress = [];
+export let userChecklistProgress = [];
 
 export const subjectProgress = [
   { id: 'sp-01', userId: 'user-001', category: '基礎医学', subjectName: '解剖学', subjectId: 'sub-anatomy', completedTopics: 22, totalTopics: 25, progressRate: 88 },
@@ -182,7 +182,7 @@ export function generateStudyLogs() {
   return logs;
 }
 
-export const studyLogs = generateStudyLogs();
+export let studyLogs = generateStudyLogs();
 
 export const userStudyTotals = [
   { userId: 'user-001', name: '田中 太郎', weeklyMinutes: 0, dailyMinutes: 0 },
@@ -196,16 +196,27 @@ export const userStudyTotals = [
 ];
 
 // --- 投稿（質問広場） ---
-export const posts = [
+export let posts = [
   {
     id: 'post-001', userId: 'user-002', groupId: 'group-001', type: 'question', title: '僧帽弁閉鎖不全症の聴診所見について',
-    body: '僧帽弁閉鎖不全症で汎収縮期雑音が聞こえる理由がよくわかりません。',
-    likes: 5, createdAt: '2026-03-19T08:30:00Z', comments: [],
+    body: 'MRは左室→左房への逆流が収縮期全体を通じて起こるから汎収縮期雑音になります。ASは駆出性だから菱形型の雑音パターンで、最強点も異なります（AS: 第2肋間胸骨右縁、MR: 心尖部）。',
+    likes: 5, createdAt: '2026-03-19T08:30:00Z', comments: [
+      { id: 'c-001', postId: 'post-001', userId: 'user-001', body: 'MRは左室→左房への逆流が収縮期全体を通じて起こるから汎収縮期雑音になります。', isAnonymous: false, createdAt: '2026-03-19T08:45:00Z' },
+    ],
   },
   {
-    id: 'post-002', userId: 'user-001', groupId: 'group-001', type: 'activity', title: null,
-    body: '循環器の勉強を頑張っています！',
-    likes: 2, createdAt: '2026-03-19T10:00:00Z', comments: [],
+    id: 'post-002', userId: 'user-004', groupId: 'group-001', type: 'question', title: 'ネフローゼ症候群の分類',
+    body: '微小変化型と膜性腎症の違いが覚えられません。',
+    likes: 8, createdAt: '2026-03-18T22:15:00Z', comments: [
+      { id: 'c-003', postId: 'post-002', userId: 'user-005', body: '表で整理すると覚えやすいです！', isAnonymous: false, createdAt: '2026-03-18T22:40:00Z' },
+    ],
+  },
+  {
+    id: 'post-006', userId: 'user-003', groupId: 'group-001', type: 'question', title: 'CBT対策のおすすめ問題集',
+    body: 'CBT対策に「QAssist」と「medu4」のどちらが良いか迷っています。',
+    likes: 15, createdAt: '2026-03-18T15:00:00Z', comments: [
+      { id: 'c-004', postId: 'post-006', userId: 'user-001', body: '自分はQAssist使ってます。', isAnonymous: false, createdAt: '2026-03-18T15:20:00Z' },
+    ],
   }
 ];
 

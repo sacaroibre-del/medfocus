@@ -2,6 +2,7 @@
 // Community / Q&A Page
 // ============================================================
 import { posts, activityFeed, currentUser } from '../data/mockData.js';
+import { saveToStorage } from '../utils/persistence.js';
 import { renderPostCard } from '../components/postCard.js';
 import { getInitials, getAvatarColor } from '../utils/helpers.js';
 
@@ -114,8 +115,22 @@ export function renderCommunity() {
     const title = document.getElementById('post-title-input').value;
     const body = document.getElementById('post-body-input').value;
     if (body.trim()) {
-      alert('✅ 投稿しました！（デモモード）');
+      const newPost = {
+        id: 'post-' + Date.now(),
+        userId: currentUser.id,
+        groupId: 'group-001',
+        type: title ? 'question' : 'activity',
+        title: title || null,
+        body: body,
+        likes: 0,
+        isAnonymous: document.getElementById('post_anonymous')?.checked || false,
+        createdAt: new Date().toISOString(),
+        comments: []
+      };
+      posts.push(newPost);
+      saveToStorage({ posts });
       modal.style.display = 'none';
+      renderCommunity();
     }
   });
 
@@ -147,6 +162,7 @@ export function renderCommunity() {
         const idx = posts.findIndex(p => p.id === postId);
         if (idx !== -1) {
           posts.splice(idx, 1);
+          saveToStorage({ posts });
           renderCommunity();
         }
       }
@@ -172,6 +188,7 @@ export function renderCommunity() {
           isAnonymous: false,
           createdAt: new Date().toISOString()
         });
+        saveToStorage({ posts });
         renderCommunity();
       }
     }
