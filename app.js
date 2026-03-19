@@ -38,23 +38,14 @@ let currentRoute = '/';
 
 // ==================== DATA ====================
 const currentUser = {
-  id:'user-001', name:'田中 太郎', email:'tanaka@med.example-u.ac.jp',
-  university:'東京大学医学部', grade:4, createdAt:'2025-04-01T00:00:00Z'
+  id: '', name: '未設定', email: '',
+  university: '未設定', grade: 1, bio: ''
 };
 
-const users = [
-  currentUser,
-  {id:'user-002',name:'佐藤 花子',email:'sato@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-003',name:'鈴木 一郎',email:'suzuki@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-004',name:'高橋 美咲',email:'takahashi@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-005',name:'伊藤 健太',email:'ito@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-006',name:'渡辺 さくら',email:'watanabe@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-007',name:'山本 大輝',email:'yamamoto@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-  {id:'user-008',name:'中村 愛',email:'nakamura@med.example-u.ac.jp',university:'東京大学医学部',grade:4},
-];
+const users = [];
 
-const groups = [{id:'group-001',name:'東大医4年 勉強会',inviteCode:'MED4TK',university:'東京大学医学部'}];
-const groupMembers = users.map((u,i)=>({userId:u.id,groupId:'group-001',role:i===0?'admin':'member'}));
+const groups = [{id:'group-001',name:'個人学習',inviteCode:'NONE',university:'未設定'}];
+const groupMembers = [];
 
 const subjectCategories = [
   {id:'cat-basic',name:'基礎医学',color:'#4ECDC4',subjects:[
@@ -87,96 +78,12 @@ const subjectCategories = [
   ]}
 ];
 
-const subjectProgress = [
-  {userId:'user-001',category:'基礎医学',subjectName:'解剖学',subjectId:'sub-anatomy',completedTopics:22,totalTopics:25},
-  {userId:'user-001',category:'基礎医学',subjectName:'生理学',subjectId:'sub-physiology',completedTopics:15,totalTopics:20},
-  {userId:'user-001',category:'基礎医学',subjectName:'生化学',subjectId:'sub-biochem',completedTopics:10,totalTopics:18},
-  {userId:'user-001',category:'基礎医学',subjectName:'薬理学',subjectId:'sub-pharma',completedTopics:18,totalTopics:22},
-  {userId:'user-001',category:'基礎医学',subjectName:'病理学',subjectId:'sub-patho',completedTopics:12,totalTopics:15},
-  {userId:'user-001',category:'基礎医学',subjectName:'微生物学',subjectId:'sub-micro',completedTopics:8,totalTopics:16},
-  {userId:'user-001',category:'内科系',subjectName:'循環器',subjectId:'sub-cardio',completedTopics:16,totalTopics:20},
-  {userId:'user-001',category:'内科系',subjectName:'呼吸器',subjectId:'sub-resp',completedTopics:10,totalTopics:16},
-  {userId:'user-001',category:'内科系',subjectName:'消化器',subjectId:'sub-gastro',completedTopics:14,totalTopics:18},
-  {userId:'user-001',category:'内科系',subjectName:'腎臓',subjectId:'sub-renal',completedTopics:5,totalTopics:14},
-  {userId:'user-001',category:'内科系',subjectName:'内分泌',subjectId:'sub-endo',completedTopics:8,totalTopics:15},
-  {userId:'user-001',category:'内科系',subjectName:'血液',subjectId:'sub-hema',completedTopics:9,totalTopics:12},
-  {userId:'user-001',category:'内科系',subjectName:'免疫・膠原病',subjectId:'sub-immune',completedTopics:6,totalTopics:14},
-  {userId:'user-001',category:'外科系',subjectName:'一般外科',subjectId:'sub-gensurg',completedTopics:10,totalTopics:16},
-  {userId:'user-001',category:'外科系',subjectName:'整形外科',subjectId:'sub-ortho',completedTopics:7,totalTopics:14},
-  {userId:'user-001',category:'外科系',subjectName:'脳神経外科',subjectId:'sub-neuro-s',completedTopics:4,totalTopics:12},
-  {userId:'user-001',category:'外科系',subjectName:'心臓血管外科',subjectId:'sub-cardio-s',completedTopics:3,totalTopics:10},
-  {userId:'user-001',category:'マイナー',subjectName:'眼科',subjectId:'sub-eye',completedTopics:6,totalTopics:12},
-  {userId:'user-001',category:'マイナー',subjectName:'耳鼻咽喉科',subjectId:'sub-ent',completedTopics:4,totalTopics:12},
-  {userId:'user-001',category:'マイナー',subjectName:'皮膚科',subjectId:'sub-derm',completedTopics:3,totalTopics:10},
-  {userId:'user-001',category:'マイナー',subjectName:'泌尿器科',subjectId:'sub-uro',completedTopics:2,totalTopics:10},
-  {userId:'user-001',category:'マイナー',subjectName:'産婦人科',subjectId:'sub-obgyn',completedTopics:8,totalTopics:16},
-  {userId:'user-001',category:'マイナー',subjectName:'小児科',subjectId:'sub-peds',completedTopics:10,totalTopics:18},
-  {userId:'user-001',category:'公衆衛生',subjectName:'公衆衛生',subjectId:'sub-pubhealth',completedTopics:7,totalTopics:14},
-  {userId:'user-001',category:'公衆衛生',subjectName:'法医学',subjectId:'sub-legal',completedTopics:3,totalTopics:8},
-  {userId:'user-001',category:'公衆衛生',subjectName:'医療統計',subjectId:'sub-stats',completedTopics:5,totalTopics:10},
-  {userId:'user-001',category:'国試・CBT',subjectName:'CBT対策',subjectId:'sub-cbt',completedTopics:20,totalTopics:30},
-  {userId:'user-001',category:'国試・CBT',subjectName:'国試過去問',subjectId:'sub-kokushi',completedTopics:15,totalTopics:40},
-  {userId:'user-001',category:'国試・CBT',subjectName:'模試',subjectId:'sub-moshi',completedTopics:4,totalTopics:10}
-];
-
-// Generate study logs
-function generateStudyLogs(){
-  const logs=[];const subs=['sub-cardio','sub-anatomy','sub-pharma','sub-gastro','sub-resp','sub-patho','sub-cbt','sub-kokushi'];const today=new Date();
-  for(let d=0;d<14;d++){const date=new Date(today);date.setDate(date.getDate()-d);const n=Math.floor(Math.random()*4)+1;
-    for(let s=0;s<n;s++){const h=8+Math.floor(Math.random()*12);const dur=20+Math.floor(Math.random()*100);
-      const st=new Date(date);st.setHours(h,0,0,0);const en=new Date(st);en.setMinutes(en.getMinutes()+dur);
-      logs.push({id:`log-${d}-${s}`,userId:'user-001',subjectId:subs[Math.floor(Math.random()*subs.length)],durationMinutes:dur,startedAt:st.toISOString(),endedAt:en.toISOString()});}}
-  return logs;
-}
-const studyLogs = generateStudyLogs();
-
-const userStudyTotals = [
-  {userId:'user-001',name:'田中 太郎',weeklyMinutes:0,dailyMinutes:0},
-  {userId:'user-002',name:'佐藤 花子',weeklyMinutes:1850,dailyMinutes:290},
-  {userId:'user-003',name:'鈴木 一郎',weeklyMinutes:2100,dailyMinutes:340},
-  {userId:'user-004',name:'高橋 美咲',weeklyMinutes:1600,dailyMinutes:210},
-  {userId:'user-005',name:'伊藤 健太',weeklyMinutes:1950,dailyMinutes:310},
-  {userId:'user-006',name:'渡辺 さくら',weeklyMinutes:2250,dailyMinutes:360},
-  {userId:'user-007',name:'山本 大輝',weeklyMinutes:1400,dailyMinutes:180},
-  {userId:'user-008',name:'中村 愛',weeklyMinutes:1750,dailyMinutes:250}
-];
-
-// Calculate current user times
-(()=>{const now=new Date();const w=new Date(now);w.setDate(w.getDate()-7);const td=new Date(now);td.setHours(0,0,0,0);
-  const me=userStudyTotals.find(u=>u.userId==='user-001');
-  me.weeklyMinutes=studyLogs.filter(l=>new Date(l.startedAt)>=w).reduce((s,l)=>s+l.durationMinutes,0);
-  me.dailyMinutes=studyLogs.filter(l=>new Date(l.startedAt)>=td).reduce((s,l)=>s+l.durationMinutes,0);
-})();
-
-const posts = [
-  {id:'post-001',userId:'user-002',type:'question',title:'僧帽弁閉鎖不全症の聴診所見について',body:'僧帽弁閉鎖不全症で汎収縮期雑音が聞こえる理由がよくわかりません。大動脈弁狭窄症との鑑別ポイントも含めて教えていただけると助かります。',isAnonymous:false,createdAt:'2026-03-19T08:30:00Z',likes:5,
-    comments:[{id:'c-001',postId:'post-001',userId:'user-001',body:'MRは左室→左房への逆流が収縮期全体を通じて起こるから汎収縮期雑音になります。ASは駆出性だから菱形型の雑音パターンです。',isAnonymous:false,createdAt:'2026-03-19T08:45:00Z'},
-      {id:'c-002',postId:'post-001',userId:'user-003',body:'頸部への放散があればASを疑います。腋窩への放散ならMRです。',isAnonymous:false,createdAt:'2026-03-19T09:00:00Z'}]},
-  {id:'post-002',userId:'user-004',type:'question',title:'ネフローゼ症候群の分類で混乱しています',body:'微小変化型と膜性腎症の違いが覚えられません。まとめ方のコツがあれば教えてください。',isAnonymous:false,createdAt:'2026-03-18T22:15:00Z',likes:8,
-    comments:[{id:'c-003',postId:'post-002',userId:'user-005',body:'表で整理すると覚えやすいです！微小変化型：小児に多い、選択性蛋白尿、ステロイド著効。膜性腎症：成人に多い、非選択性蛋白尿。',isAnonymous:false,createdAt:'2026-03-18T22:40:00Z'}]},
-  {id:'post-003',userId:'user-006',type:'question',title:'薬理学のゴロ合わせを共有しませんか？',body:'β遮断薬の分類（ISA+/ISA-）やCa拮抗薬のDHP系/非DHP系の区別で良いゴロ合わせがあれば教えてください！',isAnonymous:true,createdAt:'2026-03-18T20:00:00Z',likes:12,comments:[]},
-  {id:'post-004',userId:'user-007',type:'activity',title:null,body:'循環器の勉強を開始しました 🫀',isAnonymous:false,createdAt:'2026-03-19T10:00:00Z',likes:3,comments:[]},
-  {id:'post-005',userId:'user-008',type:'activity',title:null,body:'生化学のまとめノートが完成しました 📘',isAnonymous:false,createdAt:'2026-03-19T09:30:00Z',likes:6,comments:[]},
-  {id:'post-006',userId:'user-003',type:'question',title:'CBT対策のおすすめ問題集',body:'CBT対策に「QAssist」と「medu4」のどちらが良いか迷っています。4年の皆さんはどちらを使っていますか？',isAnonymous:false,createdAt:'2026-03-18T15:00:00Z',likes:15,
-    comments:[{id:'c-004',postId:'post-006',userId:'user-001',body:'自分はQAssist使ってます。動画の解説もわかりやすいです。',isAnonymous:false,createdAt:'2026-03-18T15:20:00Z'},
-      {id:'c-005',postId:'post-006',userId:'user-006',body:'medu4の方がコンパクトで要点がまとまっている気がします。好みですね！',isAnonymous:false,createdAt:'2026-03-18T16:00:00Z'}]}
-];
-
-const examCountdowns = [
-  {id:'exam-001',name:'CBT',date:'2026-08-20T09:00:00+09:00',color:'#4ECDC4'},
-  {id:'exam-002',name:'本試験',date:'2027-02-06T09:00:00+09:00',color:'#45B7D1'},
-  {id:'exam-003',name:'内科学中間試験',date:'2026-05-15T09:00:00+09:00',color:'#F7DC6F'}
-];
-
-const activityFeed = [
-  {name:'山本 大輝',action:'循環器の勉強を開始しました',time:'10分前',icon:'🫀'},
-  {name:'中村 愛',action:'生化学のまとめノートが完成しました',time:'30分前',icon:'📘'},
-  {name:'佐藤 花子',action:'解剖学で2時間勉強しました',time:'1時間前',icon:'📖'},
-  {name:'伊藤 健太',action:'国試過去問を30問解きました',time:'2時間前',icon:'✏️'},
-  {name:'鈴木 一郎',action:'薬理学の進捗が80%になりました',time:'3時間前',icon:'🎯'},
-  {name:'渡辺 さくら',action:'呼吸器の勉強を開始しました',time:'4時間前',icon:'🫁'},
-  {name:'高橋 美咲',action:'質問を投稿しました',time:'5時間前',icon:'❓'}
-];
+const subjectProgress = [];
+const studyLogs = [];
+const userStudyTotals = [];
+const posts = [];
+const examCountdowns = [];
+const activityFeed = [];
 
 // ==================== THEME ====================
 let isDark = localStorage.getItem('medfocus-theme') !== 'light';
