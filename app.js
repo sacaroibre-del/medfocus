@@ -311,8 +311,22 @@ async function deleteStudyLog(id) {
 
 async function fetchPosts() {
   if (!supabase) return posts;
+  
+  // Try to fetch with full relationships first
   const { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
-  return error ? [] : data;
+  
+  if (error) {
+    console.warn('DEBUG: fetchPosts failed with relationships. Trying simple fetch (*). Error was:', error);
+    // Fallback: Just fetch posts and ignore replies/profiles if relationships aren't configured
+    const fallback = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+    if (fallback.error) {
+      console.error('DEBUG: fetchPosts ultimate fallback failed:', fallback.error);
+      return [];
+    }
+    return fallback.data.map(p => ({ ...p, post_replies: [] }));
+  }
+  
+  return data;
 }
 
 async function deletePost(postId) {
@@ -341,10 +355,22 @@ async function savePost(title, body, type, isAnonymous) {
     showToast('✅ 投稿しました！(デモ)');
     return;
   }
-  const { error } = await supabase.from('posts').insert([{ 
+  
+  // Try inserting with is_anonymous
+  let { error } = await supabase.from('posts').insert([{ 
     user_id: session.user.id, 
     title, body, type, is_anonymous: isAnonymous 
   }]);
+  
+  if (error && error.message && error.message.includes('is_anonymous')) {
+    console.warn('DEBUG: is_anonymous column probably missing. Trying without it.');
+    const fallback = await supabase.from('posts').insert([{ 
+      user_id: session.user.id, 
+      title, body, type 
+    }]);
+    error = fallback.error;
+  }
+
   if (error) showToast('❌ 投稿に失敗しました: ' + error.message);
   else showToast('✅ 投稿しました！');
 }
