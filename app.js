@@ -256,14 +256,14 @@ async function createGroup(name, iconUrl = null) {
 async function uploadImage(file, bucket = 'avatars') {
   if (!supabase || !session) return null;
   const ext = file.name.split('.').pop();
-  const fileName = `${session.user.id}_${Date.now()}.${ext}`;
-  const { error } = await supabase.storage.from(bucket).upload(fileName, file);
+  const filePath = `${session.user.id}/${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from(bucket).upload(filePath, file);
   if (error) {
     console.error('Upload error:', error);
     showToast('❌ アップロードに失敗しました: ' + error.message);
     return null;
   }
-  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(fileName);
+  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(filePath);
   return publicUrl;
 }
 
@@ -711,13 +711,8 @@ function renderSidebar(){
   const themeLabel=isDark?'ダークモード':'ライトモード';
 
   let avatarHtml = `<div class="sidebar-avatar" style="background:${c}">${ini}</div>`;
-  if (currentUser.avatar_url) {
-    const isEmoji = !currentUser.avatar_url.startsWith('http') && currentUser.avatar_url.length <= 4;
-    if (isEmoji) {
-      avatarHtml = `<div class="sidebar-avatar" style="background:rgba(148,163,184,0.1); font-size:1.4rem; display:flex; align-items:center; justify-content:center;">${currentUser.avatar_url}</div>`;
-    } else {
-      avatarHtml = `<div class="sidebar-avatar" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${currentUser.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
-    }
+  if (currentUser.avatar_url && currentUser.avatar_url.startsWith('http')) {
+    avatarHtml = `<div class="sidebar-avatar" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${currentUser.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
   }
 
   sb.innerHTML=`<div class="sidebar-header"><div class="sidebar-logo"><div class="sidebar-logo-icon">M</div><span class="sidebar-logo-text">MedFocus</span></div></div>
@@ -751,19 +746,12 @@ function renderPostCard(post){
   const isAnon = post.is_anonymous;
   const name = isAnon ? '匿名ユーザー' : (post.profiles?.full_name || (isMine ? currentUser.name : '名前未設定'));
   
-  // Icon Logic
   let col = isAnon ? '#64748b' : getAvatarColor(post.user_id);
   let ini = isAnon ? '👻' : getInitials(name);
   let avatarHtml = `<div class="avatar" style="background:${col}">${ini}</div>`;
   
-  if (!isAnon && post.profiles?.avatar_url) {
-    const avatarUrl = post.profiles.avatar_url;
-    const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
-    if (isEmoji) {
-      avatarHtml = `<div class="avatar" style="background:rgba(148,163,184,0.1); font-size:1.2rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`;
-    } else {
-      avatarHtml = `<div class="avatar" style="background:var(--color-bg-elevated);overflow:hidden;"><img src="${avatarUrl}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
-    }
+  if (!isAnon && post.profiles?.avatar_url && post.profiles.avatar_url.startsWith('http')) {
+    avatarHtml = `<div class="avatar" style="background:var(--color-bg-elevated);overflow:hidden;"><img src="${post.profiles.avatar_url}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
   } else if (isAnon) {
     avatarHtml = `<div class="avatar" style="background:rgba(148,163,184,0.15);color:var(--color-text-tertiary);font-size:1.2rem;">👻</div>`;
   }
@@ -782,9 +770,8 @@ function renderPostCard(post){
   }
   
   let gIconHtml = '';
-  if (groupIcon) {
-    const isEmoji = !groupIcon.startsWith('http') && groupIcon.length <= 4;
-    gIconHtml = isEmoji ? `<span style="margin-right:2px">${groupIcon}</span>` : `<img src="${groupIcon}" style="width:14px;height:14px;object-fit:cover;border-radius:2px;vertical-align:middle;margin-right:4px;" />`;
+  if (groupIcon && groupIcon.startsWith('http')) {
+    gIconHtml = `<img src="${groupIcon}" style="width:14px;height:14px;object-fit:cover;border-radius:2px;vertical-align:middle;margin-right:4px;" />`;
   }
 
   const groupBadge = groupName 
@@ -1384,11 +1371,8 @@ async function renderRanking(){
       <div class="ranking-podium">${pod.map((u,di)=>{const ar=di===0?(pod.length>1?2:1):di===1?1:3;const cr=ar===1?'👑':'';const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
         const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
         let avHtml = `<div class="avatar avatar-lg" style="background:${c}">${ini}</div>`;
-        if (avatarUrl) {
-          const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
-          avHtml = isEmoji 
-            ? `<div class="avatar avatar-lg" style="background:rgba(148,163,184,0.1); font-size:2rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`
-            : `<div class="avatar avatar-lg" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+        if (avatarUrl && avatarUrl.startsWith('http')) {
+          avHtml = `<div class="avatar avatar-lg" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
         }
         return`<div class="podium-item"><div class="podium-avatar">${cr?`<span class="podium-crown">${cr}</span>`:''}
           ${avHtml}</div>
@@ -1399,11 +1383,8 @@ async function renderRanking(){
         ${s.map((u,i)=>{const me=u.userId===currentUser.id;const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
           const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
           let avHtml = `<div class="avatar avatar-sm" style="background:${c}">${ini}</div>`;
-          if (avatarUrl) {
-            const isEmoji = !avatarUrl.startsWith('http') && avatarUrl.length <= 4;
-            avHtml = isEmoji 
-              ? `<div class="avatar avatar-sm" style="background:rgba(148,163,184,0.1); font-size:1rem; display:flex; align-items:center; justify-content:center;">${avatarUrl}</div>`
-              : `<div class="avatar avatar-sm" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+          if (avatarUrl && avatarUrl.startsWith('http')) {
+            avHtml = `<div class="avatar avatar-sm" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
           }
           return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div>${avHtml}<div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(u.total)}</div></div>`;}).join('')}</div>`;
     return groupTabs + podiumHtml + listHtml;
@@ -1541,15 +1522,8 @@ function renderSettings(){
       <h3 class="settings-section-title">👤 プロフィール設定</h3>
       <div class="settings-form">
         <div class="settings-field">
-          <label>アイコンURL / 絵文字</label>
-          <div style="display:flex; gap:8px; margin-bottom:8px;">
-            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🩺</button>
-            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🏥</button>
-            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">📚</button>
-            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">✍️</button>
-            <button class="btn btn-secondary btn-sm preset-emoji" style="padding:4px 8px;min-width:auto">🧪</button>
-          </div>
-          <input type="text" id="input-avatar" value="${currentUser.avatar_url || ''}" placeholder="例: 🩺 または https://..."/>
+          <label>アイコン（画像URL）</label>
+          <input type="text" id="input-avatar" value="${currentUser.avatar_url || ''}" placeholder="https://..."/>
           <div style="margin-top:8px">
             <button class="btn btn-secondary btn-sm" onclick="document.getElementById('input-avatar-file').click()" style="width:100%">📷 画像を選択・アップロード</button>
             <input type="file" id="input-avatar-file" accept="image/*" style="display:none" />
@@ -1578,14 +1552,7 @@ function renderSettings(){
           <div style="display:grid;grid-template-columns:50px 1fr;gap:12px;align-items:center">
             <div id="new-group-icon-preview" class="avatar" style="background:var(--color-bg-elevated);width:50px;height:50px;font-size:1.5rem;display:flex;align-items:center;justify-content:center;overflow:hidden;">👥</div>
             <div>
-              <div style="display:flex; gap:6px; margin-bottom:6px;">
-                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🏥</button>
-                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🧬</button>
-                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🧠</button>
-                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🩸</button>
-                <button class="btn btn-secondary btn-sm group-preset-emoji" style="padding:2px 6px;min-width:auto;font-size:0.8rem">🦴</button>
-              </div>
-              <input type="text" id="new-group-icon" placeholder="アイコン (例: 🏥 または URL)" style="font-size:0.9rem" />
+              <input type="text" id="new-group-icon" placeholder="アイコン画像URL" style="font-size:0.9rem" />
               <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;margin-top:4px;font-size:0.75rem">📷 画像を選択</button>
               <input type="file" id="new-group-icon-file" accept="image/*" style="display:none" />
             </div>
@@ -1665,32 +1632,20 @@ function renderSettings(){
     }
   });
 
-  // Live preview — avatar
   const updateAvatarPreview = (val) => {
     const el = document.getElementById('settings-avatar');
-    if (!val) {
+    if (!val || !val.startsWith('http')) {
       el.textContent = getInitials(document.getElementById('input-name').value || '?');
       el.style.background = getAvatarColor(currentUser.id);
       return;
     }
-    const isEmoji = !val.startsWith('http') && val.length <= 4;
-    el.innerHTML = isEmoji ? val : `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
-    el.style.fontSize = isEmoji ? '2rem' : '';
+    el.innerHTML = `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
     el.style.display = 'flex';
     el.style.alignItems = 'center';
     el.style.justifyContent = 'center';
-    if (!isEmoji) el.style.overflow = 'hidden';
+    el.style.overflow = 'hidden';
   };
   document.getElementById('input-avatar').addEventListener('input', e => updateAvatarPreview(e.target.value));
-  
-  // Preset buttons
-  document.querySelectorAll('.preset-emoji').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const inp = document.getElementById('input-avatar');
-      inp.value = btn.textContent;
-      updateAvatarPreview(inp.value);
-    });
-  });
 
   // Profile icon file selection
   document.getElementById('input-avatar-file').addEventListener('change', async e => {
@@ -1757,21 +1712,10 @@ function renderSettings(){
   const updateGroupIconPreview = (val) => {
     const el = document.getElementById('new-group-icon-preview');
     if (!el) return;
-    if (!val) { el.innerHTML = '👥'; el.style.fontSize = '1.5rem'; return; }
-    const isEmoji = !val.startsWith('http') && val.length <= 4;
-    el.innerHTML = isEmoji ? val : `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
-    el.style.fontSize = isEmoji ? '1.5rem' : '';
+    if (!val || !val.startsWith('http')) { el.innerHTML = '👥'; return; }
+    el.innerHTML = `<img src="${val}" style="width:100%;height:100%;object-fit:cover;" onerror="this.parentElement.innerHTML='?'"/>`;
   };
   document.getElementById('new-group-icon')?.addEventListener('input', e => updateGroupIconPreview(e.target.value));
-  document.querySelectorAll('.group-preset-emoji').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const inp = document.getElementById('new-group-icon');
-      if (inp) {
-        inp.value = btn.textContent;
-        updateGroupIconPreview(inp.value);
-      }
-    });
-  });
 
   // Group icon file selection
   document.getElementById('new-group-icon-file').addEventListener('change', async e => {
