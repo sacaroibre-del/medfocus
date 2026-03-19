@@ -142,9 +142,9 @@ async function createGroup(name) {
   if (!supabase || !session) return;
   const code = generateInviteCode();
   const { data: group, error: gErr } = await supabase.from('groups').insert([{ name, invite_code: code, created_by: session.user.id }]).select().single();
-  if (gErr) { showToast('❌ グループ作成失敗'); return; }
+  if (gErr) { showToast('❌ グループ作成失敗: ' + gErr.message); console.error('Group create error:', gErr); return; }
   const { error: mErr } = await supabase.from('group_members').insert([{ group_id: group.id, user_id: session.user.id, role: 'admin' }]);
-  if (mErr) showToast('❌ メンバー追加失敗');
+  if (mErr) showToast('❌ メンバー追加失敗: ' + mErr.message);
   else { showToast('✅ グループを作成しました！'); await fetchUserGroups(); renderSettings(); }
 }
 
