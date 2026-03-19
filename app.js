@@ -339,9 +339,14 @@ async function saveStudyLog(subjectId, durationMinutes, memo) {
   else showToast('✅ 勉強記録を保存しました！');
 }
 
-async function updateStudyLog(id, subjectName, durationMinutes) {
+async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo) {
   if (!supabase || !session) return;
-  const { error } = await supabase.from('study_logs').update({ subject_name: subjectName, duration_minutes: durationMinutes }).eq('id', id);
+  const { error } = await supabase.from('study_logs').update({ 
+    subject_name: subjectName, 
+    duration_minutes: durationMinutes,
+    started_at: startedAt,
+    memo: memo || null
+  }).eq('id', id);
   if (error) showToast('❌ 更新に失敗しました');
   else showToast('✅ 記録を更新しました！');
 }
@@ -552,7 +557,7 @@ function createBarChart(canvasId,labels,data){
 // ==================== STOPWATCH / TIMER ====================
 let timerInterval=null, elapsedSeconds=0, isRunning=false;
 let isCountdown=false, countdownSeconds=0, initialCountdownSeconds=0, isConfirmingLog=false;
-let pendingLogDuration=0;
+let pendingLogDuration=0, timerStartTime=0, baseElapsed=0, baseCountdown=0;
 
 function saveTimerState() {
   localStorage.setItem('medfocus_timer_v2', JSON.stringify({
@@ -582,47 +587,56 @@ function loadTimerState() {
 }
 
 function startSW(onTick){
-  if(isRunning && !timerInterval) { /* Allow auto-resume from loadTimerState */ }
+  if(isRunning && !timerInterval) { /* Allow auto-resume */ }
   else if(isRunning) return;
   isRunning=true;
+  timerStartTime = Date.now();
+  baseElapsed = elapsedSeconds;
+  baseCountdown = countdownSeconds;
   saveTimerState();
   timerInterval=setInterval(()=>{
+    const delta = Math.floor((Date.now() - timerStartTime)/1000);
+    elapsedSeconds = baseElapsed + delta;
     if(isCountdown) {
-      if(countdownSeconds > 0) {
-        countdownSeconds--;
-        elapsedSeconds++;
-      } else {
+      countdownSeconds = Math.max(0, baseCountdown - delta);
+      if(countdownSeconds === 0 && isRunning) {
         finishSession();
       }
-    } else {
-      elapsedSeconds++;
     }
-    if(elapsedSeconds % 5 === 0) saveTimerState(); // Periodically save
+    if(elapsedSeconds % 5 === 0) saveTimerState();
     if(onTick) onTick(isCountdown ? countdownSeconds : elapsedSeconds);
     else {
-      // If we are on study page, update UI even if onTick not passed
       const disp = document.getElementById('timer-display');
       if(disp) disp.innerHTML = fmtSW(isCountdown ? countdownSeconds : elapsedSeconds);
+      const ring = document.getElementById('timer-ring');
+      if(ring && isCountdown && initialCountdownSeconds > 0) {
+         const p = countdownSeconds / initialCountdownSeconds;
+         const circ = 2*Math.PI*140;
+         ring.style.strokeDashoffset = circ - (p * circ);
+      }
     }
-  }, 1000);
+  }, 200);
 }
 
 function finishSession() {
   pauseSW();
   pendingLogDuration = Math.floor(elapsedSeconds / 60);
   isConfirmingLog = true;
-  // Try to play a notification sound (beep)
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = audioCtx.createOscillator();
     osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
     osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
   } catch(e) { console.warn('Could not play notification sound:', e); }
-  
   if (typeof renderStudy === 'function') renderStudy();
 }
 
 function pauseSW(){
+  if(isRunning) {
+    const delta = Math.floor((Date.now() - timerStartTime)/1000);
+    elapsedSeconds = baseElapsed + delta;
+    if(isCountdown) countdownSeconds = Math.max(0, baseCountdown - delta);
+  }
   isRunning=false;
   if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
   saveTimerState();
@@ -632,6 +646,8 @@ function resetSW(){
   pauseSW();
   elapsedSeconds=0;
   countdownSeconds=0;
+  baseElapsed=0;
+  baseCountdown=0;
   isConfirmingLog=false;
   saveTimerState();
 }
@@ -1071,34 +1087,36 @@ async function renderStudy(){
 
         <!-- Confirmation Overlay -->
         ${isConfirmingLog ? `
-          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; background:rgba(15,23,42,0.9); backdrop-filter:blur(10px); z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-xl); text-align:center;">
-            <div class="celebration-icon" style="font-size:3rem; margin-bottom:var(--space-md);">🎉</div>
-            <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-text-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
-            <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg);">今日の学習を記録しましょう</p>
-            
-            <div class="confirm-form" style="width:100%; max-width:320px; display:flex; flex-direction:column; gap:16px; text-align:left;">
-              <div class="field">
-                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習時間 (分)</label>
-                <input type="number" id="confirm-duration" value="${pendingLogDuration}" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); font-size:1.1rem; font-weight:700;" />
-              </div>
-              <div class="field">
-                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習内容</label>
-                <div id="confirm-subject-wrapper">
-                  <select id="confirm-subject" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);" onchange="if(this.value==='custom') document.getElementById('confirm-subject-custom').style.display='block'; else document.getElementById('confirm-subject-custom').style.display='none';">
-                    <option value="">-- 未選択 --</option>
-                    ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
-                    <option value="custom" selected>✍️ 自由入力</option>
-                  </select>
-                  <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${(document.getElementById('study-subject')?.value==='custom'?document.getElementById('study-subject-custom')?.value:'') || ''}" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); margin-top:8px;" />
+          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-md); text-align:center;">
+            <div class="confirm-card animate-slide-up">
+              <div class="celebration-icon" style="margin-bottom:var(--space-md);">🎉</div>
+              <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
+              <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg); font-size:0.9rem;">今日の学習を記録しましょう</p>
+              
+              <div class="confirm-form" style="width:100%; display:flex; flex-direction:column; gap:16px; text-align:left;">
+                <div class="field">
+                  <label>学習時間 (分)</label>
+                  <input type="number" id="confirm-duration" value="${pendingLogDuration}" style="width:100%; font-size:1.2rem; font-weight:700; text-align:center;" />
                 </div>
-              </div>
-              <div class="field">
-                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">振り返りメモ</label>
-                <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); min-height:80px;"></textarea>
-              </div>
-              <div style="display:flex; gap:12px; margin-top:8px;">
-                <button class="btn btn-secondary" id="btn-discard-log" style="flex:1;">破棄</button>
-                <button class="btn btn-primary" id="btn-confirm-save" style="flex:2;">記録を保存</button>
+                <div class="field">
+                  <label>学習内容</label>
+                  <div id="confirm-subject-wrapper">
+                    <select id="confirm-subject" style="width:100%;" onchange="if(this.value==='custom') document.getElementById('confirm-subject-custom').style.display='block'; else document.getElementById('confirm-subject-custom').style.display='none';">
+                      <option value="">-- 未選択 --</option>
+                      ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
+                      <option value="custom" selected>✍️ 自由入力</option>
+                    </select>
+                    <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${(document.getElementById('study-subject')?.value==='custom'?document.getElementById('study-subject-custom')?.value:'') || ''}" style="width:100%; margin-top:8px;" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label>振り返りメモ</label>
+                  <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; min-height:80px;"></textarea>
+                </div>
+                <div style="display:flex; gap:12px; margin-top:8px;">
+                  <button class="btn btn-secondary" id="btn-discard-log" style="flex:1; justify-content:center;">破棄</button>
+                  <button class="btn btn-primary" id="btn-confirm-save" style="flex:2; justify-content:center;">記録を保存</button>
+                </div>
               </div>
             </div>
           </div>
@@ -1117,7 +1135,7 @@ async function renderStudy(){
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${l.started_at}" data-memo="${l.memo||''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}</div></div>
@@ -1344,14 +1362,85 @@ async function renderStudy(){
     const cat = e.target.dataset.cat; const top = e.target.dataset.topic; const checked = e.target.checked;
     await toggleChecklistItem(cat, top, checked); renderStudy();
   }));
-  document.querySelectorAll('.btn-log-action.edit').forEach(btn => btn.addEventListener('click', async (e) => {
-    const ds = e.currentTarget.dataset;
-    const newDurStr = prompt(`【${ds.subject}】の新しい勉強時間（分）を入力してください:`, ds.duration);
-    if(newDurStr !== null) {
-      const dur = parseInt(newDurStr);
-      if(!isNaN(dur) && dur > 0) { await updateStudyLog(ds.id, ds.subject, dur); renderStudy(); }
-      else { showToast('⚠️ 正しい分数を入力してください'); }
-    }
+  async function showEditLogModal(ds) {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay animate-fade-in';
+    modal.style.zIndex = '2000';
+    
+    // Parse started_at for date/time inputs
+    const d = new Date(ds.startedat);
+    const dateStr = d.toISOString().split('T')[0];
+    const timeStr = d.toTimeString().split(' ')[0].substring(0, 5);
+    
+    modal.innerHTML = `
+      <div class="modal-content animate-slide-up" style="max-width:400px;">
+        <div class="modal-header">
+          <div class="modal-title">学習記録の編集</div>
+          <button class="modal-close" id="close-edit-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>日付</label>
+            <input type="date" id="edit-log-date" value="${dateStr}" />
+          </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>開始時刻</label>
+            <input type="time" id="edit-log-time" value="${timeStr}" />
+          </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>学習時間 (分)</label>
+            <input type="number" id="edit-log-duration" value="${ds.duration}" />
+          </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>学習内容</label>
+            <select id="edit-log-subject">
+              ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}" ${s.name===ds.subject?'selected':''}>${s.name}</option>`).join('')}</optgroup>`).join('')}
+              <option value="custom" ${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?'selected':''}>✍️ その他/自由入力</option>
+            </select>
+            <input type="text" id="edit-log-subject-custom" value="${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?ds.subject:''}" style="margin-top:8px; display:${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?'block':'none'};" placeholder="内容を入力..." />
+          </div>
+          <div class="settings-field">
+            <label>メモ</label>
+            <textarea id="edit-log-memo" style="width:100%; min-height:60px;">${ds.memo}</textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="cancel-edit-log">キャンセル</button>
+          <button class="btn btn-primary" id="save-edit-log">保存する</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    const close = () => modal.remove();
+    document.getElementById('close-edit-modal').onclick = close;
+    document.getElementById('cancel-edit-log').onclick = close;
+    
+    const subSelect = document.getElementById('edit-log-subject');
+    const subCustom = document.getElementById('edit-log-subject-custom');
+    subSelect.onchange = () => { subCustom.style.display = subSelect.value === 'custom' ? 'block' : 'none'; };
+
+    document.getElementById('save-edit-log').onclick = async () => {
+      const newDate = document.getElementById('edit-log-date').value;
+      const newTime = document.getElementById('edit-log-time').value;
+      const newDur = parseInt(document.getElementById('edit-log-duration').value);
+      const subVal = subSelect.value === 'custom' ? subCustom.value : subSelect.options[subSelect.selectedIndex].text;
+      const newMemo = document.getElementById('edit-log-memo').value;
+
+      if (!newDate || !newTime || isNaN(newDur) || newDur <= 0 || !subVal) {
+        showToast('⚠️ 全ての項目を正しく入力してください');
+        return;
+      }
+
+      const newStartedAt = new Date(`${newDate}T${newTime}`).toISOString();
+      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo);
+      close();
+      renderStudy();
+    };
+  }
+
+  document.querySelectorAll('.btn-log-action.edit').forEach(btn => btn.addEventListener('click', (e) => {
+    showEditLogModal(e.currentTarget.dataset);
   }));
 }
 
