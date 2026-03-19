@@ -883,7 +883,7 @@ async function renderStudy(){
         <!-- Mode Switcher -->
         <div class="timer-mode-switcher" style="display:flex; justify-content:center; gap:8px; margin-bottom:var(--space-md); background:var(--color-bg-elevated); padding:4px; border-radius:var(--radius-md);">
           <button class="mode-tab ${!isCountdown?'active':''}" id="mode-up">ストップウォッチ</button>
-          <button class="mode-tab ${isCountdown?'active':''}" id="mode-down">カウントダウン</button>
+          <button class="mode-tab ${isCountdown?'active':''}" id="mode-down">タイマー</button>
         </div>
 
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
