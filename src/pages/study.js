@@ -55,16 +55,16 @@ export function renderStudy() {
           </div>
         </div>
 
-        <div class="stopwatch-memo" style="margin-bottom:var(--space-md);">
-          <input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/>
-        </div>
-
         <div class="stopwatch-controls">
           <button class="stopwatch-btn stopwatch-btn-reset" id="btn-reset" title="リセット">↺</button>
           <button class="stopwatch-btn ${state.isRunning ? 'stopwatch-btn-pause' : 'stopwatch-btn-start'}" id="btn-toggle" title="${state.isRunning ? '一時停止' : '開始'}">
             ${state.isRunning ? '⏸' : '▶'}
           </button>
           <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="保存して終了">⏹</button>
+        </div>
+
+        <div class="stopwatch-memo" style="margin-top:var(--space-md);margin-bottom:var(--space-sm);">
+          <input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/>
         </div>
 
         <div class="stopwatch-status ${state.isRunning ? 'recording' : ''}" id="timer-status">

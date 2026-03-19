@@ -494,12 +494,12 @@ async function renderStudy(){
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
         <div class="stopwatch-subject-selector"><select id="study-subject"><option value="">-- 科目を選択 --</option>${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}</select></div>
         <div class="stopwatch-display"><div class="stopwatch-ring"><svg viewBox="0 0 300 300"><circle class="ring-bg" cx="150" cy="150" r="140"/><circle class="ring-progress" id="timer-ring" cx="150" cy="150" r="140"/></svg><div class="stopwatch-time" id="timer-display">${fmtSW(elapsedSeconds)}</div></div></div>
-        <div class="stopwatch-memo" style="margin-bottom:var(--space-md);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/></div>
         <div class="stopwatch-controls">
           <button class="stopwatch-btn stopwatch-btn-reset" id="btn-reset" title="リセット">↺</button>
           <button class="stopwatch-btn ${isRunning?'stopwatch-btn-pause':'stopwatch-btn-start'}" id="btn-toggle">${isRunning?'⏸':'▶'}</button>
           <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="保存">⏹</button>
         </div>
+        <div class="stopwatch-memo" style="margin-top:var(--space-md);margin-bottom:var(--space-sm);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/></div>
         <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>記録中...':'開始ボタンを押して勉強を始めましょう'}</div>
       </div>
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
