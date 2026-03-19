@@ -212,6 +212,10 @@ const avatarColors=['#4ECDC4','#45B7D1','#96CEB4','#FFEAA7','#DDA0DD','#F7DC6F',
 function getAvatarColor(id){let h=0;for(let i=0;i<id.length;i++)h=id.charCodeAt(i)+((h<<5)-h);return avatarColors[Math.abs(h)%avatarColors.length];}
 
 // ==================== CHART HELPERS ====================
+const chartInstances = {};
+function destroyChart(id){if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];}}
+function destroyAllCharts(){Object.keys(chartInstances).forEach(destroyChart);}
+
 // ==================== SUPABASE DATA HELPERS ====================
 async function fetchStudyLogs() {
   if (!supabase || !session) return [];
