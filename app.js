@@ -682,13 +682,16 @@ async function renderRanking(){
       e.target.textContent = '保存中...'; e.target.disabled = true;
       try {
         if (supabase) {
-          const { error } = await supabase.from('exam_countdowns').insert([{ name, exam_date: dateStr }]);
+          const payload = { name, exam_date: dateStr };
+          if (session && session.user) payload.user_id = session.user.id;
+          const { error } = await supabase.from('exam_countdowns').insert([payload]);
           if (error) throw error;
           showToast('✅ カウントダウンを追加しました！');
           await fetchCountdowns(); renderRanking();
         }
       } catch (err) {
-        showToast('❌ 追加に失敗しました');
+        showToast('❌ 追加失敗: ' + (err.message || 'Error'));
+        console.error('Countdown add error:', err);
       } finally {
         e.target.textContent = origText; e.target.disabled = false;
       }
