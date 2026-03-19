@@ -640,8 +640,8 @@ function renderPostCard(post){
   const isMine = post.user_id === session?.user?.id;
   
   let cmts=''; 
-  if (post.type === 'question') {
-    const replies = post.post_replies || [];
+  const replies = post.post_replies || [];
+  {
     const repliesHtml = replies.map(r => {
       const rName = r.profiles ? r.profiles.full_name : '匿名ユーザー';
       const rCol = getAvatarColor(r.user_id);
