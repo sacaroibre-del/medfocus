@@ -632,6 +632,15 @@ async function renderRanking(){
           return`<div class="countdown-card"><div style="position:absolute;top:0;left:0;right:0;height:3px;background:${e.color||'#4ECDC4'}"></div><div class="countdown-name">${e.name}</div><div class="countdown-date">${dt}</div><div class="countdown-days"><span class="countdown-number" style="color:${e.color||'#4ECDC4'}">${d}</span><span class="countdown-label">日</span></div></div>`;
         }).join('')}
         <button class="btn btn-secondary btn-sm" id="btn-add-countdown" style="margin-top:var(--space-sm);width:100%;justify-content:center">＋ 追加する</button>
+        <div id="countdown-form-container" class="card animate-slide-up" style="display:none;margin-top:var(--space-sm);padding:var(--space-md);border-color:var(--color-border-focus);">
+          <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--color-accent-teal);">＋ 目標を追加</div>
+          <input type="text" id="cd-title-input" placeholder="イベント名 (例: 国家試験)" style="width:100%;font-size:0.85rem;margin-bottom:8px;" />
+          <input type="date" id="cd-date-input" style="width:100%;font-size:0.85rem;margin-bottom:12px;font-family:inherit;" />
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary btn-sm" id="btn-submit-cd" style="flex:1;justify-content:center;">保存</button>
+            <button class="btn btn-secondary btn-sm" id="btn-cancel-cd" style="flex:1;justify-content:center;">キャンセル</button>
+          </div>
+        </div>
       </div></div>`;
       
   const mainWrapper = document.getElementById('ranking-main');
@@ -647,19 +656,44 @@ async function renderRanking(){
     }
   });
 
-  document.getElementById('btn-add-countdown')?.addEventListener('click', async (e) => {
-    const name = window.prompt('試験や目標の名称を入力してください（例：国家試験、CBT）：');
-    if (!name) return;
-    const dateStr = window.prompt('目標日をハイフン区切りで入力してください（例：2026-10-15）：');
-    if (!dateStr || isNaN(Date.parse(dateStr))) { showToast('❌ 正しい日付形式で入力してください'); return; }
-    
-    e.target.textContent = '追加中...';
-    if (supabase) {
-      const { error } = await supabase.from('exam_countdowns').insert([{ name, exam_date: dateStr }]);
-      if (error) { showToast('❌ 追加に失敗しました'); e.target.textContent = '＋ 追加する'; }
-      else { showToast('✅ カウントダウンを追加しました！'); await fetchCountdowns(); renderRanking(); }
-    }
-  });
+  const btnAddCd = document.getElementById('btn-add-countdown');
+  const cdForm = document.getElementById('countdown-form-container');
+  const btnSubmitCd = document.getElementById('btn-submit-cd');
+  const btnCancelCd = document.getElementById('btn-cancel-cd');
+
+  if (btnAddCd && cdForm) {
+    btnAddCd.addEventListener('click', () => {
+      btnAddCd.style.display = 'none';
+      cdForm.style.display = 'block';
+    });
+    btnCancelCd.addEventListener('click', () => {
+      cdForm.style.display = 'none';
+      btnAddCd.style.display = 'flex';
+      document.getElementById('cd-title-input').value = '';
+      document.getElementById('cd-date-input').value = '';
+    });
+    btnSubmitCd.addEventListener('click', async (e) => {
+      const name = document.getElementById('cd-title-input').value.trim();
+      const dateStr = document.getElementById('cd-date-input').value;
+      if (!name) { showToast('⚠️ イベント名を入力してください'); return; }
+      if (!dateStr) { showToast('⚠️ 日付を選択してください'); return; }
+      
+      const origText = e.target.textContent;
+      e.target.textContent = '保存中...'; e.target.disabled = true;
+      try {
+        if (supabase) {
+          const { error } = await supabase.from('exam_countdowns').insert([{ name, exam_date: dateStr }]);
+          if (error) throw error;
+          showToast('✅ カウントダウンを追加しました！');
+          await fetchCountdowns(); renderRanking();
+        }
+      } catch (err) {
+        showToast('❌ 追加に失敗しました');
+      } finally {
+        e.target.textContent = origText; e.target.disabled = false;
+      }
+    });
+  }
 }
 
 

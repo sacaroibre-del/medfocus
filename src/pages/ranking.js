@@ -87,10 +87,50 @@ export function renderRanking() {
       <div id="ranking-main">${renderRankingContent(currentPeriod)}</div>
       <div class="countdown-section">
         <div style="font-size:var(--font-size-lg);font-weight:600;margin-bottom:var(--space-sm)">⏰ 試験カウントダウン</div>
+        ${examCountdowns.length === 0 ? '<div class="card"><div class="card-body" style="color:var(--color-text-secondary);font-size:0.9rem">登録されているカウントダウンはありません</div></div>' : ''}
         ${examCountdowns.map(e => renderCountdownCard(e)).join('')}
+        
+        <button class="btn btn-secondary btn-sm" id="btn-add-countdown" style="margin-top:var(--space-sm);width:100%;justify-content:center">＋ 追加する</button>
+        <div id="countdown-form-container" class="card animate-slide-up" style="display:none;margin-top:var(--space-sm);padding:var(--space-md);border-color:var(--color-border-focus);">
+          <div style="font-size:0.85rem;font-weight:600;margin-bottom:8px;color:var(--color-accent-teal);">＋ 目標を追加</div>
+          <input type="text" id="cd-title-input" placeholder="イベント名 (例: 国家試験)" style="width:100%;font-size:0.85rem;margin-bottom:8px;" />
+          <input type="date" id="cd-date-input" style="width:100%;font-size:0.85rem;margin-bottom:12px;font-family:inherit;" />
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-primary btn-sm" id="btn-submit-cd" style="flex:1;justify-content:center;">保存</button>
+            <button class="btn btn-secondary btn-sm" id="btn-cancel-cd" style="flex:1;justify-content:center;">キャンセル</button>
+          </div>
+        </div>
       </div>
     </div>
   `;
+
+  const btnAddCd = document.getElementById('btn-add-countdown');
+  const cdForm = document.getElementById('countdown-form-container');
+  const btnSubmitCd = document.getElementById('btn-submit-cd');
+  const btnCancelCd = document.getElementById('btn-cancel-cd');
+
+  if (btnAddCd && cdForm) {
+    btnAddCd.addEventListener('click', () => {
+      btnAddCd.style.display = 'none';
+      cdForm.style.display = 'block';
+    });
+    btnCancelCd.addEventListener('click', () => {
+      cdForm.style.display = 'none';
+      btnAddCd.style.display = 'flex';
+      document.getElementById('cd-title-input').value = '';
+      document.getElementById('cd-date-input').value = '';
+    });
+    btnSubmitCd.addEventListener('click', () => {
+      const name = document.getElementById('cd-title-input').value.trim();
+      const dateStr = document.getElementById('cd-date-input').value;
+      if (!name) { alert('⚠️ イベント名を入力してください'); return; }
+      if (!dateStr) { alert('⚠️ 日付を選択してください'); return; }
+      
+      examCountdowns.push({ id: 'cd-' + Date.now(), name, examDate: dateStr, color: '#4ECDC4' });
+      alert('✅ カウントダウンを追加しました！');
+      renderRanking();
+    });
+  }
 
   // Period toggle
   container.addEventListener('click', (e) => {
