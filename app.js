@@ -46,7 +46,8 @@ let currentRoute = '/';
 // ==================== DATA ====================
 const currentUser = {
   id: '', name: '未設定', email: '',
-  university: '未設定', grade: 1, bio: ''
+  university: '未設定', grade: 1, bio: '',
+  daily_goal: 60
 };
 
 const users = [];
@@ -251,6 +252,22 @@ async function createGroup(name, iconUrl = null) {
   const { error: mErr } = await supabase.from('group_members').insert([{ group_id: group.id, user_id: session.user.id, role: 'admin' }]);
   if (mErr) showToast('❌ メンバー追加失敗: ' + mErr.message);
   else { showToast('✅ グループを作成しました！'); await fetchUserGroups(); renderSettings(); }
+}
+
+async function updateGroup(groupId, name, iconUrl) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('groups').update({
+    name,
+    icon_url: iconUrl
+  }).eq('id', groupId).eq('created_by', session.user.id);
+  
+  if (error) {
+    showToast('❌ 更新に失敗しました: ' + error.message);
+    return;
+  }
+  showToast('✅ グループ情報を更新しました');
+  await fetchUserGroups();
+  renderSettings();
 }
 
 async function uploadImage(file, bucket = 'avatars') {
@@ -746,12 +763,16 @@ function renderPostCard(post){
   const isAnon = post.is_anonymous;
   const name = isAnon ? '匿名ユーザー' : (post.profiles?.full_name || (isMine ? currentUser.name : '名前未設定'));
   
+  // Icon Logic
   let col = isAnon ? '#64748b' : getAvatarColor(post.user_id);
   let ini = isAnon ? '👻' : getInitials(name);
   let avatarHtml = `<div class="avatar" style="background:${col}">${ini}</div>`;
   
-  if (!isAnon && post.profiles?.avatar_url && post.profiles.avatar_url.startsWith('http')) {
-    avatarHtml = `<div class="avatar" style="background:var(--color-bg-elevated);overflow:hidden;"><img src="${post.profiles.avatar_url}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
+  // Use currentUser.avatar_url for immediate reflection if it's the current user's post
+  const avatarToUse = (!isAnon && isMine) ? currentUser.avatar_url : post.profiles?.avatar_url;
+
+  if (!isAnon && avatarToUse && avatarToUse.startsWith('http')) {
+    avatarHtml = `<div class="avatar" style="background:var(--color-bg-elevated);overflow:hidden;"><img src="${avatarToUse}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
   } else if (isAnon) {
     avatarHtml = `<div class="avatar" style="background:rgba(148,163,184,0.15);color:var(--color-text-tertiary);font-size:1.2rem;">👻</div>`;
   }
@@ -900,7 +921,14 @@ async function renderDashboard(){
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
     <div class="dashboard-stats">
       <div class="stat-card animate-slide-up"><div class="stat-label">📊 総合進捗率</div><div class="stat-value">${overall}<span class="stat-unit">%</span></div><div class="stat-change positive">▲ ${compT}/${totalT} トピック完了</div></div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.05s"><div class="stat-label">⏱ 今日の勉強</div><div class="stat-value">${formatMinutes(todayMin)}</div><div class="stat-change positive">▲ 目標まであと少し</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.05s">
+        <div class="stat-label">🎯 今日の目標進捗</div>
+        <div class="stat-value">${Math.min(100, Math.round((todayMin / (currentUser.daily_goal || 60)) * 100))}<span class="stat-unit">%</span></div>
+        <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:3px; margin-top:8px; overflow:hidden;">
+          <div style="width:${Math.min(100, (todayMin / (currentUser.daily_goal || 60)) * 100)}%; height:100%; background:var(--color-accent-teal);"></div>
+        </div>
+        <div class="stat-change positive" style="margin-top:4px">目標: ${currentUser.daily_goal || 60}分 / 現在: ${todayMin}分</div>
+      </div>
       <div class="stat-card animate-slide-up" style="animation-delay:.1s"><div class="stat-label">🔥 連続達成</div><div class="stat-value">${streak}<span class="stat-unit">日</span></div><div class="stat-change positive">▲ 自己ベスト更新中！</div></div>
       <div class="stat-card animate-slide-up" style="animation-delay:.15s"><div class="stat-label">⏳ 総学習時間</div><div class="stat-value">${Math.floor(totalMinutes/60)}<span class="stat-unit">時間</span></div><div class="stat-change positive">▲ 1日平均 ${formatMinutes(avgMin)}</div></div>
     </div>
@@ -1369,7 +1397,8 @@ async function renderRanking(){
       const podiumHtml = `<div class="card animate-slide-up"><div class="card-header"><div class="card-title">🏆 表彰台</div>
       <div class="tabs" style="max-width:240px;margin:0"><button class="tab ${p==='daily'?'active':''}" data-period="daily">今日</button><button class="tab ${p==='weekly'?'active':''}" data-period="weekly">今週</button></div></div>
       <div class="ranking-podium">${pod.map((u,di)=>{const ar=di===0?(pod.length>1?2:1):di===1?1:3;const cr=ar===1?'👑':'';const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
-        const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
+        // Immediate reflection for ranking
+        const avatarUrl = (u.userId === (session?.user?.id || currentUser.id)) ? currentUser.avatar_url : (u.avatarUrl || u.profiles?.avatar_url);
         let avHtml = `<div class="avatar avatar-lg" style="background:${c}">${ini}</div>`;
         if (avatarUrl && avatarUrl.startsWith('http')) {
           avHtml = `<div class="avatar avatar-lg" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
@@ -1380,8 +1409,9 @@ async function renderRanking(){
           <div class="podium-bar">${ar}</div></div>`;}).join('')}</div></div>`;
 
     const listHtml = `<div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 メンバーランキング</div></div>
-        ${s.map((u,i)=>{const me=u.userId===currentUser.id;const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
-          const avatarUrl = u.avatarUrl || u.profiles?.avatar_url;
+        ${s.map((u,i)=>{const me=u.userId===(session?.user?.id || currentUser.id);const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
+          // Immediate reflection for ranking list
+          const avatarUrl = me ? currentUser.avatar_url : (u.avatarUrl || u.profiles?.avatar_url);
           let avHtml = `<div class="avatar avatar-sm" style="background:${c}">${ini}</div>`;
           if (avatarUrl && avatarUrl.startsWith('http')) {
             avHtml = `<div class="avatar avatar-sm" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${avatarUrl}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
@@ -1486,12 +1516,16 @@ function renderSettings(){
                     : g.icon_url)
                 : '👥'}
             </div>
-            <div>
-              <h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4>
-              <div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div>
-            </div>
+          <div>
+            <h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4>
+            <div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div>
           </div>
-          ${g.role === 'admin' ? '<span class="badge badge-teal" style="font-weight:700">👑 管理者</span>' : `<button class="btn btn-secondary btn-sm btn-leave-group" data-id="${g.id}" style="color:var(--color-accent-pink);border-color:rgba(241,148,138,0.3)">退出</button>`}
+          <div style="display:flex;gap:8px;align-items:center">
+            ${g.created_by === (session?.user?.id || currentUser.id) 
+              ? `<button class="btn btn-secondary btn-sm edit-group-btn" data-id="${g.id}" data-name="${g.name}" data-icon="${g.icon_url || ''}">編集</button>` 
+              : ''}
+            ${g.role === 'admin' ? '<span class="badge badge-teal" style="font-weight:700">👑 管理者</span>' : `<button class="btn btn-secondary btn-sm btn-leave-group" data-id="${g.id}" style="color:var(--color-accent-pink);border-color:rgba(241,148,138,0.3)">退出</button>`}
+          </div>
         </div>
       </div>
     `).join('');
@@ -1534,6 +1568,9 @@ function renderSettings(){
         <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
         <div class="settings-field"><label>学年</label>
           <select id="input-grade">${[1,2,3,4,5,6].map(gr=>`<option value="${gr}" ${gr===currentUser.grade?'selected':''}>${gr}年</option>`).join('')}</select>
+        </div>
+        <div class="settings-field"><label>🔥 1日の学習目標 (分)</label>
+          <input type="number" id="input-goal" value="${currentUser.daily_goal || 60}" min="1" max="1440" />
         </div>
         <div class="settings-row">
           <button class="btn btn-primary" id="save-profile-btn" style="width:100%;justify-content:center">💾 プロフィールを保存</button>
@@ -1680,28 +1717,32 @@ function renderSettings(){
     const newName=document.getElementById('input-name').value.trim();
     const newAvatar=document.getElementById('input-avatar').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
-    const newGrade=parseInt(document.getElementById('input-grade').value);
-    const isPublic = document.getElementById('input-public').checked;
-    if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
-    
-    e.target.textContent = '保存中...';
-    if (supabase && session) {
-      const { error } = await supabase.from('profiles').upsert({
-        id: session.user.id,
-        full_name: newName,
-        avatar_url: newAvatar,
-        university: newUniv,
-        grade: newGrade,
-        is_public: isPublic
-      });
-      if (error) { showToast('❌ 保存に失敗しました: ' + error.message); e.target.textContent = '💾 プロフィールを保存'; return; }
-    }
+      const newGrade=parseInt(document.getElementById('input-grade').value);
+      const isPublic = document.getElementById('input-public').checked;
+      const newGoal = parseInt(document.getElementById('input-goal').value) || 60;
+      
+      if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
+      
+      e.target.textContent = '保存中...';
+      if (supabase && session) {
+        const { error } = await supabase.from('profiles').upsert({
+          id: session.user.id,
+          full_name: newName,
+          avatar_url: newAvatar,
+          university: newUniv,
+          grade: newGrade,
+          is_public: isPublic,
+          daily_goal: newGoal
+        });
+        if (error) { showToast('❌ 保存に失敗しました: ' + error.message); e.target.textContent = '💾 プロフィールを保存'; return; }
+      }
 
-    currentUser.name=newName;
-    currentUser.avatar_url=newAvatar;
-    currentUser.university=newUniv||'未設定';
-    currentUser.grade=newGrade;
-    currentUser.is_public=isPublic;
+      currentUser.name=newName;
+      currentUser.avatar_url=newAvatar;
+      currentUser.university=newUniv||'未設定';
+      currentUser.grade=newGrade;
+      currentUser.is_public=isPublic;
+      currentUser.daily_goal=newGoal;
     renderSidebar();
     showToast('✅ プロフィールを保存しました！');
     e.target.textContent = '💾 プロフィールを保存';
@@ -1731,6 +1772,20 @@ function renderSettings(){
       updateGroupIconPreview(url);
       showToast('✅ 画像を準備しました');
     }
+  });
+
+  // Group Edit Logic
+  document.querySelectorAll('.edit-group-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const gid = btn.dataset.id;
+      const nm = btn.dataset.name;
+      const ic = btn.dataset.icon;
+      const newName = prompt('新しいグループ名', nm);
+      if (newName === null) return;
+      const newIcon = prompt('新しいアイコン (URLまたは絵文字)', ic);
+      if (newIcon === null) return;
+      updateGroup(gid, newName, newIcon);
+    });
   });
 
   // Group Create/Join logic
@@ -1836,6 +1891,7 @@ async function initApp(){
           currentUser.university = profile.university;
           currentUser.grade = profile.grade;
           currentUser.avatar_url = profile.avatar_url;
+          currentUser.daily_goal = profile.daily_goal || 60;
         }
       }
       supabase.auth.onAuthStateChange(async (_event, newSession) => {
@@ -1848,6 +1904,7 @@ async function initApp(){
             currentUser.university = profile.university;
             currentUser.grade = profile.grade;
             currentUser.avatar_url = profile.avatar_url;
+            currentUser.daily_goal = profile.daily_goal || 60;
           }
           await fetchUserGroups();
         }
