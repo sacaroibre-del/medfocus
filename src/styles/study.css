@@ -1,0 +1,255 @@
+/* ============================================================
+   Study Timer Page Styles
+   ============================================================ */
+
+.study-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-xl);
+}
+
+/* Stopwatch */
+.stopwatch-card {
+  text-align: center;
+  padding: var(--space-2xl) var(--space-xl);
+  position: relative;
+  overflow: hidden;
+}
+
+.stopwatch-card::before {
+  content: '';
+  position: absolute;
+  top: -50%;
+  left: -50%;
+  width: 200%;
+  height: 200%;
+  background: radial-gradient(ellipse at center, rgba(78, 205, 196, 0.05), transparent 70%);
+  pointer-events: none;
+}
+
+.stopwatch-subject-selector {
+  margin-bottom: var(--space-xl);
+}
+
+.stopwatch-subject-selector select {
+  width: 100%;
+  max-width: 300px;
+  padding: var(--space-sm) var(--space-md);
+  font-size: var(--font-size-base);
+  background: var(--color-bg-elevated);
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 16px;
+  padding-right: 36px;
+}
+
+.stopwatch-display {
+  position: relative;
+  margin-bottom: var(--space-xl);
+}
+
+.stopwatch-ring {
+  width: 280px;
+  height: 280px;
+  margin: 0 auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stopwatch-ring svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.stopwatch-ring .ring-bg {
+  fill: none;
+  stroke: var(--color-bg-elevated);
+  stroke-width: 4;
+}
+
+.stopwatch-ring .ring-progress {
+  fill: none;
+  stroke: url(#timerGradient);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 880;
+  stroke-dashoffset: 880;
+  transition: stroke-dashoffset 1s linear;
+}
+
+.stopwatch-time {
+  font-size: var(--font-size-4xl);
+  font-weight: 800;
+  letter-spacing: -2px;
+  font-variant-numeric: tabular-nums;
+  z-index: 1;
+}
+
+.stopwatch-time .seconds {
+  font-size: var(--font-size-2xl);
+  color: var(--color-text-secondary);
+}
+
+.stopwatch-controls {
+  display: flex;
+  justify-content: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.stopwatch-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  transition: all var(--transition-fast);
+}
+
+.stopwatch-btn-start {
+  background: var(--gradient-primary);
+  color: var(--color-bg-primary);
+  box-shadow: var(--shadow-glow-teal);
+}
+
+.stopwatch-btn-start:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 30px rgba(78, 205, 196, 0.3);
+}
+
+.stopwatch-btn-pause {
+  background: rgba(247, 220, 111, 0.15);
+  color: var(--color-accent-yellow);
+}
+
+.stopwatch-btn-pause:hover {
+  background: rgba(247, 220, 111, 0.25);
+}
+
+.stopwatch-btn-stop {
+  background: rgba(241, 148, 138, 0.15);
+  color: var(--color-accent-pink);
+}
+
+.stopwatch-btn-stop:hover {
+  background: rgba(241, 148, 138, 0.25);
+}
+
+.stopwatch-btn-reset {
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+}
+
+.stopwatch-btn-reset:hover {
+  background: var(--color-bg-card-hover);
+}
+
+.stopwatch-status {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.stopwatch-status.recording {
+  color: var(--color-accent-teal);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.stopwatch-status .status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent-teal);
+  margin-right: var(--space-xs);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+/* Study log */
+.study-log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.study-log-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.study-log-day {
+  margin-bottom: var(--space-md);
+}
+
+.study-log-day-header {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.study-log-day-header .day-total {
+  color: var(--color-accent-teal);
+  font-weight: 700;
+}
+
+.study-log-entry {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  border: 1px solid transparent;
+  transition: all var(--transition-fast);
+}
+
+.study-log-entry:hover {
+  border-color: var(--color-border-hover);
+}
+
+.study-log-subject {
+  flex: 1;
+  font-weight: 500;
+}
+
+.study-log-duration {
+  font-weight: 600;
+  color: var(--color-accent-teal);
+}
+
+.study-log-time {
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-xs);
+}
+
+/* Weekly chart */
+.weekly-chart-container {
+  margin-top: var(--space-lg);
+}
+
+.weekly-chart-container canvas {
+  max-height: 250px;
+}
+
+@media (max-width: 1200px) {
+  .study-layout {
+    grid-template-columns: 1fr;
+  }
+}
