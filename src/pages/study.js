@@ -1,7 +1,7 @@
 // ============================================================
 // Study Timer Page
 // ============================================================
-import { subjectCategories, studyLogs } from '../data/mockData.js';
+import { subjectCategories, studyLogs, CBT_CHECKLIST, KOKUSHI_CHECKLIST, userChecklistProgress } from '../data/mockData.js';
 import { startStopwatch, pauseStopwatch, resetStopwatch, formatStopwatchTime, getStopwatchState } from '../components/stopwatch.js';
 import { createBarChart } from '../components/charts.js';
 import { formatMinutes } from '../utils/helpers.js';
@@ -103,6 +103,54 @@ export function renderStudy() {
                 }).join('')}
               </div>`;
           }).join('')}
+        </div>
+      </div>
+    </div>
+    
+    <div class="card animate-slide-up" style="animation-delay:0.2s;margin-top:var(--space-lg);">
+      <div class="card-header" style="border-bottom:1px solid rgba(148,163,184,0.1);padding-bottom:var(--space-sm);flex-wrap:wrap;gap:var(--space-sm);">
+        <div class="card-title">✅ 達成度チェックリスト</div>
+        <div class="filter-tabs" style="margin:0;padding:0;">
+            <button class="filter-tab active" id="tab-cbt">CBT対策</button>
+            <button class="filter-tab" id="tab-kokushi">国家試験対策</button>
+        </div>
+      </div>
+      <div id="checklist-view-cbt">
+        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
+          ${CBT_CHECKLIST.map(cat => `
+            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
+              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
+              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${userChecklistProgress.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                ${cat.topics.map(topic => {
+                  const isChecked = userChecklistProgress.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
+                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                  </label>`;
+                }).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div id="checklist-view-kokushi" style="display:none;">
+        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
+          ${KOKUSHI_CHECKLIST.map(cat => `
+            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
+              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
+              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${userChecklistProgress.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                ${cat.topics.map(topic => {
+                  const isChecked = userChecklistProgress.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
+                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                  </label>`;
+                }).join('')}
+              </div>
+            </div>
+          `).join('')}
         </div>
       </div>
     </div>
@@ -210,6 +258,41 @@ export function renderStudy() {
           alert('⚠️ 正しい分数を入力してください');
         }
       }
+    });
+  });
+
+  // Tab controls
+  const tabCbt = document.getElementById('tab-cbt');
+  const tabKokushi = document.getElementById('tab-kokushi');
+  const viewCbt = document.getElementById('checklist-view-cbt');
+  const viewKokushi = document.getElementById('checklist-view-kokushi');
+  
+  if(window.activeChecklistTab === 'kokushi') {
+    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
+    viewKokushi.style.display='block'; viewCbt.style.display='none';
+  }
+  
+  tabCbt?.addEventListener('click', () => {
+    window.activeChecklistTab = 'cbt';
+    tabCbt.classList.add('active'); tabKokushi.classList.remove('active');
+    viewCbt.style.display='block'; viewKokushi.style.display='none';
+  });
+  tabKokushi?.addEventListener('click', () => {
+    window.activeChecklistTab = 'kokushi';
+    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
+    viewKokushi.style.display='block'; viewCbt.style.display='none';
+  });
+
+  // Checkbox event listeners
+  document.querySelectorAll('.med-check-item').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const cat = e.target.dataset.cat;
+      const top = e.target.dataset.topic;
+      const checked = e.target.checked;
+      const ex = userChecklistProgress.find(c => c.category === cat && c.topic === top);
+      if (ex) ex.completed = checked;
+      else userChecklistProgress.push({ category: cat, topic: top, completed: checked });
+      renderStudy(); // Re-render to update percentages
     });
   });
 }

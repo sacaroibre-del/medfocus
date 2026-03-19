@@ -138,11 +138,20 @@ async function fetchUserGroups() {
   if (!error && data) myGroups = data.map(d => ({ ...d.groups, role: d.role }));
 }
 
-const MEDICAL_CHECKLIST = [
-  { category: '基礎医学', color: '#4ECDC4', topics: ['解剖学', '生理学', '生化学', '薬理学', '病理学', '微生物学・感染症学', '免疫学'] },
-  { category: '臨床内科', color: '#45B7D1', topics: ['循環器内科', '消化器内科', '呼吸器内科', '神経内科', '血液内科', '腎臓内科', '内分泌内科', '膠原病内科'] },
-  { category: '臨床外科', color: '#96CEB4', topics: ['消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科', '整形外科', '産婦人科', '小児科', '精神科', '救急科', '麻酔科'] },
-  { category: '社会医学', color: '#F7DC6F', topics: ['公衆衛生学', '疫学', '法医学', '産業医学'] }
+const CBT_CHECKLIST = [
+  { category: 'ブロック1 (基礎医学)', color: '#4ECDC4', topics: ['解剖学・組織学', '生理学', '生化学', '薬理学', '病理学', '微生物・感染症学', '免疫学'] },
+  { category: 'ブロック2,3 (臨床・全身)', color: '#45B7D1', topics: ['循環器', '呼吸器', '消化器', '腎・泌尿器', '神経', '内分泌・代謝', '血液', 'アレルギー・膠原病'] },
+  { category: 'ブロック2,3 (臨床・各科)', color: '#96CEB4', topics: ['外科学一般・麻酔科', '小児科', '産婦人科', '精神科', '救急・中毒科', '眼科', '耳鼻咽喉科', '皮膚科', '放射線科'] },
+  { category: 'ブロック4 (社会医学)', color: '#F7DC6F', topics: ['公衆衛生学', '法医学'] },
+  { category: 'ブロック5,6 (連問・多選択)', color: '#BB8FCE', topics: ['ブロック5 臨床実地問題', 'ブロック6 順次解答4連問'] }
+];
+
+const KOKUSHI_CHECKLIST = [
+  { category: '必修・基本事項', color: '#4ECDC4', topics: ['医師のプロフェッショナリズム', '医学総論（必修）', '医学各論（必修）', '公衆衛生（必修）', '救急初期対応'] },
+  { category: '医学総論', color: '#45B7D1', topics: ['症候学・臨床推論', '身体診察', '検査生理・画像', '治療・処置'] },
+  { category: '医学各論（内科・外科）', color: '#96CEB4', topics: ['循環器', '呼吸器', '消化管・肝胆膵', '腎臓', '内分泌・代謝', '血液・造血器', '免疫・アレルギー', '感染症'] },
+  { category: '医学各論（マイナー・他）', color: '#F7DC6F', topics: ['神経', '精神科', '小児科', '産科・婦人科', '眼科', '耳鼻咽喉科', '整形外科', '皮膚科', '泌尿器科', '放射線科'] },
+  { category: '社会医学・その他', color: '#F1948A', topics: ['公衆衛生・予防医学', '統計・疫学', '関係法規・医療制度'] }
 ];
 let checklistProgressCache = [];
 
@@ -483,7 +492,9 @@ async function renderDashboard(){
   const logs = await fetchStudyLogs();
   const checks = await fetchChecklists();
   
-  const totalT=MEDICAL_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
+  const totalCBT = CBT_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
+  const totalKoku = KOKUSHI_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
+  const totalT = totalCBT + totalKoku;
   const compT=checks.filter(c=>c.completed).length;
   const overall=totalT>0?Math.round((compT/totalT)*100):0;
   
@@ -494,11 +505,11 @@ async function renderDashboard(){
   
   const studied=new Set(logs.map(l=>l.subject_name)).size;
 
-  const catProg=MEDICAL_CHECKLIST.map(cat=>{
+  const catProg=[...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].map(cat=>{
     const t = cat.topics.length;
     const c = checks.filter(ch => ch.category === cat.category && ch.completed).length;
     return{name:cat.category,color:cat.color,progress:t>0?Math.round((c/t)*100):0};
-  });
+  }).slice(0, 5); // Just show top 5 in radar chart to avoiding cluttering
 
   const dailyD=[],dailyL=[];
   for(let i=6;i>=0;i--){const d=new Date(today);d.setDate(d.getDate()-i);
@@ -522,39 +533,12 @@ async function renderDashboard(){
         <div class="category-progress-list">${catProg.map(c=>`<div class="category-progress-item"><div class="category-progress-header"><span class="category-progress-name"><span class="dot" style="background:${c.color}"></span>${c.name}</span><span class="category-progress-value">${c.progress}%</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:0%;background:${c.color}" data-width="${c.progress}"></div></div></div>`).join('')}</div></div>
       <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">🔔 仲間のアクティビティ</div></div>
         <div class="activity-list">${activityFeed.map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
-    </div>
-    <div class="card animate-slide-up" style="animation-delay:.4s;margin-top:var(--space-md);"><div class="card-header"><div class="card-title">✅ 日本医学会分類 履修チェックリスト</div></div>
-      <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-        ${MEDICAL_CHECKLIST.map(cat => `
-          <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-            <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-            <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-              ${cat.topics.map(topic => {
-                const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                  <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                  <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                </label>`;
-              }).join('')}
-            </div>
-          </div>
-        `).join('')}
-      </div>
     </div>`;
 
   setTimeout(()=>{
     createBarChart('weeklyBarChart',dailyL,dailyD);
     createRadarChart('categoryRadarChart',catProg.map(c=>c.name),catProg.map(c=>c.progress));
     document.querySelectorAll('.progress-bar-fill').forEach(b=>{const w=b.dataset.width;requestAnimationFrame(()=>{b.style.width=w+'%';});});
-    
-    document.querySelectorAll('.med-check-item').forEach(cb => cb.addEventListener('change', async (e) => {
-      const cat = e.target.dataset.cat;
-      const top = e.target.dataset.topic;
-      const checked = e.target.checked;
-      await toggleChecklistItem(cat, top, checked);
-      renderDashboard(); // Re-render to update percentages and radar chart
-    }));
   },100);
 }
 
@@ -562,6 +546,7 @@ async function renderDashboard(){
 async function renderStudy(){
   const ct=document.getElementById('page-container');
   const logs = await fetchStudyLogs();
+  const checks = await fetchChecklists();
   const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s,category:c.name})));
   const today=new Date();const logsByDay={};
   for(let i=0;i<7;i++){const d=new Date(today);d.setDate(d.getDate()-i);
@@ -597,6 +582,54 @@ async function renderStudy(){
               </div>
               <div class="study-log-actions"><button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集">✏️</button><button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button></div>
             </div>`;}).join('')}</div>`;}).join('')}</div></div>
+    </div>
+    
+    <div class="card animate-slide-up" style="animation-delay:.2s;margin-top:var(--space-lg);">
+      <div class="card-header" style="border-bottom:1px solid rgba(148,163,184,0.1);padding-bottom:var(--space-sm);flex-wrap:wrap;gap:var(--space-sm);">
+        <div class="card-title">✅ 達成度チェックリスト</div>
+        <div class="filter-tabs" style="margin:0;padding:0;">
+            <button class="filter-tab active" id="tab-cbt">CBT対策</button>
+            <button class="filter-tab" id="tab-kokushi">国家試験対策</button>
+        </div>
+      </div>
+      <div id="checklist-view-cbt">
+        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
+          ${CBT_CHECKLIST.map(cat => `
+            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
+              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
+              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                ${cat.topics.map(topic => {
+                  const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
+                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                  </label>`;
+                }).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div id="checklist-view-kokushi" style="display:none;">
+        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
+          ${KOKUSHI_CHECKLIST.map(cat => `
+            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
+              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
+              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                ${cat.topics.map(topic => {
+                  const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
+                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                  </label>`;
+                }).join('')}
+              </div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
     </div>`;
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
@@ -618,6 +651,35 @@ async function renderStudy(){
       if(confirm('本当にこの記録を削除しますか？')) { await deleteStudyLog(id); renderStudy(); }
     });
   });
+  
+  const tabCbt = document.getElementById('tab-cbt');
+  const tabKokushi = document.getElementById('tab-kokushi');
+  const viewCbt = document.getElementById('checklist-view-cbt');
+  const viewKokushi = document.getElementById('checklist-view-kokushi');
+  
+  if(window.activeChecklistTab === 'kokushi') {
+    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
+    viewKokushi.style.display='block'; viewCbt.style.display='none';
+  }
+  
+  tabCbt.addEventListener('click', () => {
+    window.activeChecklistTab = 'cbt';
+    tabCbt.classList.add('active'); tabKokushi.classList.remove('active');
+    viewCbt.style.display='block'; viewKokushi.style.display='none';
+  });
+  tabKokushi.addEventListener('click', () => {
+    window.activeChecklistTab = 'kokushi';
+    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
+    viewKokushi.style.display='block'; viewCbt.style.display='none';
+  });
+
+  document.querySelectorAll('.med-check-item').forEach(cb => cb.addEventListener('change', async (e) => {
+    const cat = e.target.dataset.cat;
+    const top = e.target.dataset.topic;
+    const checked = e.target.checked;
+    await toggleChecklistItem(cat, top, checked);
+    renderStudy(); // Re-render to update completed count
+  }));
   document.querySelectorAll('.btn-log-action.edit').forEach(btn => {
     btn.addEventListener('click', async (e) => {
       const ds = e.currentTarget.dataset;

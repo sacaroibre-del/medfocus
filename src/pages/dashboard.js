@@ -1,7 +1,7 @@
 // ============================================================
 // Dashboard Page
 // ============================================================
-import { MEDICAL_CHECKLIST, userChecklistProgress, studyLogs, activityFeed, subjectProgress } from '../data/mockData.js';
+import { CBT_CHECKLIST, KOKUSHI_CHECKLIST, userChecklistProgress, studyLogs, activityFeed, subjectProgress } from '../data/mockData.js';
 import { createRadarChart, createBarChart, createDoughnutChart } from '../components/charts.js';
 import { formatMinutes } from '../utils/helpers.js';
 
@@ -9,7 +9,9 @@ export function renderDashboard() {
   const container = document.getElementById('page-container');
 
   // 統計を計算
-  const totalTopics = MEDICAL_CHECKLIST.reduce((s, c) => s + c.topics.length, 0);
+  const totalCBT = CBT_CHECKLIST.reduce((s, c) => s + c.topics.length, 0);
+  const totalKoku = KOKUSHI_CHECKLIST.reduce((s, c) => s + c.topics.length, 0);
+  const totalTopics = totalCBT + totalKoku;
   const completedTopics = userChecklistProgress.filter(c => c.completed).length;
   const overallProgress = totalTopics > 0 ? Math.round((completedTopics / totalTopics) * 100) : 0;
 
@@ -22,11 +24,11 @@ export function renderDashboard() {
   const studiedSubjects = new Set(studyLogs.map(l => l.subjectId)).size;
 
   // カテゴリ別進捗
-  const categoryProgress = MEDICAL_CHECKLIST.map(cat => {
+  const categoryProgress = [...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].map(cat => {
     const total = cat.topics.length;
     const completed = userChecklistProgress.filter(ch => ch.category === cat.category && ch.completed).length;
     return { name: cat.category, color: cat.color, progress: total > 0 ? Math.round((completed / total) * 100) : 0 };
-  });
+  }).slice(0, 5);
 
   // 日別勉強時間（過去7日）
   const dailyData = [];
@@ -125,27 +127,6 @@ export function renderDashboard() {
         </div>
       </div>
     </div>
-    
-    <div class="card animate-slide-up" style="animation-delay:0.4s;margin-top:var(--space-md);">
-      <div class="card-header"><div class="card-title">✅ 日本医学会分類 履修チェックリスト</div></div>
-      <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-        ${MEDICAL_CHECKLIST.map(cat => `
-          <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-            <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-            <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${userChecklistProgress.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-            <div style="display:flex;flex-direction:column;gap:8px;">
-              ${cat.topics.map(topic => {
-                const isChecked = userChecklistProgress.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                  <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                  <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                </label>`;
-              }).join('')}
-            </div>
-          </div>
-        `).join('')}
-      </div>
-    </div>
   `;
 
   // チャートを描画
@@ -158,19 +139,6 @@ export function renderDashboard() {
       const width = bar.dataset.width;
       bar.style.width = '0%';
       requestAnimationFrame(() => { bar.style.width = `${width}%`; });
-    });
-    
-    // Checkbox event listeners
-    document.querySelectorAll('.med-check-item').forEach(cb => {
-      cb.addEventListener('change', (e) => {
-        const cat = e.target.dataset.cat;
-        const top = e.target.dataset.topic;
-        const checked = e.target.checked;
-        const ex = userChecklistProgress.find(c => c.category === cat && c.topic === top);
-        if (ex) ex.completed = checked;
-        else userChecklistProgress.push({ category: cat, topic: top, completed: checked });
-        renderDashboard(); // Re-render to update percentages
-      });
     });
   }, 100);
 }

@@ -117,20 +117,28 @@ export const subjectCategories = [
   },
 ];
 
-// --- 日本医学会分類 履修チェックリスト ---
-export const MEDICAL_CHECKLIST = [
-  { category: '基礎医学', color: '#4ECDC4', topics: ['解剖学', '生理学', '生化学', '薬理学', '病理学', '微生物学・感染症学', '免疫学'] },
-  { category: '臨床内科', color: '#45B7D1', topics: ['循環器内科', '消化器内科', '呼吸器内科', '神経内科', '血液内科', '腎臓内科', '内分泌内科', '膠原病内科'] },
-  { category: '臨床外科', color: '#96CEB4', topics: ['消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科', '整形外科', '産婦人科', '小児科', '精神科', '救急科', '麻酔科'] },
-  { category: '社会医学', color: '#F7DC6F', topics: ['公衆衛生学', '疫学', '法医学', '産業医学'] }
+// --- 履修チェックリスト（CBT & 国試） ---
+export const CBT_CHECKLIST = [
+  { category: 'ブロック1 (基礎医学)', color: '#4ECDC4', topics: ['解剖学・組織学', '生理学', '生化学', '薬理学', '病理学', '微生物・感染症学', '免疫学'] },
+  { category: 'ブロック2,3 (臨床・全身)', color: '#45B7D1', topics: ['循環器', '呼吸器', '消化器', '腎・泌尿器', '神経', '内分泌・代謝', '血液', 'アレルギー・膠原病'] },
+  { category: 'ブロック2,3 (臨床・各科)', color: '#96CEB4', topics: ['外科学一般・麻酔科', '小児科', '産婦人科', '精神科', '救急・中毒科', '眼科', '耳鼻咽喉科', '皮膚科', '放射線科'] },
+  { category: 'ブロック4 (社会医学)', color: '#F7DC6F', topics: ['公衆衛生学', '法医学'] },
+  { category: 'ブロック5,6 (連問・多選択)', color: '#BB8FCE', topics: ['ブロック5 臨床実地問題', 'ブロック6 順次解答4連問'] }
+];
+
+export const KOKUSHI_CHECKLIST = [
+  { category: '必修・基本事項', color: '#4ECDC4', topics: ['医師のプロフェッショナリズム', '医学総論（必修）', '医学各論（必修）', '公衆衛生（必修）', '救急初期対応'] },
+  { category: '医学総論', color: '#45B7D1', topics: ['症候学・臨床推論', '身体診察', '検査生理・画像', '治療・処置'] },
+  { category: '医学各論（内科・外科）', color: '#96CEB4', topics: ['循環器', '呼吸器', '消化管・肝胆膵', '腎臓', '内分泌・代謝', '血液・造血器', '免疫・アレルギー', '感染症'] },
+  { category: '医学各論（マイナー・他）', color: '#F7DC6F', topics: ['神経', '精神科', '小児科', '産科・婦人科', '眼科', '耳鼻咽喉科', '整形外科', '皮膚科', '泌尿器科', '放射線科'] },
+  { category: '社会医学・その他', color: '#F1948A', topics: ['公衆衛生・予防医学', '統計・疫学', '関係法規・医療制度'] }
 ];
 
 export const userChecklistProgress = [
-  { category: '基礎医学', topic: '解剖学', completed: true },
-  { category: '基礎医学', topic: '生理学', completed: true },
-  { category: '基礎医学', topic: '生化学', completed: false },
-  { category: '臨床内科', topic: '循環器内科', completed: true },
-  { category: '臨床内科', topic: '呼吸器内科', completed: true },
+  { category: 'ブロック1 (基礎医学)', topic: '解剖学・組織学', completed: true },
+  { category: 'ブロック1 (基礎医学)', topic: '生理学', completed: true },
+  { category: '医学各論（内科・外科）', topic: '循環器', completed: true },
+  { category: '医学各論（内科・外科）', topic: '呼吸器', completed: true },
 ];
 
 export const subjectProgress = [
