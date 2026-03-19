@@ -325,23 +325,19 @@ async function fetchPosts() {
   if (error) {
     console.warn('DEBUG: fetchPosts joined query failed. Trying robust secondary fetching strategy. Error:', error);
     
-    // Step 1: Fetch posts only
-    const resPosts = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+    // Step 1: Fetch posts only (try to exclude groups if it failed)
+    let resPosts;
+    if (error.message && error.message.includes('group_id')) {
+       resPosts = await supabase.from('posts').select('*, profiles(full_name), post_replies(*, profiles(full_name))').order('created_at', { ascending: false });
+    } else {
+       resPosts = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+    }
+    
     if (resPosts.error) {
       console.error('DEBUG: fetchPosts cannot even fetch base posts:', resPosts.error);
       return [];
     }
-    
-    // Step 2: Manually fetch replies for these posts if the joined query failed
-    const postIds = resPosts.data.map(p => p.id);
-    const resReplies = await supabase.from('post_replies').select('*').in('post_id', postIds).order('created_at', { ascending: true });
-    
-    // Combine them
-    data = resPosts.data.map(p => ({
-      ...p,
-      profiles: null, // Just show as N/A or default later
-      post_replies: resReplies.data ? resReplies.data.filter(r => r.post_id === p.id) : []
-    }));
+    data = resPosts.data;
   }
   
   return data;
