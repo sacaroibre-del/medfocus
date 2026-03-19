@@ -356,7 +356,11 @@ async function handleSignUp(email, password, name) {
     if (user) {
       await supabase.from('profiles').insert([{ id: user.id, full_name: name, university: '未設定', grade: 1 }]);
     }
-    showToast('📧 確認メールを送信しました！'); 
+    if (data.session) {
+      showToast('✅ アカウントを作成しました！');
+    } else {
+      showToast('📧 確認メールを送信しました。メールのリンクをクリックしてください。'); 
+    }
   }
 }
 
