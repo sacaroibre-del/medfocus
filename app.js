@@ -190,12 +190,13 @@ async function fetchStudyLogs() {
   return error ? [] : data;
 }
 
-async function saveStudyLog(subjectId, durationMinutes) {
+async function saveStudyLog(subjectId, durationMinutes, memo) {
   if (!supabase || !session) return;
   const { error } = await supabase.from('study_logs').insert([{ 
     user_id: session.user.id, 
     subject_name: subjectId, 
-    duration_minutes: durationMinutes 
+    duration_minutes: durationMinutes,
+    memo: memo || null
   }]);
   if (error) showToast('❌ 保存に失敗しました');
   else showToast('✅ 勉強記録を保存しました！');
@@ -493,6 +494,7 @@ async function renderStudy(){
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
         <div class="stopwatch-subject-selector"><select id="study-subject"><option value="">-- 科目を選択 --</option>${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}</select></div>
         <div class="stopwatch-display"><div class="stopwatch-ring"><svg viewBox="0 0 300 300"><circle class="ring-bg" cx="150" cy="150" r="140"/><circle class="ring-progress" id="timer-ring" cx="150" cy="150" r="140"/></svg><div class="stopwatch-time" id="timer-display">${fmtSW(elapsedSeconds)}</div></div></div>
+        <div class="stopwatch-memo" style="margin-bottom:var(--space-md);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/></div>
         <div class="stopwatch-controls">
           <button class="stopwatch-btn stopwatch-btn-reset" id="btn-reset" title="リセット">↺</button>
           <button class="stopwatch-btn ${isRunning?'stopwatch-btn-pause':'stopwatch-btn-start'}" id="btn-toggle">${isRunning?'⏸':'▶'}</button>
@@ -503,7 +505,17 @@ async function renderStudy(){
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
         <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
           return`<div class="study-log-day"><div class="study-log-day-header">${day} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subject_name);const tm=new Date(l.started_at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
-            return`<div class="study-log-entry" data-id="${l.id}"><span class="study-log-subject">${sub?.name||l.subject_name}</span><span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span><span class="study-log-time">${tm}</span><div class="study-log-actions"><button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集">✏️</button><button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button></div></div>`;}).join('')}</div>`;}).join('')}</div></div>
+            return`<div class="study-log-entry" data-id="${l.id}">
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;gap:var(--space-sm);">
+                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>
+                  <span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span>
+                  <span class="study-log-time">${tm}</span>
+                </div>
+                ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
+              </div>
+              <div class="study-log-actions"><button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集">✏️</button><button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button></div>
+            </div>`;}).join('')}</div>`;}).join('')}</div></div>
     </div>`;
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
@@ -517,7 +529,7 @@ async function renderStudy(){
     if(isRunning){pauseSW();btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='一時停止中';}
     else{startSW(upd);btnT.className='stopwatch-btn stopwatch-btn-pause';btnT.textContent='⏸';status.className='stopwatch-status recording';status.innerHTML='<span class="status-dot"></span>記録中...';}});
   document.getElementById('btn-reset').addEventListener('click',()=>{resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='開始ボタンを押して勉強を始めましょう';});
-  document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60));resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
+  document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';const memo=document.getElementById('study-memo').value.trim();await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60),memo);resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
 
   document.querySelectorAll('.btn-log-action.delete').forEach(btn => {
     btn.addEventListener('click', async (e) => {

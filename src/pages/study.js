@@ -55,6 +55,10 @@ export function renderStudy() {
           </div>
         </div>
 
+        <div class="stopwatch-memo" style="margin-bottom:var(--space-md);">
+          <input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/>
+        </div>
+
         <div class="stopwatch-controls">
           <button class="stopwatch-btn stopwatch-btn-reset" id="btn-reset" title="リセット">↺</button>
           <button class="stopwatch-btn ${state.isRunning ? 'stopwatch-btn-pause' : 'stopwatch-btn-start'}" id="btn-toggle" title="${state.isRunning ? '一時停止' : '開始'}">
@@ -83,9 +87,14 @@ export function renderStudy() {
                   const subj = allSubjects.find(s => s.id === l.subjectId);
                   const time = new Date(l.startedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' });
                   return `<div class="study-log-entry" data-id="${l.id}">
-                    <span class="study-log-subject">${subj?.name || '不明'}</span>
-                    <span class="study-log-duration">${formatMinutes(l.durationMinutes)}</span>
-                    <span class="study-log-time">${time}</span>
+                    <div style="flex:1;min-width:0;">
+                      <div style="display:flex;align-items:center;gap:var(--space-sm);">
+                        <span class="study-log-subject">${subj?.name || '不明'}</span>
+                        <span class="study-log-duration">${formatMinutes(l.durationMinutes)}</span>
+                        <span class="study-log-time">${time}</span>
+                      </div>
+                      ${l.memo ? `<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>` : ''}
+                    </div>
                     <div class="study-log-actions">
                       <button class="btn-log-action edit" data-id="${l.id}" data-subject="${subj?.name || '不明'}" data-duration="${l.durationMinutes}" title="編集">✏️</button>
                       <button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button>
@@ -162,7 +171,8 @@ export function renderStudy() {
       const subjectId = subjectSelect.value;
       const subjectName = subjectSelect.options[subjectSelect.selectedIndex]?.text || '未選択';
       const mins = Math.ceil(s.elapsedSeconds / 60);
-      studyLogs.push({ id: 'log-' + Date.now(), subjectId: subjectId || 'sub-unknown', durationMinutes: mins, startedAt: new Date().toISOString() });
+      const memo = document.getElementById('study-memo').value.trim();
+      studyLogs.push({ id: 'log-' + Date.now(), subjectId: subjectId || 'sub-unknown', durationMinutes: mins, memo: memo || null, startedAt: new Date().toISOString() });
       alert(`✅ ${subjectName}の勉強記録を保存しました！\n勉強時間: ${formatMinutes(mins)}`);
       resetStopwatch();
       display.innerHTML = formatStopwatchTime(0);
