@@ -1589,8 +1589,8 @@ function renderSettings(){
           <div style="display:grid;grid-template-columns:50px 1fr;gap:12px;align-items:center">
             <div id="new-group-icon-preview" class="avatar" style="background:var(--color-bg-elevated);width:50px;height:50px;font-size:1.5rem;display:flex;align-items:center;justify-content:center;overflow:hidden;">👥</div>
             <div>
-              <input type="text" id="new-group-icon" placeholder="アイコン画像URL" style="font-size:0.9rem" />
-              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;margin-top:4px;font-size:0.75rem">📷 画像を選択</button>
+              <input type="hidden" id="new-group-icon" value="" />
+              <button class="btn btn-secondary btn-sm" onclick="document.getElementById('new-group-icon-file').click()" style="width:100%;font-size:0.75rem">📷 画像を選択・アップロード</button>
               <input type="file" id="new-group-icon-file" accept="image/*" style="display:none" />
             </div>
           </div>
@@ -1627,6 +1627,33 @@ function renderSettings(){
           <div style="font-size:var(--font-size-base);font-weight:500;margin-bottom:var(--space-xs)">${isDark?'ダークモード':'ライトモード'}</div>
         </div>
         <button class="theme-toggle" id="theme-btn-settings"></button>
+      </div>
+    </div>
+
+    <!-- Edit Group Modal -->
+    <div id="group-edit-modal" class="modal-overlay" style="display:none">
+      <div class="modal-content" style="max-width:400px">
+        <div class="modal-header"><h3 class="modal-title">グループ情報を編集</h3><button class="modal-close" id="btn-close-edit-modal">✕</button></div>
+        <div class="modal-body">
+          <div class="settings-field">
+            <label>グループ名</label>
+            <input type="text" id="edit-group-name" placeholder="グループ名を入力..." />
+          </div>
+          <div class="settings-field">
+            <label>アイコン</label>
+            <div style="display:grid;grid-template-columns:60px 1fr;gap:16px;align-items:center;margin-top:8px">
+              <div id="edit-group-icon-preview" class="avatar avatar-lg" style="background:var(--color-bg-elevated);overflow:hidden">👥</div>
+              <div>
+                <button class="btn btn-secondary btn-sm" id="btn-trigger-edit-file" style="width:100%">📷 画像を変更</button>
+                <input type="file" id="edit-group-icon-file" accept="image/*" style="display:none" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer" style="flex-direction:column;gap:8px">
+          <button class="btn btn-primary" id="btn-save-group-edit" style="width:100%;justify-content:center">💾 変更を保存</button>
+          <button class="btn btn-secondary" id="btn-cancel-group-edit" style="width:100%;justify-content:center">キャンセル</button>
+        </div>
       </div>
     </div>
     
@@ -1774,18 +1801,49 @@ function renderSettings(){
     }
   });
 
-  // Group Edit Logic
+  // Group Edit Modal Logic
+  const editModal = document.getElementById('group-edit-modal');
+  let currentEditingGroupId = null;
+  let currentEditingIconUrl = '';
+
   document.querySelectorAll('.edit-group-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const gid = btn.dataset.id;
-      const nm = btn.dataset.name;
-      const ic = btn.dataset.icon;
-      const newName = prompt('新しいグループ名', nm);
-      if (newName === null) return;
-      const newIcon = prompt('新しいアイコン (URLまたは絵文字)', ic);
-      if (newIcon === null) return;
-      updateGroup(gid, newName, newIcon);
+      currentEditingGroupId = btn.dataset.id;
+      document.getElementById('edit-group-name').value = btn.dataset.name;
+      currentEditingIconUrl = btn.dataset.icon;
+      
+      const prev = document.getElementById('edit-group-icon-preview');
+      if (currentEditingIconUrl && currentEditingIconUrl.startsWith('http')) {
+        prev.innerHTML = `<img src="${currentEditingIconUrl}" style="width:100%;height:100%;object-fit:cover;" />`;
+      } else {
+        prev.innerHTML = '👥';
+      }
+      
+      editModal.style.display = 'flex';
     });
+  });
+
+  document.getElementById('btn-close-edit-modal').onclick = () => editModal.style.display = 'none';
+  document.getElementById('btn-cancel-group-edit').onclick = () => editModal.style.display = 'none';
+  
+  document.getElementById('btn-trigger-edit-file').onclick = () => document.getElementById('edit-group-icon-file').click();
+  
+  document.getElementById('edit-group-icon-file').onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    document.getElementById('edit-group-icon-preview').innerHTML = '<div class="loading-spinner" style="width:20px;height:20px"></div>';
+    const url = await uploadImage(file, 'avatars');
+    if (url) {
+      currentEditingIconUrl = url;
+      document.getElementById('edit-group-icon-preview').innerHTML = `<img src="${url}" style="width:100%;height:100%;object-fit:cover;" />`;
+    }
+  };
+
+  document.getElementById('btn-save-group-edit').addEventListener('click', async () => {
+    const newName = document.getElementById('edit-group-name').value.trim();
+    if (!newName) return;
+    await updateGroup(currentEditingGroupId, newName, currentEditingIconUrl);
+    editModal.style.display = 'none';
   });
 
   // Group Create/Join logic
