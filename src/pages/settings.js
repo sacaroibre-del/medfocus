@@ -45,11 +45,18 @@ export function renderSettings() {
           </div>
           <div class="settings-field">
             <label>学年</label>
-            <select>
-              ${[1,2,3,4,5,6].map(g => `<option ${g === currentUser.grade ? 'selected' : ''}>医学部${g}年</option>`).join('')}
+            <select id="input-grade">
+              ${[1,2,3,4,5,6].map(g => `<option value="${g}" ${g === currentUser.grade ? 'selected' : ''}>医学部${g}年</option>`).join('')}
             </select>
           </div>
-          <button class="btn btn-primary">保存する</button>
+          <div class="settings-field" style="flex-direction:row;align-items:center;justify-content:space-between;gap:var(--space-md);">
+            <div>
+              <label style="margin-bottom:2px;">プロフィールを公開する</label>
+              <p style="font-size:0.7rem;color:var(--color-text-tertiary);margin:0;">ランキングやアクティビティに従事します</p>
+            </div>
+            <input type="checkbox" id="input-public" ${currentUser.is_public ? 'checked' : ''} style="width:20px;height:20px;cursor:pointer;">
+          </div>
+          <button class="btn btn-primary" id="save-settings-btn">保存する</button>
         </div>
       </div>
 
@@ -86,5 +93,16 @@ export function renderSettings() {
     const btn = document.getElementById('copy-invite');
     btn.textContent = 'コピーしました！';
     setTimeout(() => { btn.textContent = 'コピー'; }, 2000);
+  });
+
+  document.getElementById('save-settings-btn')?.addEventListener('click', () => {
+    const newGrade = parseInt(document.getElementById('input-grade').value);
+    const isPublic = document.getElementById('input-public').checked;
+    
+    currentUser.grade = newGrade;
+    currentUser.is_public = isPublic;
+    
+    alert('✅ 設定を保存しました！');
+    renderSettings();
   });
 }

@@ -1,7 +1,7 @@
 // ============================================================
 // Post Card Component
 // ============================================================
-import { users } from '../data/mockData.js';
+import { users, currentUser } from '../data/mockData.js';
 import { getInitials, getAvatarColor, timeAgo } from '../utils/helpers.js';
 
 export function renderPostCard(post) {
@@ -13,6 +13,11 @@ export function renderPostCard(post) {
   const typeBadge = isActivity
     ? `<span class="post-type-badge post-type-activity">📢 アクティビティ</span>`
     : `<span class="post-type-badge post-type-question">❓ 質問</span>`;
+
+  const isOwnPost = post.userId === currentUser.id;
+  const deleteBtn = isOwnPost 
+    ? `<button class="post-delete-btn" data-post-id="${post.id}" title="削除">🗑️</button>` 
+    : '';
 
   const repliesHtml = post.comments && post.comments.length > 0
     ? post.comments.map(c => {
@@ -34,12 +39,15 @@ export function renderPostCard(post) {
 
   return `
     <article class="post-card animate-slide-up" id="${post.id}">
-      <div class="post-card-header">
-        <div class="avatar" style="background:${color}">${initials}</div>
-        <div class="post-author-info">
-          <div class="post-author-name">${authorName} ${typeBadge}</div>
-          <div class="post-author-meta">${timeAgo(post.createdAt)}</div>
+      <div class="post-card-header" style="display:flex; justify-content:space-between; align-items:flex-start;">
+        <div style="display:flex; gap:12px;">
+          <div class="avatar" style="background:${color}">${initials}</div>
+          <div class="post-author-info">
+            <div class="post-author-name">${authorName} ${typeBadge}</div>
+            <div class="post-author-meta">${timeAgo(post.createdAt)}</div>
+          </div>
         </div>
+        ${deleteBtn}
       </div>
       ${post.title ? `<h3 class="post-card-title">${post.title}</h3>` : ''}
       <div class="post-card-body">${post.body}</div>

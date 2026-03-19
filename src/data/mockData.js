@@ -10,6 +10,7 @@ export const currentUser = {
   university: '東京大学医学部',
   grade: 4,
   avatarUrl: null,
+  is_public: true,
   createdAt: '2025-04-01T00:00:00Z',
 };
 
@@ -45,9 +46,7 @@ export const groupMembers = users.map((u, i) => ({
 // --- 科目カテゴリと科目 ---
 export const subjectCategories = [
   {
-    id: 'cat-basic',
-    name: '基礎医学',
-    color: '#4ECDC4',
+    id: 'cat-basic', name: '基礎医学', color: '#4ECDC4',
     subjects: [
       { id: 'sub-anatomy', name: '解剖学', totalTopics: 25 },
       { id: 'sub-physiology', name: '生理学', totalTopics: 20 },
@@ -58,9 +57,7 @@ export const subjectCategories = [
     ],
   },
   {
-    id: 'cat-internal',
-    name: '内科系',
-    color: '#45B7D1',
+    id: 'cat-internal', name: '内科系', color: '#45B7D1',
     subjects: [
       { id: 'sub-cardio', name: '循環器', totalTopics: 20 },
       { id: 'sub-resp', name: '呼吸器', totalTopics: 16 },
@@ -72,9 +69,7 @@ export const subjectCategories = [
     ],
   },
   {
-    id: 'cat-surgery',
-    name: '外科系',
-    color: '#F7DC6F',
+    id: 'cat-surgery', name: '外科系', color: '#F7DC6F',
     subjects: [
       { id: 'sub-gensurg', name: '一般外科', totalTopics: 16 },
       { id: 'sub-ortho', name: '整形外科', totalTopics: 14 },
@@ -83,9 +78,7 @@ export const subjectCategories = [
     ],
   },
   {
-    id: 'cat-minor',
-    name: 'マイナー',
-    color: '#BB8FCE',
+    id: 'cat-minor', name: 'マイナー', color: '#BB8FCE',
     subjects: [
       { id: 'sub-eye', name: '眼科', totalTopics: 12 },
       { id: 'sub-ent', name: '耳鼻咽喉科', totalTopics: 12 },
@@ -96,9 +89,7 @@ export const subjectCategories = [
     ],
   },
   {
-    id: 'cat-public',
-    name: '公衆衛生・社会医学',
-    color: '#F1948A',
+    id: 'cat-public', name: '公衆衛生・社会医学', color: '#F1948A',
     subjects: [
       { id: 'sub-pubhealth', name: '公衆衛生', totalTopics: 14 },
       { id: 'sub-legal', name: '法医学', totalTopics: 8 },
@@ -106,143 +97,86 @@ export const subjectCategories = [
     ],
   },
   {
-    id: 'cat-exam',
-    name: '国試・CBT対策',
-    color: '#F0B27A',
+    id: 'cat-exam', name: '国試・CBT対策', color: '#F0B27A',
     subjects: [
       { id: 'sub-cbt', name: 'CBT対策', totalTopics: 30 },
       { id: 'sub-kokushi', name: '国試過去問', totalTopics: 40 },
-      { id: 'sub-moshi', name: '模試', totalTopics: 10 },
     ],
   },
 ];
 
-// --- 履修チェックリスト（CBT & 国試） ---
+// --- 履修チェックリスト ---
 export const CBT_CHECKLIST = [
-  // 基礎医学
   { category: '基礎医学: 解剖学', color: '#4ECDC4', topics: ["骨格系", "筋系", "循環器系", "呼吸器系", "消化器系", "神経系", "感覚器系", "泌尿生殖器系"] },
   { category: '基礎医学: 生理学', color: '#4ECDC4', topics: ["細胞生理", "神経生理", "筋収縮", "循環生理", "呼吸生理", "腎生理・体液", "消化吸収", "内分泌・代謝", "体温調節", "感覚・特殊感覚"] },
   { category: '基礎医学: 生化学', color: '#4ECDC4', topics: ["糖代謝", "脂質代謝", "タンパク質・アミノ酸代謝", "核酸代謝", "ビタミン・補酵素", "酵素論", "エネルギー代謝（TCA・酸化的リン酸化）"] },
   { category: '基礎医学: 病理学', color: '#4ECDC4', topics: ["細胞障害・適応", "炎症", "修復・再生", "循環障害", "腫瘍総論", "感染病理", "免疫病理"] },
   { category: '基礎医学: 微生物学', color: '#4ECDC4', topics: ["細菌（グラム陽性・陰性）", "ウイルス（DNA・RNA）", "真菌・寄生虫", "消毒・滅菌", "感染防御"] },
-  { category: '基礎医学: 免疫学', color: '#4ECDC4', topics: ["自然免疫", "獲得免疫", "抗原抗体反応", "アレルギー分類", "免疫不全", "自己免疫疾患"] },
   { category: '基礎医学: 薬理学', color: '#4ECDC4', topics: ["薬物動態", "薬力学", "自律神経薬", "循環器薬", "抗菌薬", "抗悪性腫瘍薬", "中枢神経薬", "内分泌・代謝薬"] },
-  
-  // 臨床医学（内科系）
   { category: '内科系: 循環器', color: '#45B7D1', topics: ["虚血性心疾患", "不整脈", "心不全", "弁膜症", "大動脈疾患", "高血圧", "心筋症・心膜炎"] },
   { category: '内科系: 呼吸器', color: '#45B7D1', topics: ["肺炎", "COPD", "喘息", "肺癌", "間質性肺炎", "胸膜疾患", "呼吸不全"] },
-  { category: '内科系: 消化器', color: '#45B7D1', topics: ["消化管（食道・胃・腸）疾患", "肝臓疾患", "胆道系疾患", "膵臓疾患", "消化管出血", "腸閉塞・腸重積"] },
-  { category: '内科系: 腎臓・泌尿器', color: '#45B7D1', topics: ["急性・慢性腎不全", "ネフローゼ・腎炎症候群", "電解質異常", "尿路感染", "腎癌・膀胱癌"] },
-  { category: '内科系: 内分泌・代謝', color: '#45B7D1', topics: ["甲状腺疾患", "副腎疾患", "下垂体疾患", "糖尿病", "脂質異常症", "骨代謝疾患"] },
-  { category: '内科系: 血液', color: '#45B7D1', topics: ["貧血（鉄欠乏・溶血等）", "白血病", "リンパ腫", "多発性骨髄腫", "凝固・出血疾患", "輸血"] },
-  { category: '内科系: 神経', color: '#45B7D1', topics: ["脳血管障害", "変性疾患（ALS・パーキンソン等）", "認知症", "てんかん", "脱髄疾患", "末梢神経障害", "頭痛"] },
-  { category: '内科系: 膠原病・免疫', color: '#45B7D1', topics: ["関節リウマチ", "SLE", "強皮症・多発筋炎", "シェーグレン", "血管炎症候群"] },
-  { category: '内科系: 感染症', color: '#45B7D1', topics: ["細菌感染（敗血症等）", "ウイルス感染（HIV等）", "性感染症", "院内感染・抗菌薬適正使用"] },
-
-  // 臨床医学（外科系）
-  { category: '外科系: 外科総論', color: '#96CEB4', topics: ["術前・術後管理", "輸液・輸血", "ショック対応", "創傷・感染管理", "麻酔"] },
-  { category: '外科系: 消化器外科', color: '#96CEB4', topics: ["消化器癌（胃・大腸・膵・肝）", "虫垂炎", "ヘルニア", "急性腹症"] },
-  { category: '外科系: 胸部外科', color: '#96CEB4', topics: ["肺癌手術", "縦隔腫瘍", "食道外科", "心臓外科"] },
-  { category: '外科系: 脳神経外科', color: '#96CEB4', topics: ["頭部外傷", "脳腫瘍", "脳血管手術", "水頭症"] },
-  { category: '外科系: 整形外科', color: '#96CEB4', topics: ["骨折・脱臼", "脊椎疾患", "変形性関節症", "スポーツ傷害", "骨腫瘍"] },
-  { category: '外科系: 泌尿器科', color: '#96CEB4', topics: ["前立腺癌・肥大", "腎・膀胱腫瘍", "尿路結石", "男性不妊"] },
-
-  // 産科・婦人科
-  { category: '産科・婦人科: 産科', color: '#F7DC6F', topics: ["正常妊娠・分娩", "妊娠高血圧症候群", "前置胎盤・常位胎盤早期剥離", "早産・流産", "胎児発育不全", "多胎妊娠"] },
-  { category: '産科・婦人科: 婦人科', color: '#F7DC6F', topics: ["子宮癌（頸癌・体癌）", "卵巣腫瘍", "子宮内膜症", "月経異常", "更年期障害", "不妊症"] },
-
-  // 小児科・精神科
-  { category: '小児・精神: 小児科', color: '#BB8FCE', topics: ["発達・発育", "先天奇形・染色体異常", "新生児疾患", "小児感染症", "先天性心疾患", "小児腫瘍", "予防接種"] },
-  { category: '小児・精神: 精神科', color: '#BB8FCE', topics: ["統合失調症", "気分障害（双極・うつ）", "不安障害", "認知症（精神科的側面）", "物質依存", "児童精神（発達障害）", "向精神薬"] },
-
-  // 公衆衛生・社会医学
-  { category: '社会医学: 公衆衛生', color: '#F1948A', topics: ["疫学（コホート・症例対照等）", "スクリーニング", "感染症法", "予防医学（一次〜三次）", "死亡統計・人口動態"] },
-  { category: '社会医学: 医療制度・倫理', color: '#F1948A', topics: ["医療保険制度", "医の倫理（インフォームドコンセント等）", "医師法・医療法", "介護保険", "産業保健"] },
-
-  // 救急・集中治療
-  { category: '救急・集中: 救急総論', color: '#82E0AA', topics: ["ACLS・BLS", "外傷初期対応（JATEC）", "中毒", "熱中症・凍傷", "溺水・電撃傷"] },
-  { category: '救急・集中: ICU管理', color: '#82E0AA', topics: ["人工呼吸管理", "血行動態モニタリング", "ARDS・DIC", "栄養管理", "鎮静・鎮痛"] }
+  { category: '内科系: 消化器', color: '#45B7D1', topics: ["消化管疾患", "肝臓疾患", "胆道系疾患", "膵臓疾患", "消化管出血", "腸閉塞"] },
+  { category: '内科系: 腎臓・泌尿器', color: '#45B7D1', topics: ["急性・慢性腎不全", "ネフローゼ・腎炎症候群", "電解質異常", "尿路感染"] },
+  { category: '内科系: 代謝・内分泌', color: '#45B7D1', topics: ["甲状腺疾患", "副腎疾患", "下垂体疾患", "糖尿病", "脂質異常症"] },
+  { category: '内科系: 血液', color: '#45B7D1', topics: ["貧血", "白血病", "リンパ腫", "凝固・出血疾患"] },
+  { category: '内科系: 神経', color: '#45B7D1', topics: ["脳血管障害", "変性疾患", "てんかん", "脱髄疾患"] },
+  { category: '外科系: 外科総論', color: '#F7DC6F', topics: ["術前・術後管理", "輸液・輸血", "ショック対応", "麻酔"] },
+  { category: '外科系: 消化器外科', color: '#F7DC6F', topics: ["消化器癌", "虫垂炎", "ヘルニア", "急性腹症"] },
+  { category: '産科・婦人科: 産科', color: '#BB8FCE', topics: ["正常妊娠・分娩", "妊娠高血圧症候群", "前置胎盤", "早産・流産"] },
+  { category: '産科・婦人科: 婦人科', color: '#BB8FCE', topics: ["子宮癌", "卵巣腫瘍", "内膜症", "不妊症"] },
+  { category: '小児・精神: 小児科', color: '#F1948A', topics: ["発達・発育", "先天奇形", "新生児疾患", "小児感染症"] },
+  { category: '小児・精神: 精神科', color: '#F1948A', topics: ["統合失調症", "気分障害", "不安障害", "認知症"] },
+  { category: '社会医学: 公衆衛生', color: '#94A3B8', topics: ["疫学", "感染症法", "予防医学", "死亡統計"] },
+  { category: '救急・集中: 救急総論', color: '#E17055', topics: ["ACLS・BLS", "外傷初期対応", "中毒", "熱中症"] },
 ];
 
 export const KOKUSHI_CHECKLIST = [
-  { category: '必修・基本事項', color: '#4ECDC4', topics: ['医師のプロフェッショナリズム', '医学総論（必修）', '医学各論（必修）', '公衆衛生（必修）', '救急初期対応'] },
-  { category: '医学総論', color: '#45B7D1', topics: ['症候学・臨床推論', '身体診察', '検査生理・画像', '治療・処置'] },
-  { category: '医学各論（内科・外科）', color: '#96CEB4', topics: ['循環器', '呼吸器', '消化管・肝胆膵', '腎臓', '内分泌・代謝', '血液・造血器', '免疫・アレルギー', '感染症'] },
-  { category: '医学各論（マイナー・他）', color: '#F7DC6F', topics: ['神経', '精神科', '小児科', '産科・婦人科', '眼科', '耳鼻咽喉科', '整形外科', '皮膚科', '泌尿器科', '放射線科'] },
-  { category: '社会医学・その他', color: '#F1948A', topics: ['公衆衛生・予防医学', '統計・疫学', '関係法規・医療制度'] }
+  { category: '基礎医学: 解剖学', color: '#4ECDC4', topics: ["体表解剖・断面像", "骨格系・肉眼解剖", "神経解剖", "脈管系", "内臓解剖"] },
+  { category: '基礎医学: 生理学', color: '#4ECDC4', topics: ["心電図機序", "呼吸生理", "腎生理", "内分泌フィードバック", "自律神経調節"] },
+  { category: '基礎医学: 生化学・病理', color: '#4ECDC4', topics: ["先天性代謝異常", "ビタミン欠乏症", "ショック病態", "DIC機序", "炎症・免疫病理"] },
+  { category: '内科系: 循環器', color: '#45B7D1', topics: ["急性冠症候群", "心不全", "弁膜症", "不整脈", "大動脈解離", "心タンポナーデ"] },
+  { category: '内科系: 呼吸器', color: '#45B7D1', topics: ["肺炎", "COPD・喘息", "肺癌", "間質性肺炎", "自然気胸", "肺塞栓症"] },
+  { category: '内科系: 消化器', color: '#45B7D1', topics: ["食道・胃・大腸癌", "IBD", "急性・慢性膵炎", "胆石・胆管炎", "消化管出血"] },
+  { category: '内科系: 肝胆膵', color: '#45B7D1', topics: ["ウイルス性肝炎", "肝硬変", "肝細胞癌", "自己免疫性肝疾患", "肝不全"] },
+  { category: '内科系: 腎臓', color: '#45B7D1', topics: ["AKI", "CKD・透析", "ネフローゼ", "腎炎症候群", "水・電解質平衡"] },
+  { category: '内科系: 代謝・内分泌', color: '#45B7D1', topics: ["糖尿病", "甲状腺疾患", "副腎疾患", "下垂体疾患", "脂質異常症"] },
+  { category: '内科系: 血液', color: '#45B7D1', topics: ["貧血", "白血病・MDS", "悪性リンパ腫", "骨髄腫", "凝固異常"] },
+  { category: '内科系: 神経', color: '#45B7D1', topics: ["脳血管障害", "神経変性疾患", "認知症", "てんかん", "髄膜炎", "頭痛"] },
+  { category: '内科系: 膠原病・感染症', color: '#45B7D1', topics: ["関節リウマチ", "SLE", "血管炎", "敗血症", "HIV・結核", "ワクチン"] },
+  { category: '外科系: 外科総論', color: '#F7DC6F', topics: ["周術期管理", "麻酔管理", "創傷・ドレーン管理", "術後合併症"] },
+  { category: '外科系: 消化器外科', color: '#F7DC6F', topics: ["胃・大腸術式", "肝胆膵手術", "急性腹症"] },
+  { category: '外科系: 胸部・心臓外科', color: '#F7DC6F', topics: ["肺癌手術", "弁置換・CABG", "大動脈置換"] },
+  { category: '外科系: 脳神経外科', color: '#F7DC6F', topics: ["頭部外傷", "脳腫瘍摘出", "破裂動脈瘤"] },
+  { category: '外科系: 整形外科', color: '#F7DC6F', topics: ["骨折固定法", "脊椎疾患", "人工関節"] },
+  { category: '産婦人科: 産科', color: '#BB8FCE', topics: ["正常分娩", "PIH", "胎盤剥離・前置胎盤", "胎児不全", "NCPR"] },
+  { category: '産婦人科: 婦人科', color: '#BB8FCE', topics: ["子宮頸癌", "体癌・卵巣腫瘍", "内膜症・筋腫", "更年期・不妊"] },
+  { category: '小児科: 小児科', color: '#F1948A', topics: ["発達・発育評価", "先天性心疾患", "小児感染症", "小児腫瘍", "発達障害"] },
+  { category: '精神科: 精神科', color: '#F0B27A', topics: ["統合失調症", "気分障害", "不安症", "認知症対応", "精神保健法"] },
+  { category: '社会医学: 公衆衛生', color: '#94A3B8', topics: ["疫学・統計", "医療・介護保険", "医師法", "感染症法"] },
+  { category: '社会医学: 臨床倫理', color: '#94A3B8', topics: ["IC", "ACP", "医療安全"] },
+  { category: '救急科: 救急医学', color: '#E17055', topics: ["BLS・ACLS", "JATEC", "中毒・熱中症", "人工呼吸"] }
 ];
 
-export const userChecklistProgress = [
-  { category: 'ブロック1 (基礎医学)', topic: '解剖学・組織学', completed: true },
-  { category: 'ブロック1 (基礎医学)', topic: '生理学', completed: true },
-  { category: '医学各論（内科・外科）', topic: '循環器', completed: true },
-  { category: '医学各論（内科・外科）', topic: '呼吸器', completed: true },
-];
+export const userChecklistProgress = [];
 
 export const subjectProgress = [
   { id: 'sp-01', userId: 'user-001', category: '基礎医学', subjectName: '解剖学', subjectId: 'sub-anatomy', completedTopics: 22, totalTopics: 25, progressRate: 88 },
   { id: 'sp-02', userId: 'user-001', category: '基礎医学', subjectName: '生理学', subjectId: 'sub-physiology', completedTopics: 15, totalTopics: 20, progressRate: 75 },
-  { id: 'sp-03', userId: 'user-001', category: '基礎医学', subjectName: '生化学', subjectId: 'sub-biochem', completedTopics: 10, totalTopics: 18, progressRate: 55.6 },
-  { id: 'sp-04', userId: 'user-001', category: '基礎医学', subjectName: '薬理学', subjectId: 'sub-pharma', completedTopics: 18, totalTopics: 22, progressRate: 81.8 },
-  { id: 'sp-05', userId: 'user-001', category: '基礎医学', subjectName: '病理学', subjectId: 'sub-patho', completedTopics: 12, totalTopics: 15, progressRate: 80 },
-  { id: 'sp-06', userId: 'user-001', category: '基礎医学', subjectName: '微生物学', subjectId: 'sub-micro', completedTopics: 8, totalTopics: 16, progressRate: 50 },
-
-  { id: 'sp-07', userId: 'user-001', category: '内科系', subjectName: '循環器', subjectId: 'sub-cardio', completedTopics: 16, totalTopics: 20, progressRate: 80 },
-  { id: 'sp-08', userId: 'user-001', category: '内科系', subjectName: '呼吸器', subjectId: 'sub-resp', completedTopics: 10, totalTopics: 16, progressRate: 62.5 },
-  { id: 'sp-09', userId: 'user-001', category: '内科系', subjectName: '消化器', subjectId: 'sub-gastro', completedTopics: 14, totalTopics: 18, progressRate: 77.8 },
-  { id: 'sp-10', userId: 'user-001', category: '内科系', subjectName: '腎臓', subjectId: 'sub-renal', completedTopics: 5, totalTopics: 14, progressRate: 35.7 },
-  { id: 'sp-11', userId: 'user-001', category: '内科系', subjectName: '内分泌', subjectId: 'sub-endo', completedTopics: 8, totalTopics: 15, progressRate: 53.3 },
-  { id: 'sp-12', userId: 'user-001', category: '内科系', subjectName: '血液', subjectId: 'sub-hema', completedTopics: 9, totalTopics: 12, progressRate: 75 },
-  { id: 'sp-13', userId: 'user-001', category: '内科系', subjectName: '免疫・膠原病', subjectId: 'sub-immune', completedTopics: 6, totalTopics: 14, progressRate: 42.9 },
-
-  { id: 'sp-14', userId: 'user-001', category: '外科系', subjectName: '一般外科', subjectId: 'sub-gensurg', completedTopics: 10, totalTopics: 16, progressRate: 62.5 },
-  { id: 'sp-15', userId: 'user-001', category: '外科系', subjectName: '整形外科', subjectId: 'sub-ortho', completedTopics: 7, totalTopics: 14, progressRate: 50 },
-  { id: 'sp-16', userId: 'user-001', category: '外科系', subjectName: '脳神経外科', subjectId: 'sub-neuro-s', completedTopics: 4, totalTopics: 12, progressRate: 33.3 },
-  { id: 'sp-17', userId: 'user-001', category: '外科系', subjectName: '心臓血管外科', subjectId: 'sub-cardio-s', completedTopics: 3, totalTopics: 10, progressRate: 30 },
-
-  { id: 'sp-18', userId: 'user-001', category: 'マイナー', subjectName: '眼科', subjectId: 'sub-eye', completedTopics: 6, totalTopics: 12, progressRate: 50 },
-  { id: 'sp-19', userId: 'user-001', category: 'マイナー', subjectName: '耳鼻咽喉科', subjectId: 'sub-ent', completedTopics: 4, totalTopics: 12, progressRate: 33.3 },
-  { id: 'sp-20', userId: 'user-001', category: 'マイナー', subjectName: '皮膚科', subjectId: 'sub-derm', completedTopics: 3, totalTopics: 10, progressRate: 30 },
-  { id: 'sp-21', userId: 'user-001', category: 'マイナー', subjectName: '泌尿器科', subjectId: 'sub-uro', completedTopics: 2, totalTopics: 10, progressRate: 20 },
-  { id: 'sp-22', userId: 'user-001', category: 'マイナー', subjectName: '産婦人科', subjectId: 'sub-obgyn', completedTopics: 8, totalTopics: 16, progressRate: 50 },
-  { id: 'sp-23', userId: 'user-001', category: 'マイナー', subjectName: '小児科', subjectId: 'sub-peds', completedTopics: 10, totalTopics: 18, progressRate: 55.6 },
-
-  { id: 'sp-24', userId: 'user-001', category: '公衆衛生・社会医学', subjectName: '公衆衛生', subjectId: 'sub-pubhealth', completedTopics: 7, totalTopics: 14, progressRate: 50 },
-  { id: 'sp-25', userId: 'user-001', category: '公衆衛生・社会医学', subjectName: '法医学', subjectId: 'sub-legal', completedTopics: 3, totalTopics: 8, progressRate: 37.5 },
-  { id: 'sp-26', userId: 'user-001', category: '公衆衛生・社会医学', subjectName: '医療統計', subjectId: 'sub-stats', completedTopics: 5, totalTopics: 10, progressRate: 50 },
-
-  { id: 'sp-27', userId: 'user-001', category: '国試・CBT対策', subjectName: 'CBT対策', subjectId: 'sub-cbt', completedTopics: 20, totalTopics: 30, progressRate: 66.7 },
-  { id: 'sp-28', userId: 'user-001', category: '国試・CBT対策', subjectName: '国試過去問', subjectId: 'sub-kokushi', completedTopics: 15, totalTopics: 40, progressRate: 37.5 },
-  { id: 'sp-29', userId: 'user-001', category: '国試・CBT対策', subjectName: '模試', subjectId: 'sub-moshi', completedTopics: 4, totalTopics: 10, progressRate: 40 },
 ];
 
-// --- 学習ログ（過去14日分） ---
-function generateStudyLogs() {
+export function generateStudyLogs() {
   const logs = [];
   const subjectIds = ['sub-cardio', 'sub-anatomy', 'sub-pharma', 'sub-gastro', 'sub-resp', 'sub-patho', 'sub-cbt', 'sub-kokushi'];
   const today = new Date();
-
   for (let dayOffset = 0; dayOffset < 14; dayOffset++) {
-    const date = new Date(today);
-    date.setDate(date.getDate() - dayOffset);
+    const date = new Date(today); date.setDate(date.getDate() - dayOffset);
     const sessionsCount = Math.floor(Math.random() * 4) + 1;
-
     for (let s = 0; s < sessionsCount; s++) {
       const hour = 8 + Math.floor(Math.random() * 12);
       const duration = 20 + Math.floor(Math.random() * 100);
-      const startedAt = new Date(date);
-      startedAt.setHours(hour, 0, 0, 0);
-      const endedAt = new Date(startedAt);
-      endedAt.setMinutes(endedAt.getMinutes() + duration);
-
-      logs.push({
-        id: `log-${dayOffset}-${s}`,
-        userId: 'user-001',
-        subjectId: subjectIds[Math.floor(Math.random() * subjectIds.length)],
-        durationMinutes: duration,
-        startedAt: startedAt.toISOString(),
-        endedAt: endedAt.toISOString(),
-      });
+      const startedAt = new Date(date); startedAt.setHours(hour, 0, 0, 0);
+      const endedAt = new Date(startedAt); endedAt.setMinutes(endedAt.getMinutes() + duration);
+      logs.push({ id: `log-${dayOffset}-${s}`, userId: 'user-001', subjectId: subjectIds[Math.floor(Math.random() * subjectIds.length)], durationMinutes: duration, startedAt: startedAt.toISOString(), endedAt: endedAt.toISOString(), memo: s === 0 ? "集中できた" : null });
     }
   }
   return logs;
@@ -250,7 +184,6 @@ function generateStudyLogs() {
 
 export const studyLogs = generateStudyLogs();
 
-// --- 他ユーザーの勉強時間（ランキング用） ---
 export const userStudyTotals = [
   { userId: 'user-001', name: '田中 太郎', weeklyMinutes: 0, dailyMinutes: 0 },
   { userId: 'user-002', name: '佐藤 花子', weeklyMinutes: 1850, dailyMinutes: 290 },
@@ -262,127 +195,26 @@ export const userStudyTotals = [
   { userId: 'user-008', name: '中村 愛', weeklyMinutes: 1750, dailyMinutes: 250 },
 ];
 
-// 現在ユーザーの時間を計算
-(() => {
-  const now = new Date();
-  const oneWeekAgo = new Date(now);
-  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-  const todayStart = new Date(now);
-  todayStart.setHours(0, 0, 0, 0);
-
-  const myEntry = userStudyTotals.find(u => u.userId === 'user-001');
-  myEntry.weeklyMinutes = studyLogs
-    .filter(l => new Date(l.startedAt) >= oneWeekAgo)
-    .reduce((sum, l) => sum + l.durationMinutes, 0);
-  myEntry.dailyMinutes = studyLogs
-    .filter(l => new Date(l.startedAt) >= todayStart)
-    .reduce((sum, l) => sum + l.durationMinutes, 0);
-})();
-
 // --- 投稿（質問広場） ---
 export const posts = [
   {
-    id: 'post-001',
-    userId: 'user-002',
-    groupId: 'group-001',
-    type: 'question',
-    title: '僧帽弁閉鎖不全症の聴診所見について',
-    body: '僧帽弁閉鎖不全症で汎収縮期雑音が聞こえる理由がよくわかりません。大動脈弁狭窄症との鑑別ポイントも含めて教えていただけると助かります。',
-    imageUrl: null,
-    isAnonymous: false,
-    createdAt: '2026-03-19T08:30:00Z',
-    likes: 5,
-    comments: [
-      { id: 'c-001', postId: 'post-001', userId: 'user-001', body: 'MRは左室→左房への逆流が収縮期全体を通じて起こるから汎収縮期雑音になります。ASは駆出性だから菱形型の雑音パターンで、最強点も異なります（AS: 第2肋間胸骨右縁、MR: 心尖部）。', isAnonymous: false, createdAt: '2026-03-19T08:45:00Z' },
-      { id: 'c-002', postId: 'post-001', userId: 'user-003', body: '頸部への放散があればASを疑います。腋窩への放散ならMRです。', isAnonymous: false, createdAt: '2026-03-19T09:00:00Z' },
-    ],
+    id: 'post-001', userId: 'user-002', groupId: 'group-001', type: 'question', title: '僧帽弁閉鎖不全症の聴診所見について',
+    body: '僧帽弁閉鎖不全症で汎収縮期雑音が聞こえる理由がよくわかりません。',
+    likes: 5, createdAt: '2026-03-19T08:30:00Z', comments: [],
   },
   {
-    id: 'post-002',
-    userId: 'user-004',
-    groupId: 'group-001',
-    type: 'question',
-    title: 'ネフローゼ症候群の分類で混乱しています',
-    body: '微小変化型と膜性腎症の違いが覚えられません。年齢層や補体の変動、予後の違いなど、まとめ方のコツがあれば教えてください。',
-    imageUrl: null,
-    isAnonymous: false,
-    createdAt: '2026-03-18T22:15:00Z',
-    likes: 8,
-    comments: [
-      { id: 'c-003', postId: 'post-002', userId: 'user-005', body: '表で整理すると覚えやすいです！微小変化型：小児に多い、選択性蛋白尿、ステロイド著効。膜性腎症：成人に多い、非選択性蛋白尿、予後は比較的良好だが一部進行。', isAnonymous: false, createdAt: '2026-03-18T22:40:00Z' },
-    ],
-  },
-  {
-    id: 'post-003',
-    userId: 'user-006',
-    groupId: 'group-001',
-    type: 'question',
-    title: '薬理学のゴロ合わせを共有しませんか？',
-    body: 'β遮断薬の分類（ISA+/ISA-）や、Ca拮抗薬のDHP系/非DHP系の区別で良いゴロ合わせがあれば教えてください！',
-    imageUrl: null,
-    isAnonymous: true,
-    createdAt: '2026-03-18T20:00:00Z',
-    likes: 12,
-    comments: [],
-  },
-  {
-    id: 'post-004',
-    userId: 'user-007',
-    groupId: 'group-001',
-    type: 'activity',
-    title: null,
-    body: '循環器の勉強を開始しました 🫀',
-    imageUrl: null,
-    isAnonymous: false,
-    createdAt: '2026-03-19T10:00:00Z',
-    likes: 3,
-    comments: [],
-  },
-  {
-    id: 'post-005',
-    userId: 'user-008',
-    groupId: 'group-001',
-    type: 'activity',
-    title: null,
-    body: '生化学のまとめノートが完成しました 📘',
-    imageUrl: null,
-    isAnonymous: false,
-    createdAt: '2026-03-19T09:30:00Z',
-    likes: 6,
-    comments: [],
-  },
-  {
-    id: 'post-006',
-    userId: 'user-003',
-    groupId: 'group-001',
-    type: 'question',
-    title: 'CBT対策のおすすめ問題集',
-    body: 'CBT対策に「QAssist」と「medu4」のどちらが良いか迷っています。4年の皆さんはどちらを使っていますか？',
-    imageUrl: null,
-    isAnonymous: false,
-    createdAt: '2026-03-18T15:00:00Z',
-    likes: 15,
-    comments: [
-      { id: 'c-004', postId: 'post-006', userId: 'user-001', body: '自分はQAssist使ってます。動画の解説もわかりやすいし、問題数も充実している印象です。', isAnonymous: false, createdAt: '2026-03-18T15:20:00Z' },
-      { id: 'c-005', postId: 'post-006', userId: 'user-006', body: 'medu4の方がコンパクトに要点がまとまっている気がします。好みですね！', isAnonymous: false, createdAt: '2026-03-18T16:00:00Z' },
-    ],
-  },
+    id: 'post-002', userId: 'user-001', groupId: 'group-001', type: 'activity', title: null,
+    body: '循環器の勉強を頑張っています！',
+    likes: 2, createdAt: '2026-03-19T10:00:00Z', comments: [],
+  }
 ];
 
-// --- 試験カウントダウン ---
 export const examCountdowns = [
   { id: 'exam-001', name: 'CBT', date: '2026-08-20T09:00:00+09:00', color: '#4ECDC4' },
   { id: 'exam-002', name: '本試験', date: '2027-02-06T09:00:00+09:00', color: '#45B7D1' },
-  { id: 'exam-003', name: '内科学中間試験', date: '2026-05-15T09:00:00+09:00', color: '#F7DC6F' },
 ];
 
-// --- アクティビティフィード ---
 export const activityFeed = [
-  { userId: 'user-007', name: '山本 大輝', action: '循環器の勉強を開始しました', time: '10分前', icon: '🫀' },
-  { userId: 'user-008', name: '中村 愛', action: '生化学のまとめノートが完成しました', time: '30分前', icon: '📘' },
-  { userId: 'user-002', name: '佐藤 花子', action: '解剖学で2時間勉強しました', time: '1時間前', icon: '📖' },
-  { userId: 'user-005', name: '伊藤 健太', action: '国試過去問を30問解きました', time: '2時間前', icon: '✏️' },
-  { userId: 'user-003', name: '鈴木 一郎', action: '薬理学の進捗が80%になりました', time: '3時間前', icon: '🎯' },
-  { userId: 'user-006', name: '渡辺 さくら', action: '呼吸器の勉強を開始しました', time: '4時間前', icon: '🫁' },
-  { userId: 'user-004', name: '高橋 美咲', action: '質問を投稿しました', time: '5時間前', icon: '❓' },
+  { userId: 'user-001', name: '田中 太郎', action: '循環器を勉強中', time: '10分前', icon: '🫀' },
+  { userId: 'user-002', name: '佐藤 花子', action: '解剖学を修了', time: '1時間前', icon: '📖' },
 ];

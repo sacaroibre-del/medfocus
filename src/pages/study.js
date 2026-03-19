@@ -116,45 +116,76 @@ export function renderStudy() {
         </div>
       </div>
       <div id="checklist-view-cbt">
-        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-          ${CBT_CHECKLIST.map(cat => `
-            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${userChecklistProgress.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                ${cat.topics.map(topic => {
-                  const isChecked = userChecklistProgress.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                  </label>`;
-                }).join('')}
-              </div>
-            </div>
-          `).join('')}
+        <div class="checklist-accordion">
+          ${renderAccordionChecklist(CBT_CHECKLIST)}
         </div>
       </div>
       <div id="checklist-view-kokushi" style="display:none;">
-        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-          ${KOKUSHI_CHECKLIST.map(cat => `
-            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${userChecklistProgress.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                ${cat.topics.map(topic => {
-                  const isChecked = userChecklistProgress.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                  </label>`;
-                }).join('')}
-              </div>
-            </div>
-          `).join('')}
+        <div class="checklist-accordion">
+          ${renderAccordionChecklist(KOKUSHI_CHECKLIST)}
         </div>
       </div>
     </div>
   `;
+
+  function renderAccordionChecklist(checklistData) {
+    const grouped = {};
+    checklistData.forEach(item => {
+      const parts = item.category.split(':');
+      const major = parts[0].trim();
+      const minor = parts[1] ? parts[1].trim() : major;
+      if (!grouped[major]) grouped[major] = { color: item.color, chapters: [] };
+      grouped[major].chapters.push({ minor, catObj: item });
+    });
+
+    return Object.entries(grouped).map(([major, data]) => {
+      const totalInMajor = data.chapters.reduce((s, c) => s + c.catObj.topics.length, 0);
+      const compInMajor = data.chapters.reduce((s, c) => s + userChecklistProgress.filter(ch => ch.category === c.catObj.category && ch.completed).length, 0);
+      const percentMajor = totalInMajor > 0 ? Math.round((compInMajor / totalInMajor) * 100) : 0;
+
+      return `
+        <div class="accordion-item major">
+          <div class="accordion-header major" style="border-left:4px solid ${data.color}">
+            <span class="accordion-title">${major}</span>
+            <div class="accordion-meta">
+              <span class="percent-badge">${percentMajor}%</span>
+              <span class="chevron-icon">⌄</span>
+            </div>
+          </div>
+          <div class="accordion-content major">
+            ${data.chapters.map(chapter => {
+              const compInMinor = userChecklistProgress.filter(ch => ch.category === chapter.catObj.category && ch.completed).length;
+              const totalInMinor = chapter.catObj.topics.length;
+              return `
+              <div class="accordion-item minor">
+                <div class="accordion-header minor">
+                  <span class="accordion-title">${chapter.minor}</span>
+                  <div class="accordion-meta">
+                    <span class="count-badge">${compInMinor}/${totalInMinor}</span>
+                    <span class="chevron-icon">⌄</span>
+                  </div>
+                </div>
+                <div class="accordion-content minor">
+                  <div class="check-list">
+                    ${chapter.catObj.topics.map(topic => {
+                      const isComplete = userChecklistProgress.some(ch => ch.category === chapter.catObj.category && ch.item === topic && ch.completed);
+                      return `
+                      <label class="check-item ${isComplete ? 'completed' : ''}">
+                        <input type="checkbox" class="med-check-item" 
+                          data-cat="${chapter.catObj.category}" 
+                          data-topic="${topic}" 
+                          ${isComplete ? 'checked' : ''}>
+                        <span class="check-text">${topic}</span>
+                      </label>`;
+                    }).join('')}
+                  </div>
+                </div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+    }).join('');
+  }
 
   // Timer event handlers
   const display = document.getElementById('timer-display');
@@ -293,6 +324,16 @@ export function renderStudy() {
       if (ex) ex.completed = checked;
       else userChecklistProgress.push({ category: cat, topic: top, completed: checked });
       renderStudy(); // Re-render to update percentages
+    });
+  });
+
+  // Accordion toggles
+  document.querySelectorAll('.accordion-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const item = header.parentElement;
+      const isOpen = item.classList.contains('open');
+      // Close others at same level? (Optional, let's keep it simple)
+      item.classList.toggle('open');
     });
   });
 }

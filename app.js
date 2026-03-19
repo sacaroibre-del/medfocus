@@ -185,12 +185,32 @@ const CBT_CHECKLIST = [
 ];
 
 const KOKUSHI_CHECKLIST = [
-  { category: '必修・基本事項', color: '#4ECDC4', topics: ['医師のプロフェッショナリズム', '医学総論（必修）', '医学各論（必修）', '公衆衛生（必修）', '救急初期対応'] },
-  { category: '医学総論', color: '#45B7D1', topics: ['症候学・臨床推論', '身体診察', '検査生理・画像', '治療・処置'] },
-  { category: '医学各論（内科・外科）', color: '#96CEB4', topics: ['循環器', '呼吸器', '消化管・肝胆膵', '腎臓', '内分泌・代謝', '血液・造血器', '免疫・アレルギー', '感染症'] },
-  { category: '医学各論（マイナー・他）', color: '#F7DC6F', topics: ['神経', '精神科', '小児科', '産科・婦人科', '眼科', '耳鼻咽喉科', '整形外科', '皮膚科', '泌尿器科', '放射線科'] },
-  { category: '社会医学・その他', color: '#F1948A', topics: ['公衆衛生・予防医学', '統計・疫学', '関係法規・医療制度'] }
+  // 基礎医学・総論
+  { category: '国試基礎: 解剖・生理・生化学', color: '#4ECDC4', topics: ["体表解剖・断面像（CT/MRI読影）","神経解剖（脳神経・脊髄路）","血管走行・分布","リンパ節・リンパ流","組織像（病理との連携）","心電図・不整脈生理","肺気量・換気・拡散能","GFR・クリアランス","ホルモンフィードバック","自律神経調節","先天性代謝異常（PKU・ガラクトース血症等）","ビタミン欠乏症","微量元素","栄養評価（NRS・SGA）","輸液の組成と適応"] },
+  { category: '国試基礎: 病態生理', color: '#4ECDC4', topics: ["ショックの分類と治療","DIC機序","電解質・酸塩基平衡異常","全身炎症反応（SIRS・敗血症）","腫瘍マーカーと病態"] },
+  
+  // 内科系（循環器・呼吸器・消化器・肝・腎）
+  { category: '国試内科: 循環器・呼吸器', color: '#45B7D1', topics: ["急性冠症候群（診断・治療）","心電図判読（ST変化・ブロック等）","心不全（HFrEF・HFpEF）","弁膜症（AS・MR・MS等）","不整脈（AF・VT・WPW等）","高血圧緊急症","大動脈解離・大動脈瘤","心タンポナーデ","先天性心疾患（成人含む）","肺塞栓症","肺炎（市中・院内・非定型）","COPD（診断・増悪管理）","気管支喘息（ステップ治療）","肺癌（病型・治療選択）","間質性肺炎（UIP・NSIP等）","胸膜炎・膿胸","気胸","呼吸不全（I型・II型）","睡眠時無呼吸症候群","サルコイドーシス"] },
+  { category: '国試内科: 消化器・肝・腎', color: '#45B7D1', topics: ["食道癌・食道炎","胃癌・胃潰瘍・H.pylori","炎症性腸疾患（UC・CD）","大腸癌・ポリポーシス","急性膵炎・慢性膵炎","膵癌","胆石・胆嚢炎・胆管炎","消化管出血（上部・下部）","腸閉塞・腸重積","虚血性腸疾患","ウイルス性肝炎（B・C型）","肝硬変・合併症","肝細胞癌","自己免疫性肝炎・PBC・PSC","アルコール性肝疾患","NAFLD/NASH","肝不全・肝移植適応","急性腎障害（AKI）","慢性腎臓病（CKD）・透析","ネフローゼ症候群（一次・二次）","腎炎症候群（IgA腎症等）","電解質異常（Na・K・Ca・P）","酸塩基平衡異常","腎血管性高血圧"] },
+  { category: '国試内科: 代謝・血液・神経', color: '#45B7D1', topics: ["1型・2型糖尿病（診断基準・合併症・治療）","甲状腺疾患（バセドウ・橋本・癌）","副腎疾患（クッシング・アジソン・褐色細胞腫）","下垂体・視床下部疾患","副甲状腺・Ca代謝","脂質異常症・メタボリック症候群","高尿酸血症・痛風","鉄欠乏性・巨赤芽球性・溶血性貧血","再生不良性貧血・MDS","急性・慢性白血病（分類・治療）","悪性リンパ腫（ホジキン・非ホジキン）","多発性骨髄腫","凝固・出血（血友病・ITP・TTP）","輸血療法・副反応","脳梗塞・TIA（rtPA適応・二次予防）","脳出血・くも膜下出血","変性疾患（ALS・パーキンソン・MSA等）","認知症（AD・DLB・FTD・VaD）","てんかん（分類・薬物選択）","多発性硬化症・視神経脊髄炎","末梢神経障害・ギラン・バレー","髄膜炎・脳炎","頭痛（片頭痛・群発・二次性）"] },
+  { category: '国試内科: 膠原病・感染症', color: '#45B7D1', topics: ["関節リウマチ（診断・生物学的製剤）","SLE（分類・臓器病変）","強皮症・多発筋炎/皮膚筋炎","シェーグレン症候群","血管炎（GPA・MPA・大動脈炎等）","抗リン脂質抗体症候群","成人Still病","敗血症・敗血症性ショック","市中・院内感染の管理","HIV/AIDS（診断・治療・日和見感染）","結核（診断・治療・接触者対応）","性感染症","マラリア・寄生虫","抗菌薬の選択と耐性（MRSA・ESBL等）","ワクチン予防可能疾患"] },
+
+  // 外科系
+  { category: '国試外科: 外科総論・消化器・胸部', color: '#96CEB4', topics: ["術前評価（心肺・肝腎機能）","周術期管理・輸液","麻酔の種類と管理","創傷治癒・感染管理","ドレーン管理","術後合併症（肺塞栓・縫合不全等）","消化管癌の術式（食道・胃・大腸・直腸）","肝・胆・膵の手術適応","急性腹症の鑑別と処置","虫垂炎・腹膜炎","ヘルニア（鼠経・腹壁等）","消化管穿孔","肺癌の病期・術式","縦隔腫瘍・胸腺腫","食道癌の集学的治療","弁膜症・CABG適応","大動脈外科（解離・瘤）"] },
+  { category: '国試外科: 脳神・整形・泌尿・皮膚', color: '#96CEB4', topics: ["頭部外傷（硬膜外・硬膜下血腫）","脳腫瘍（グリオーマ・転移性）","脳動脈瘤・AVM","正常圧水頭症","腰椎・頚椎手術","骨折の分類・治療原則","脊椎疾患（椎間板・脊柱管狭窄）","変形性関節症・人工関節","関節リウマチ整形外科的治療","骨腫瘍（良性・悪性）","スポーツ傷害","腎癌・膀胱癌・前立腺癌","前立腺肥大症","尿路結石","尿路感染（腎盂腎炎・膀胱炎）","男性不妊・ED","皮膚癌（基底細胞・有棘細胞・悪性黒色腫）","熱傷（程度・面積・治療）","皮膚炎・湿疹","感染性皮膚疾患（帯状疱疹等）","乾癬・天疱瘡"] },
+  { category: '国試外科: 眼科・耳鼻科', color: '#96CEB4', topics: ["緑内障・白内障・網膜疾患","眼感染症・ぶどう膜炎","難聴（伝音・感音）","めまい（メニエール・BPPVほか）","副鼻腔炎・鼻ポリープ","頭頸部癌"] },
+
+  // 産婦人科・小児・精神
+  { category: '国試産科・婦人科', color: '#F7DC6F', topics: ["正常妊娠・分娩・産褥","妊娠高血圧症候群（PIH）","前置胎盤・常位胎盤早期剥離","早産・切迫早産・流産","胎児発育不全・胎児機能不全","多胎妊娠","産科的DIC","新生児蘇生法（NCPR）","先天異常の出生前診断","妊娠中の薬物投与","子宮頸癌（HPV・検診・治療）","子宮体癌（診断・治療）","卵巣腫瘍（良性・悪性・境界）","子宮内膜症・子宮腺筋症","子宮筋腫","月経異常（無月経・月経困難症）","更年期障害・HRT","不妊症の原因と治療","性感染症（産婦人科的側面）"] },
+  { category: '国試小児科', color: '#BB8FCE', topics: ["正常新生児の管理","新生児仮死・蘇生","新生児黄疸","低出生体重児の管理","発達・発育の評価","発達障害（ASD・ADHD・LD）","先天性心疾患（VSD・ASD・TOF・PDA等）","小児感染症（麻疹・風疹・水痘・手足口病等）","川崎病","小児悪性腫瘍（白血病・神経芽腫・Wilms腫瘍）","気管支喘息（小児）","1型糖尿病","染色体・先天異常症候群（ダウン等）","予防接種（定期・任意・スケジュール）","熱性痙攣・てんかん（小児）","アレルギー疾患（食物・アトピー）"] },
+  { category: '国試精神科', color: '#BB8FCE', topics: ["統合失調症（陽性・陰性症状・治療）","双極性障害（I型・II型）","うつ病・持続性抑うつ","不安症・パニック症・社交不安症","強迫症・PTSD","身体症状症","摂食障害（拒食・過食）","物質使用障害（アルコール・薬物）","認知症の精神科的管理","自殺リスク評価と対応","向精神薬（抗精神病薬・抗うつ薬・気分安定薬）","電気けいれん療法（ECT）","精神科救急","精神保健福祉法（入院形態）","措置入院・医療保護入院"] },
+
+  // 救急・社会・倫理
+  { category: '国試救急・集中治療', color: '#82E0AA', topics: ["BLS・ACLS（一次・二次救命処置）","外傷初期対応（JATEC・ATLS）","多発外傷・外傷性脳損傷","急性中毒（薬物・CO・農薬等）","熱中症・低体温症","溺水・電撃傷-高山病","急性腹症の鑑別","アナフィラキシー","人工呼吸管理（設定・ウィーニング）","血行動態モニタリング","敗血症管理（バンドル）","ARDS","DIC治療","急性腎障害のICU管理","栄養管理（経腸・経静脈）","鎮痛・鎮静・せん妄（PADガイドライン）"] },
+  { category: '国試社会医学・公衆衛生', color: '#F1948A', topics: ["疫学・統計","行政・法律","社会保障・保健","感染症法（1〜5類・指定感染症）","医師法・医療法・薬機法","個人情報保護・守秘義務","医療保険制度（国保・被用者保険・後期高齢）","介護保険（要介護認定・サービス）","母子保健（母子健康手帳・乳幼児健診）","がん検診・特定健診","予防医学（一次・二次・三次）","相対危険度・オッズ比・寄与危険度"] },
+  { category: '国試臨床倫理・医療安全', color: '#F1948A', topics: ["インフォームドコンセント","患者の自律性・意思能力","終末期医療・ACP（事前ケア計画）","DNR・DNAR","臓器提供・脳死","安楽死・尊厳死の倫理","研究倫理（ヘルシンキ宣言）","医療事故の定義と報告","インシデントレポート","チーム医療・多職種連携","医療訴訟・過失の概念","感染管理（標準予防策・PPE）"] }
 ];
+
 let checklistProgressCache = [];
 
 async function fetchChecklists() {
@@ -291,8 +311,15 @@ async function deleteStudyLog(id) {
 
 async function fetchPosts() {
   if (!supabase) return [];
-  const { data, error } = await supabase.from('posts').select('*, post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
   return error ? [] : data;
+}
+
+async function deletePost(postId) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('posts').delete().match({ id: postId, user_id: session.user.id });
+  if (error) showToast('❌ 削除に失敗しました');
+  else { showToast('✅ 投稿を削除しました'); await renderCommunity(); }
 }
 
 async function savePostReply(postId, body) {
@@ -495,10 +522,11 @@ function initRouter(){
 
 // ==================== POST CARD ====================
 function renderPostCard(post){
-  const name=post.is_anonymous?'匿名ユーザー':(post.user_id === currentUser.id ? currentUser.name : '他のユーザー');
+  const name=post.is_anonymous?'匿名ユーザー':(post.profiles?.full_name || '名前未設定');
   const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
   const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
+  const isMine = post.user_id === session?.user?.id;
   
   let cmts=''; 
   if (post.type === 'question') {
@@ -519,7 +547,7 @@ function renderPostCard(post){
     </div>`;
   }
   
-  return `<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div></div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>${(post.post_replies||[]).length}</span></button></div>${cmts}</article>`;
+  return `<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div>${isMine ? `<button class="btn-delete-post" data-id="${post.id}" style="background:none;border:none;color:#f1948a;cursor:pointer;padding:4px;" title="投稿を削除">🗑️</button>` : ''}</div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>${(post.post_replies||[]).length}</span></button></div>${cmts}</article>`;
 }
 
 // ==================== PAGES ====================
@@ -535,22 +563,52 @@ async function renderDashboard(){
   const totalT = totalCBT + totalKoku;
   const compT=checks.filter(c=>c.completed).length;
   const overall=totalT>0?Math.round((compT/totalT)*100):0;
-  
-  const today=new Date();const todayS=new Date(today);todayS.setHours(0,0,0,0);
-  const weekS=new Date(today);weekS.setDate(weekS.getDate()-7);
-  const todayMin=logs.filter(l=>new Date(l.started_at)>=todayS).reduce((s,l)=>s+l.duration_minutes,0);
-  const weekMin=logs.filter(l=>new Date(l.started_at)>=weekS).reduce((s,l)=>s+l.duration_minutes,0);
-  
-  const studied=new Set(logs.map(l=>l.subject_name)).size;
 
-  const catProg=[...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].map(cat=>{
-    const t = cat.topics.length;
-    const c = checks.filter(ch => ch.category === cat.category && ch.completed).length;
-    return{name:cat.category,color:cat.color,progress:t>0?Math.round((c/t)*100):0};
-  }).slice(0, 5); // Just show top 5 in radar chart to avoiding cluttering
+  // --- Statistics ---
+  const today=new Date(); today.setHours(0,0,0,0);
+  const totalMinutes = logs.reduce((s,l)=>s+l.duration_minutes,0);
+  
+  // Streak calculation
+  let streak = 0;
+  const studyDates = new Set(logs.map(l => new Date(l.started_at).toLocaleDateString()));
+  let d = new Date(today);
+  while(studyDates.has(d.toLocaleDateString())) {
+    streak++;
+    d.setDate(d.getDate() - 1);
+  }
+  
+  const todayMin=logs.filter(l=>new Date(l.started_at)>=today).reduce((s,l)=>s+l.duration_minutes,0);
+  const avgMin = logs.length > 0 ? Math.round(totalMinutes / new Set(logs.map(l=>new Date(l.started_at).toLocaleDateString())).size) : 0;
+  
+  // --- Radar Chart Aggregation ---
+  const buckets = ["基礎医学", "内科系", "外科系", "産婦人科", "小児科", "精神科", "社会医学", "救急科"];
+  const bucketProg = buckets.map(b => {
+    let total = 0;
+    let completed = 0;
+    
+    [...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].forEach(cat => {
+      let targetBucket = "";
+      const name = cat.category;
+      if (name.includes("基礎医学") || name.includes("国試基礎")) targetBucket = "基礎医学";
+      else if (name.includes("内科系") || name.includes("国試内科")) targetBucket = "内科系";
+      else if (name.includes("外科系") || name.includes("国試外科")) targetBucket = "外科系";
+      else if (name.includes("産科・婦人科") || name.includes("国試産科")) targetBucket = "産婦人科";
+      else if (name.includes("小児科")) targetBucket = "小児科";
+      else if (name.includes("精神科")) targetBucket = "精神科";
+      else if (name.includes("社会医学") || name.includes("公衆衛生") || name.includes("臨床倫理")) targetBucket = "社会医学";
+      else if (name.includes("救急") || name.includes("集中治療")) targetBucket = "救急科";
+      
+      if (targetBucket === b) {
+        total += cat.topics.length;
+        completed += checks.filter(ch => ch.category === cat.category && ch.completed).length;
+      }
+    });
+    
+    return { name: b, value: total > 0 ? Math.round((completed / total) * 100) : 0 };
+  });
 
   const dailyD=[],dailyL=[];
-  for(let i=6;i>=0;i--){const d=new Date(today);d.setDate(d.getDate()-i);
+  for(let i=6;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);
     const ds=new Date(d);ds.setHours(0,0,0,0);const de=new Date(d);de.setHours(23,59,59,999);
     dailyD.push(logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;}).reduce((s,l)=>s+l.duration_minutes,0));
     dailyL.push(d.toLocaleDateString('ja-JP',{weekday:'short'}));}
@@ -558,24 +616,24 @@ async function renderDashboard(){
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
     <div class="dashboard-stats">
       <div class="stat-card animate-slide-up"><div class="stat-label">📊 総合進捗率</div><div class="stat-value">${overall}<span class="stat-unit">%</span></div><div class="stat-change positive">▲ ${compT}/${totalT} トピック完了</div></div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.05s"><div class="stat-label">⏱ 今日の勉強</div><div class="stat-value">${formatMinutes(todayMin)}</div><div class="stat-change positive">▲ 集中して頑張っています</div></div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.1s"><div class="stat-label">📅 今週の合計</div><div class="stat-value">${formatMinutes(weekMin)}</div><div class="stat-change positive">▲ ${Math.round(weekMin/7)}分/日平均</div></div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.15s"><div class="stat-label">📚 学習中の科目</div><div class="stat-value">${studied}<span class="stat-unit">科目</span></div><div class="stat-change positive">▲ 全${subjectProgress.length}科目中</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.05s"><div class="stat-label">⏱ 今日の勉強</div><div class="stat-value">${formatMinutes(todayMin)}</div><div class="stat-change positive">▲ 目標まであと少し</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.1s"><div class="stat-label">🔥 連続達成</div><div class="stat-value">${streak}<span class="stat-unit">日</span></div><div class="stat-change positive">▲ 自己ベスト更新中！</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.15s"><div class="stat-label">⏳ 総学習時間</div><div class="stat-value">${Math.floor(totalMinutes/60)}<span class="stat-unit">時間</span></div><div class="stat-change positive">▲ 1日平均 ${formatMinutes(avgMin)}</div></div>
     </div>
     <div class="dashboard-charts">
       <div class="card animate-slide-up" style="animation-delay:.2s"><div class="card-header"><div class="card-title">📊 週間学習時間</div></div><div class="chart-container"><canvas id="weeklyBarChart"></canvas></div></div>
       <div class="card animate-slide-up" style="animation-delay:.25s"><div class="card-header"><div class="card-title">🎯 カテゴリ別進捗</div></div><div class="chart-container"><canvas id="categoryRadarChart"></canvas></div></div>
     </div>
     <div class="dashboard-bottom">
-      <div class="card animate-slide-up" style="animation-delay:.3s"><div class="card-header"><div class="card-title">📈 カテゴリ別進捗率</div></div>
-        <div class="category-progress-list">${catProg.map(c=>`<div class="category-progress-item"><div class="category-progress-header"><span class="category-progress-name"><span class="dot" style="background:${c.color}"></span>${c.name}</span><span class="category-progress-value">${c.progress}%</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:0%;background:${c.color}" data-width="${c.progress}"></div></div></div>`).join('')}</div></div>
+      <div class="card animate-slide-up" style="animation-delay:.3s"><div class="card-header"><div class="card-title">📈 進捗詳細 (8カテゴリ)</div></div>
+        <div class="category-progress-list">${bucketProg.map(b=>`<div class="category-progress-item"><div class="category-progress-header"><span class="category-progress-name">${b.name}</span><span class="category-progress-value">${b.value}%</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:0%;background:var(--color-primary)" data-width="${b.value}"></div></div></div>`).join('')}</div></div>
       <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">🔔 仲間のアクティビティ</div></div>
         <div class="activity-list">${activityFeed.map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
     </div>`;
 
   setTimeout(()=>{
     createBarChart('weeklyBarChart',dailyL,dailyD);
-    createRadarChart('categoryRadarChart',catProg.map(c=>c.name),catProg.map(c=>c.progress));
+    createRadarChart('categoryRadarChart',bucketProg.map(b=>b.name),bucketProg.map(b=>b.value));
     document.querySelectorAll('.progress-bar-fill').forEach(b=>{const w=b.dataset.width;requestAnimationFrame(()=>{b.style.width=w+'%';});});
   },100);
 }
@@ -603,8 +661,8 @@ async function renderStudy(){
           <button class="stopwatch-btn ${isRunning?'stopwatch-btn-pause':'stopwatch-btn-start'}" id="btn-toggle">${isRunning?'⏸':'▶'}</button>
           <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="保存">⏹</button>
         </div>
-        <div class="stopwatch-memo" style="margin-top:var(--space-md);margin-bottom:var(--space-sm);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;" maxlength="100"/></div>
         <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>記録中...':'開始ボタンを押して勉強を始めましょう'}</div>
+        <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);color:white;padding:5px;" maxlength="100"/></div>
       </div>
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
         <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
@@ -631,44 +689,79 @@ async function renderStudy(){
         </div>
       </div>
       <div id="checklist-view-cbt">
-        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-          ${CBT_CHECKLIST.map(cat => `
-            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                ${cat.topics.map(topic => {
-                  const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                  </label>`;
-                }).join('')}
-              </div>
-            </div>
-          `).join('')}
+        <div class="checklist-accordion" style="padding:var(--space-md);">
+          ${renderAccordionChecklist(CBT_CHECKLIST, checks)}
         </div>
       </div>
       <div id="checklist-view-kokushi" style="display:none;">
-        <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
-          ${KOKUSHI_CHECKLIST.map(cat => `
-            <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
-              <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
-              <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
-              <div style="display:flex;flex-direction:column;gap:8px;">
-                ${cat.topics.map(topic => {
-                  const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
-                  return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
-                    <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
-                    <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
-                  </label>`;
-                }).join('')}
-              </div>
-            </div>
-          `).join('')}
+        <div class="checklist-accordion" style="padding:var(--space-md);">
+          ${renderAccordionChecklist(KOKUSHI_CHECKLIST, checks)}
         </div>
       </div>
     </div>`;
+
+  function renderAccordionChecklist(checklist, userChecks) {
+    const grouped = {};
+    checklist.forEach(cat => {
+      const parts = cat.category.split(': ');
+      const major = parts[0];
+      const sub = parts[1] || '';
+      if (!grouped[major]) grouped[major] = { color: cat.color, chapters: [] };
+      grouped[major].chapters.push({ sub, catObj: cat });
+    });
+
+    return Object.entries(grouped).map(([major, data]) => {
+      const totalInMajor = data.chapters.reduce((s, c) => s + c.catObj.topics.length, 0);
+      const compInMajor = data.chapters.reduce((s, c) => s + userChecks.filter(ch => ch.category === c.catObj.category && ch.completed).length, 0);
+      return `
+        <div class="accordion-item major-category" style="margin-bottom:8px;border:1px solid rgba(148,163,184,0.1);border-radius:var(--radius-md);overflow:hidden;">
+          <div class="accordion-header major-header" style="background:var(--color-bg-elevated);padding:12px 16px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;border-left:4px solid ${data.color};">
+            <span style="font-weight:600;font-size:0.95rem;">${major} <span style="font-weight:400;font-size:0.8rem;color:var(--color-text-tertiary);margin-left:8px;">(${compInMajor}/${totalInMajor})</span></span>
+            <span class="accordion-icon">▶</span>
+          </div>
+          <div class="accordion-content major-content" style="display:none;background:var(--color-bg-secondary);padding:8px 0;">
+            ${data.chapters.map(chap => {
+              const compInChap = userChecks.filter(ch => ch.category === chap.catObj.category && ch.completed).length;
+              const totalInChap = chap.catObj.topics.length;
+              return `
+                <div class="accordion-item sub-category" style="margin:4px 16px;border-radius:var(--radius-sm);overflow:hidden;">
+                  <div class="accordion-header sub-header" style="padding:8px 12px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;background:rgba(148,163,184,0.05);">
+                    <span style="font-size:0.9rem;color:var(--color-text-secondary);">${chap.sub} <span style="font-size:0.75rem;color:var(--color-text-tertiary);margin-left:4px;">(${compInChap}/${totalInChap})</span></span>
+                    <span class="accordion-icon" style="font-size:0.7rem;">▶</span>
+                  </div>
+                  <div class="accordion-content sub-content" style="display:none;padding:12px;background:var(--color-bg-elevated);">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;">
+                      ${chap.catObj.topics.map(topic => {
+                        const isChecked = userChecks.some(ch => ch.category === chap.catObj.category && ch.topic === topic && ch.completed);
+                        return `
+                          <label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                            <input type="checkbox" class="med-check-item" data-cat="${chap.catObj.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                            <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                          </label>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Accordion Logic
+  document.querySelectorAll('.accordion-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const content = header.nextElementSibling;
+      const icon = header.querySelector('.accordion-icon');
+      const isVisible = content.style.display === 'block';
+      content.style.display = isVisible ? 'none' : 'block';
+      icon.textContent = isVisible ? '▶' : '▼';
+      icon.style.transform = isVisible ? 'rotate(0deg)' : 'rotate(90deg)';
+    });
+  });
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
   const status=document.getElementById('timer-status');const btnT=document.getElementById('btn-toggle');
@@ -682,53 +775,30 @@ async function renderStudy(){
     else{startSW(upd);btnT.className='stopwatch-btn stopwatch-btn-pause';btnT.textContent='⏸';status.className='stopwatch-status recording';status.innerHTML='<span class="status-dot"></span>記録中...';}});
   document.getElementById('btn-reset').addEventListener('click',()=>{resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='開始ボタンを押して勉強を始めましょう';});
   document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';const memo=document.getElementById('study-memo').value.trim();await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60),memo);resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
-
-  document.querySelectorAll('.btn-log-action.delete').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const id = e.currentTarget.dataset.id;
-      if(confirm('本当にこの記録を削除しますか？')) { await deleteStudyLog(id); renderStudy(); }
-    });
-  });
-  
+  document.querySelectorAll('.btn-log-action.delete').forEach(btn => btn.addEventListener('click', async (e) => {
+    const id = e.currentTarget.dataset.id;
+    if(confirm('本当にこの記録を削除しますか？')) { await deleteStudyLog(id); renderStudy(); }
+  }));
   const tabCbt = document.getElementById('tab-cbt');
   const tabKokushi = document.getElementById('tab-kokushi');
   const viewCbt = document.getElementById('checklist-view-cbt');
   const viewKokushi = document.getElementById('checklist-view-kokushi');
-  
-  if(window.activeChecklistTab === 'kokushi') {
-    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
-    viewKokushi.style.display='block'; viewCbt.style.display='none';
-  }
-  
-  tabCbt.addEventListener('click', () => {
-    window.activeChecklistTab = 'cbt';
-    tabCbt.classList.add('active'); tabKokushi.classList.remove('active');
-    viewCbt.style.display='block'; viewKokushi.style.display='none';
-  });
-  tabKokushi.addEventListener('click', () => {
-    window.activeChecklistTab = 'kokushi';
-    tabKokushi.classList.add('active'); tabCbt.classList.remove('active');
-    viewKokushi.style.display='block'; viewCbt.style.display='none';
-  });
-
+  if(window.activeChecklistTab === 'kokushi') { tabKokushi.classList.add('active'); tabCbt.classList.remove('active'); viewKokushi.style.display='block'; viewCbt.style.display='none'; }
+  tabCbt.addEventListener('click', () => { window.activeChecklistTab = 'cbt'; tabCbt.classList.add('active'); tabKokushi.classList.remove('active'); viewCbt.style.display='block'; viewKokushi.style.display='none'; });
+  tabKokushi.addEventListener('click', () => { window.activeChecklistTab = 'kokushi'; tabKokushi.classList.add('active'); tabCbt.classList.remove('active'); viewKokushi.style.display='block'; viewCbt.style.display='none'; });
   document.querySelectorAll('.med-check-item').forEach(cb => cb.addEventListener('change', async (e) => {
-    const cat = e.target.dataset.cat;
-    const top = e.target.dataset.topic;
-    const checked = e.target.checked;
-    await toggleChecklistItem(cat, top, checked);
-    renderStudy(); // Re-render to update completed count
+    const cat = e.target.dataset.cat; const top = e.target.dataset.topic; const checked = e.target.checked;
+    await toggleChecklistItem(cat, top, checked); renderStudy();
   }));
-  document.querySelectorAll('.btn-log-action.edit').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const ds = e.currentTarget.dataset;
-      const newDurStr = prompt(`【${ds.subject}】の新しい勉強時間（分）を入力してください:`, ds.duration);
-      if(newDurStr !== null) {
-        const dur = parseInt(newDurStr);
-        if(!isNaN(dur) && dur > 0) { await updateStudyLog(ds.id, ds.subject, dur); renderStudy(); }
-        else { showToast('⚠️ 正しい分数を入力してください'); }
-      }
-    });
-  });
+  document.querySelectorAll('.btn-log-action.edit').forEach(btn => btn.addEventListener('click', async (e) => {
+    const ds = e.currentTarget.dataset;
+    const newDurStr = prompt(`【${ds.subject}】の新しい勉強時間（分）を入力してください:`, ds.duration);
+    if(newDurStr !== null) {
+      const dur = parseInt(newDurStr);
+      if(!isNaN(dur) && dur > 0) { await updateStudyLog(ds.id, ds.subject, dur); renderStudy(); }
+      else { showToast('⚠️ 正しい分数を入力してください'); }
+    }
+  }));
 }
 
 // --- Community ---
@@ -773,7 +843,14 @@ async function renderCommunity(){
   document.getElementById('post-feed').addEventListener('click', async (e) => {
     const lb=e.target.closest('[data-action="like"]');
     if(lb){lb.classList.toggle('liked');const sp=lb.querySelector('span');const c=parseInt(sp.textContent);sp.textContent=lb.classList.contains('liked')?c+1:c-1;}
-    
+
+    // Add delete post listener
+    const db=e.target.closest('.btn-delete-post');
+    if(db){
+      const id=db.dataset.id;
+      if(confirm('本当にこの投稿を削除しますか？')){await deletePost(id); renderCommunity();}
+    }
+
     const btnReply = e.target.closest('.btn-submit-reply');
     if (btnReply) {
       const postId = btnReply.dataset.postId;
@@ -798,7 +875,7 @@ async function renderRanking(){
   async function renderMain(p, gid){
     if (myGroups.length === 0) return `<div class="card"><div class="card-body" style="padding:var(--space-2xl);text-align:center;color:var(--color-text-secondary)">設定画面からグループを作成または参加すると<br>ランキングが表示されます。</div></div>`;
     if (!gid) return `<div class="card"><div class="card-body" style="padding:var(--space-2xl);text-align:center;color:var(--color-text-secondary)">グループを選択してください。</div></div>`;
-    
+
     const s = await fetchGroupRanking(gid, p);
     const groupTabs = `<div class="tabs" style="margin-bottom:var(--space-lg);overflow-x:auto;white-space:nowrap;justify-content:flex-start;scrollbar-width:none">
       ${myGroups.map(g => `<button class="tab ${g.id === gid ? 'active' : ''}" data-group="${g.id}" style="flex:none">${g.name}</button>`).join('')}</div>`;
@@ -812,7 +889,7 @@ async function renderRanking(){
           <div class="avatar avatar-lg" style="background:${c}">${ini}</div></div>
           <div class="podium-name">${u.name}</div><div class="podium-time">${formatMinutes(u.total)}</div>
           <div class="podium-bar">${ar}</div></div>`;}).join('')}</div></div>`;
-          
+
     const listHtml = `<div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 メンバーランキング</div></div>
         ${s.map((u,i)=>{const me=u.userId===currentUser.id;const c=getAvatarColor(u.userId);const ini=getInitials(u.name);
           return`<div class="ranking-row ${me?'is-me':''}"><div class="ranking-position ${posClass(i)}">${i+1}</div><div class="avatar avatar-sm" style="background:${c}">${ini}</div><div class="ranking-user-info"><div class="ranking-user-name">${u.name} ${me?'<span class="badge badge-teal">あなた</span>':''}</div></div><div class="ranking-time">${formatMinutes(u.total)}</div></div>`;}).join('')}</div>`;
@@ -964,6 +1041,21 @@ function renderSettings(){
       </div>
     </div>
 
+    <!-- Privacy Settings -->
+    <div class="settings-card animate-slide-up" style="animation-delay:.20s">
+      <h3 class="settings-section-title">🔒 プライバシー設定</h3>
+      <div class="settings-row" style="padding:0">
+        <div style="flex:1">
+          <div style="font-size:var(--font-size-base);font-weight:500;margin-bottom:var(--space-xs)">プロフィールを公開する</div>
+          <div style="font-size:var(--font-size-xs);color:var(--color-text-tertiary)">オンにすると、他のユーザーがランキングなどで進捗を確認できます</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="input-public" ${currentUser.is_public !== false ? 'checked' : ''}>
+          <span class="slider round"></span>
+        </label>
+      </div>
+    </div>
+
     <!-- Appearance -->
     <div class="settings-card animate-slide-up" style="animation-delay:.24s">
       <h3 class="settings-section-title">🎨 外観設定</h3>
@@ -1004,6 +1096,7 @@ function renderSettings(){
     const newName=document.getElementById('input-name').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
     const newGrade=parseInt(document.getElementById('input-grade').value);
+    const isPublic = document.getElementById('input-public').checked;
     if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
     
     e.target.textContent = '保存中...';
@@ -1012,7 +1105,8 @@ function renderSettings(){
         id: session.user.id,
         full_name: newName,
         university: newUniv,
-        grade: newGrade
+        grade: newGrade,
+        is_public: isPublic
       });
       if (error) { showToast('❌ 保存に失敗しました: ' + error.message); e.target.textContent = '💾 プロフィールを保存'; return; }
     }
@@ -1020,9 +1114,11 @@ function renderSettings(){
     currentUser.name=newName;
     currentUser.university=newUniv||'未設定';
     currentUser.grade=newGrade;
+    currentUser.is_public=isPublic;
     renderSidebar();
     showToast('✅ プロフィールを保存しました！');
     e.target.textContent = '💾 プロフィールを保存';
+    renderDashboard();
   });
 
   // Group Create/Join logic

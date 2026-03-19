@@ -23,23 +23,22 @@ export function renderDashboard() {
   const weekMinutes = studyLogs.filter(l => new Date(l.startedAt) >= weekStart).reduce((s, l) => s + l.durationMinutes, 0);
   const studiedSubjects = new Set(studyLogs.map(l => l.subjectId)).size;
 
-  // カテゴリ別進捗
-  const categoryProgress = [...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].map(cat => {
-    const total = cat.topics.length;
-    const completed = userChecklistProgress.filter(ch => ch.category === cat.category && ch.completed).length;
-    return { name: cat.category, color: cat.color, progress: total > 0 ? Math.round((completed / total) * 100) : 0 };
-  }).slice(0, 5);
+  // カテゴリ別進捗 (8つの極に集計)
+  const buckets = ["基礎医学", "内科系", "外科系", "産婦人科", "小児科", "精神科", "社会医学", "救急科"];
+  const bucketProgress = buckets.map(name => {
+    const relevant = [...CBT_CHECKLIST, ...KOKUSHI_CHECKLIST].filter(c => c.category.startsWith(name));
+    const total = relevant.reduce((s, c) => s + c.topics.length, 0);
+    const comp = relevant.reduce((s, c) => s + userChecklistProgress.filter(ch => ch.category === c.category && ch.completed).length, 0);
+    return { name, progress: total > 0 ? Math.round((comp / total) * 100) : 0, color: relevant[0]?.color || '#94a3b8' };
+  });
 
-  // 日別勉強時間（過去7日）
-  const dailyData = [];
-  const dailyLabels = [];
-  for (let i = 6; i >= 0; i--) {
-    const d = new Date(today); d.setDate(d.getDate() - i);
-    const dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
-    const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
-    const mins = studyLogs.filter(l => { const t = new Date(l.startedAt); return t >= dayStart && t <= dayEnd; }).reduce((s, l) => s + l.durationMinutes, 0);
-    dailyData.push(mins);
-    dailyLabels.push(d.toLocaleDateString('ja-JP', { weekday: 'short' }));
+  // ストリーク計算
+  let streak = 0;
+  const studyDates = new Set(studyLogs.map(l => new Date(l.startedAt).toLocaleDateString()));
+  let d = new Date(today);
+  while(studyDates.has(d.toLocaleDateString())) {
+    streak++;
+    d.setDate(d.getDate() - 1);
   }
 
   container.innerHTML = `
@@ -55,9 +54,9 @@ export function renderDashboard() {
         <div class="stat-change positive">▲ ${completedTopics}/${totalTopics} トピック完了</div>
       </div>
       <div class="stat-card animate-slide-up" style="animation-delay:0.05s">
-        <div class="stat-label">⏱ 今日の勉強</div>
-        <div class="stat-value">${formatMinutes(todayMinutes)}</div>
-        <div class="stat-change positive">▲ 集中して頑張っています</div>
+        <div class="stat-label">🔥 連続学習日数</div>
+        <div class="stat-value">${streak}<span class="stat-unit">日</span></div>
+        <div class="stat-change positive">▲ 継続は力なり！</div>
       </div>
       <div class="stat-card animate-slide-up" style="animation-delay:0.1s">
         <div class="stat-label">📅 今週の合計</div>
@@ -82,7 +81,7 @@ export function renderDashboard() {
       </div>
       <div class="card animate-slide-up" style="animation-delay:0.25s">
         <div class="card-header">
-          <div class="card-title">🎯 カテゴリ別進捗</div>
+          <div class="card-title">🎯 カテゴリ別進捗 (8分野)</div>
         </div>
         <div class="chart-container">
           <canvas id="categoryRadarChart"></canvas>
@@ -93,10 +92,10 @@ export function renderDashboard() {
     <div class="dashboard-bottom">
       <div class="card animate-slide-up" style="animation-delay:0.3s">
         <div class="card-header">
-          <div class="card-title">📈 カテゴリ別進捗率</div>
+          <div class="card-title">📈 分野別達成度</div>
         </div>
         <div class="category-progress-list">
-          ${categoryProgress.map(c => `
+          ${bucketProgress.map(c => `
             <div class="category-progress-item">
               <div class="category-progress-header">
                 <span class="category-progress-name"><span class="dot" style="background:${c.color}"></span>${c.name}</span>
@@ -129,10 +128,22 @@ export function renderDashboard() {
     </div>
   `;
 
+  // 日別勉強時間（過去7日）の集計
+  const dailyData = [];
+  const dailyLabels = [];
+  for (let i = 6; i >= 0; i--) {
+    const d = new Date(today); d.setDate(d.getDate() - i);
+    const dayStart = new Date(d); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(d); dayEnd.setHours(23, 59, 59, 999);
+    const mins = studyLogs.filter(l => { const t = new Date(l.startedAt); return t >= dayStart && t <= dayEnd; }).reduce((s, l) => s + l.durationMinutes, 0);
+    dailyData.push(mins);
+    dailyLabels.push(d.toLocaleDateString('ja-JP', { weekday: 'short' }));
+  }
+
   // チャートを描画
   setTimeout(() => {
     createBarChart('weeklyBarChart', dailyLabels, dailyData, '勉強時間(分)');
-    createRadarChart('categoryRadarChart', categoryProgress.map(c => c.name), categoryProgress.map(c => c.progress));
+    createRadarChart('categoryRadarChart', bucketProgress.map(p => p.name), bucketProgress.map(p => p.progress));
 
     // プログレスバーアニメーション
     document.querySelectorAll('.progress-bar-fill').forEach(bar => {

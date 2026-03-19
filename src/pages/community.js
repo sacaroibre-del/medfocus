@@ -130,7 +130,7 @@ export function renderCommunity() {
     });
   });
 
-  // Like buttons & Replies
+    // Like buttons & Replies & Deletion
   document.getElementById('post-feed').addEventListener('click', (e) => {
     const likeBtn = e.target.closest('[data-action="like"]');
     if (likeBtn) {
@@ -138,6 +138,19 @@ export function renderCommunity() {
       const span = likeBtn.querySelector('span');
       const curr = parseInt(span.textContent);
       span.textContent = likeBtn.classList.contains('liked') ? curr + 1 : curr - 1;
+    }
+
+    const deleteBtn = e.target.closest('.post-delete-btn');
+    if (deleteBtn) {
+      const postId = deleteBtn.dataset.postId;
+      if (confirm('この投稿を削除しますか？')) {
+        const idx = posts.findIndex(p => p.id === postId);
+        if (idx !== -1) {
+          posts.splice(idx, 1);
+          renderCommunity();
+        }
+      }
+      return;
     }
     
     // Reply submit
@@ -148,9 +161,19 @@ export function renderCommunity() {
       const body = input.value.trim();
       if (!body) return;
       
-      // Since modular uses mock data, just alert
-      alert('✅ 返信を送信しました！（デモモード）\\n内容: ' + body);
-      input.value = '';
+      const post = posts.find(p => p.id === postId);
+      if (post) {
+        if (!post.comments) post.comments = [];
+        post.comments.push({
+          id: 'c-' + Date.now(),
+          postId: postId,
+          userId: currentUser.id,
+          body: body,
+          isAnonymous: false,
+          createdAt: new Date().toISOString()
+        });
+        renderCommunity();
+      }
     }
   });
 }
