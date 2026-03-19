@@ -478,15 +478,24 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 .hide-sidebar #main-content { margin-left: 0 !important; margin-bottom: 0 !important; }
 
 /* Timer Countdown & Confirmation */
-.timer-mode-switcher { margin-bottom: var(--space-md); border: 1px solid var(--color-border); }
-.mode-tab { transition: all var(--transition-fast); font-weight: 500; background: transparent; color: var(--color-text-secondary); }
-.mode-tab.active { box-shadow: 0 4px 12px rgba(78,205,196,0.3); color: white !important; }
+.timer-mode-switcher { margin-bottom: var(--space-md); border: 1px solid var(--color-border); background: var(--color-bg-elevated); border-radius: var(--radius-md); padding: 4px; display: flex; }
+.mode-tab { flex: 1; transition: all var(--transition-fast); font-weight: 500; background: transparent; color: var(--color-text-secondary); border: none; padding: 8px; border-radius: var(--radius-sm); cursor: pointer; }
+.mode-tab.active { background: var(--color-accent-teal); color: white !important; box-shadow: 0 4px 12px rgba(78,205,196,0.2); }
 
 .countdown-settings .preset-btn { padding: 4px 12px; font-size: 0.75rem; border-radius: var(--radius-full); }
 .countdown-settings input::-webkit-outer-spin-button,
 .countdown-settings input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
-.timer-overlay { z-index: 1000 !important; cursor: default; }
+.timer-overlay { 
+  z-index: 1000 !important; 
+  cursor: default; 
+  background: rgba(13, 19, 33, 0.95); /* Keep it dark for contrast even in light mode, or make it dynamic */
+}
+:root.light .timer-overlay {
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(15px);
+}
+
 .celebration-icon { animation: pulse 2s infinite; }
 @keyframes pulse {
   0% { transform: scale(1); }
@@ -495,7 +504,7 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 }
 
 .confirm-form input:focus, .confirm-form select:focus, .confirm-form textarea:focus { 
-  outline: none; border-color: var(--color-primary); background: rgba(255,255,255,0.08); 
+  outline: none; border-color: var(--color-accent-teal); background: var(--color-bg-input); 
 }
 
-.confirm-form label { font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }
+.confirm-form label { font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; color: var(--color-text-tertiary); }

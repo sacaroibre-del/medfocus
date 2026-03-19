@@ -747,7 +747,7 @@ function renderPostCard(post){
       ${replies.length > 0 ? `<div class="post-replies-list">${repliesHtml}</div>` : ''}
       <div class="post-reply-input-wrapper" style="flex-direction:column; gap:8px; margin-top:12px; display:flex;">
         <div style="display:flex;gap:8px;">
-          <input type="text" class="post-reply-input" placeholder="返信を入力..." style="flex:1;font-size:0.85rem;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid rgba(148,163,184,0.2);background:var(--color-bg-base);color:white;" />
+          <input type="text" class="post-reply-input" placeholder="返信を入力..." style="flex:1;font-size:0.85rem;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid var(--color-border);background:var(--color-bg-input);color:var(--color-text-primary);" />
           <button class="btn btn-primary btn-sm btn-submit-reply" data-post-id="${post.id}">送信</button>
         </div>
         <label style="font-size:0.7rem;color:var(--color-text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer;">
@@ -881,9 +881,9 @@ async function renderStudy(){
       <!-- Timer Main Card -->
       <div class="stopwatch-card card animate-slide-up" style="position:relative; overflow:hidden;">
         <!-- Mode Switcher -->
-        <div class="timer-mode-switcher" style="display:flex; justify-content:center; gap:8px; margin-bottom:var(--space-md); background:rgba(255,255,255,0.05); padding:4px; border-radius:var(--radius-md);">
-          <button class="mode-tab ${!isCountdown?'active':''}" id="mode-up" style="flex:1; border:none; padding:6px; border-radius:var(--radius-sm); font-size:0.8rem; cursor:pointer; background:${!isCountdown?'var(--color-primary)':'transparent'}; color:white;">ストップウォッチ</button>
-          <button class="mode-tab ${isCountdown?'active':''}" id="mode-down" style="flex:1; border:none; padding:6px; border-radius:var(--radius-sm); font-size:0.8rem; cursor:pointer; background:${isCountdown?'var(--color-primary)':'transparent'}; color:white;">カウントダウン</button>
+        <div class="timer-mode-switcher" style="display:flex; justify-content:center; gap:8px; margin-bottom:var(--space-md); background:var(--color-bg-elevated); padding:4px; border-radius:var(--radius-md);">
+          <button class="mode-tab ${!isCountdown?'active':''}" id="mode-up">ストップウォッチ</button>
+          <button class="mode-tab ${isCountdown?'active':''}" id="mode-down">カウントダウン</button>
         </div>
 
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
@@ -898,7 +898,7 @@ async function renderStudy(){
               <button class="btn btn-secondary btn-sm preset-btn" data-min="90">90分</button>
             </div>
             <div style="display:flex; align-items:center; gap:8px;">
-              <input type="number" id="custom-min" placeholder="分" style="width:60px; text-align:center; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); color:white; border-radius:var(--radius-sm); padding:4px;" />
+              <input type="number" id="custom-min" placeholder="分" style="width:60px; text-align:center; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); border-radius:var(--radius-sm); padding:4px;" />
               <span style="font-size:0.8rem; color:var(--color-text-secondary);">分に設定</span>
             </div>
           </div>
@@ -920,30 +920,30 @@ async function renderStudy(){
           <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="記録する">⏹</button>
         </div>
         <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>集中記録中...':'準備ができたら開始しましょう'}</div>
-        <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="メモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);color:white;padding:5px;" maxlength="100"/></div>
+        <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="メモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-primary);padding:5px;" maxlength="100"/></div>
 
         <!-- Confirmation Overlay -->
         ${isConfirmingLog ? `
           <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; background:rgba(15,23,42,0.9); backdrop-filter:blur(10px); z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-xl); text-align:center;">
             <div class="celebration-icon" style="font-size:3rem; margin-bottom:var(--space-md);">🎉</div>
-            <h2 style="font-size:1.5rem; font-weight:700; color:white; margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
+            <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-text-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
             <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg);">今日の学習を記録しましょう</p>
             
             <div class="confirm-form" style="width:100%; max-width:320px; display:flex; flex-direction:column; gap:16px; text-align:left;">
               <div class="field">
                 <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習時間 (分)</label>
-                <input type="number" id="confirm-duration" value="${pendingLogDuration}" style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md); font-size:1.1rem; font-weight:700;" />
+                <input type="number" id="confirm-duration" value="${pendingLogDuration}" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); font-size:1.1rem; font-weight:700;" />
               </div>
               <div class="field">
                 <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習内容</label>
-                <select id="confirm-subject" style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md);">
+                <select id="confirm-subject" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);">
                   <option value="">-- 未選択 --</option>
                   ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
                 </select>
               </div>
               <div class="field">
                 <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">振り返りメモ</label>
-                <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md); min-height:80px;"></textarea>
+                <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); min-height:80px;"></textarea>
               </div>
               <div style="display:flex; gap:12px; margin-top:8px;">
                 <button class="btn btn-secondary" id="btn-discard-log" style="flex:1;">破棄</button>
@@ -1495,7 +1495,7 @@ function renderSettings(){
           </select>
         </div>
         <div class="settings-field"><label>件名</label><input type="text" id="feedback-title" placeholder="（例）タイマーの音を消したい"/></div>
-        <div class="settings-field"><label>内容</label><textarea id="feedback-body" placeholder="具体的な内容を教えてください..." style="min-height:100px;width:100%;background:var(--color-bg-base);color:white;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px"></textarea></div>
+        <div class="settings-field"><label>内容</label><textarea id="feedback-body" placeholder="具体的な内容を教えてください..." style="min-height:100px;width:100%;background:var(--color-bg-input);color:var(--color-text-primary);border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:8px"></textarea></div>
         <div class="settings-row" style="margin-bottom:var(--space-md)">
           <label class="anonymous-toggle" style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer"><input type="checkbox" id="feedback-anonymous"/> 匿名で送信する</label>
         </div>
