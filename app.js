@@ -553,28 +553,56 @@ let timerInterval=null, elapsedSeconds=0, isRunning=false;
 let isCountdown=false, countdownSeconds=0, initialCountdownSeconds=0, isConfirmingLog=false;
 let pendingLogDuration=0;
 
-function startSW(onTick){
-  if(isRunning) return;
-  isRunning=true;
-  const startTime = Date.now() - (elapsedSeconds * 1000);
-  localStorage.setItem('medfocus_timer_start', startTime.toString());
-  localStorage.setItem('medfocus_timer_running', 'true');
-  localStorage.setItem('medfocus_timer_is_countdown', isCountdown.toString());
-  localStorage.setItem('medfocus_timer_initial_countdown', initialCountdownSeconds.toString());
+function saveTimerState() {
+  localStorage.setItem('medfocus_timer_v2', JSON.stringify({
+    isRunning, isCountdown, elapsedSeconds, countdownSeconds,
+    lastUpdate: Date.now()
+  }));
+}
 
+function loadTimerState() {
+  const s = localStorage.getItem('medfocus_timer_v2');
+  if(!s) return;
+  const state = JSON.parse(s);
+  isRunning = state.isRunning;
+  isCountdown = state.isCountdown;
+  const delta = Math.floor((Date.now() - state.lastUpdate)/1000);
+  if (isRunning) {
+    elapsedSeconds = state.elapsedSeconds + delta;
+    if (isCountdown) {
+      countdownSeconds = Math.max(0, state.countdownSeconds - delta);
+      if (countdownSeconds === 0) { isRunning = false; finishSession(); return; }
+    }
+    startSW(); // Resume
+  } else {
+    elapsedSeconds = state.elapsedSeconds;
+    countdownSeconds = state.countdownSeconds;
+  }
+}
+
+function startSW(onTick){
+  if(isRunning && !timerInterval) { /* Allow auto-resume from loadTimerState */ }
+  else if(isRunning) return;
+  isRunning=true;
+  saveTimerState();
   timerInterval=setInterval(()=>{
-    const now = Date.now();
-    elapsedSeconds = Math.floor((now - startTime) / 1000);
     if(isCountdown) {
-      const remaining = initialCountdownSeconds - elapsedSeconds;
-      if (remaining > 0) {
-        countdownSeconds = remaining;
+      if(countdownSeconds > 0) {
+        countdownSeconds--;
+        elapsedSeconds++;
       } else {
-        countdownSeconds = 0;
         finishSession();
       }
+    } else {
+      elapsedSeconds++;
     }
+    if(elapsedSeconds % 5 === 0) saveTimerState(); // Periodically save
     if(onTick) onTick(isCountdown ? countdownSeconds : elapsedSeconds);
+    else {
+      // If we are on study page, update UI even if onTick not passed
+      const disp = document.getElementById('timer-display');
+      if(disp) disp.innerHTML = fmtSW(isCountdown ? countdownSeconds : elapsedSeconds);
+    }
   }, 1000);
 }
 
@@ -582,20 +610,21 @@ function finishSession() {
   pauseSW();
   pendingLogDuration = Math.floor(elapsedSeconds / 60);
   isConfirmingLog = true;
+  // Try to play a notification sound (beep)
   try {
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = audioCtx.createOscillator();
     osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
     osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
-  } catch(e) {}
+  } catch(e) { console.warn('Could not play notification sound:', e); }
+  
   if (typeof renderStudy === 'function') renderStudy();
 }
 
 function pauseSW(){
   isRunning=false;
   if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
-  localStorage.setItem('medfocus_timer_running', 'false');
-  localStorage.setItem('medfocus_timer_elapsed', elapsedSeconds.toString());
+  saveTimerState();
 }
 
 function resetSW(){
@@ -603,9 +632,7 @@ function resetSW(){
   elapsedSeconds=0;
   countdownSeconds=0;
   isConfirmingLog=false;
-  localStorage.removeItem('medfocus_timer_start');
-  localStorage.removeItem('medfocus_timer_running');
-  localStorage.removeItem('medfocus_timer_elapsed');
+  saveTimerState();
 }
 
 function fmtSW(t){
@@ -983,15 +1010,30 @@ async function renderStudy(){
 
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
         <div class="stopwatch-subject-selector">
-          <select id="study-subject">
+          <select id="study-subject" onchange="const c=document.getElementById('study-subject-custom-row'); if(this.value==='custom') c.style.display='block'; else c.style.display='none';">
             <option value="">-- 科目を選択 --</option>
             ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
-            <option value="custom">✏️ 自由入力</option>
+            <option value="custom">✍️ その他・自由入力</option>
           </select>
-          <div id="custom-subject-container" style="display:none; margin-top:12px">
-            <input type="text" id="input-custom-subject" placeholder="学習内容を入力..." style="width:100%; max-width:300px; text-align:center;" />
-          </div>
         </div>
+        <div id="study-subject-custom-row" style="display:none; margin-bottom:var(--space-md);">
+          <input type="text" id="study-subject-custom" placeholder="具体的な学習内容..." style="width:100%;max-width:300px;text-align:center;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-primary);padding:5px;" />
+        </div>
+        
+        <!-- Countdown Settings (only if not running) -->
+        ${isCountdown && !isRunning ? `
+          <div class="countdown-settings animate-fade-in" style="display:flex; flex-direction:column; align-items:center; gap:12px; margin-bottom:var(--space-md);">
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="25">25分</button>
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="50">50分</button>
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="90">90分</button>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="number" id="custom-min" placeholder="分" style="width:60px; text-align:center; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); border-radius:var(--radius-sm); padding:4px;" />
+              <span style="font-size:0.8rem; color:var(--color-text-secondary);">分に設定</span>
+            </div>
+          </div>
+        ` : ''}
         
         <!-- Countdown Settings (only if not running) -->
         ${isCountdown && !isRunning ? `
@@ -1040,13 +1082,13 @@ async function renderStudy(){
               </div>
               <div class="field">
                 <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習内容</label>
-                <select id="confirm-subject" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);">
-                  <option value="">-- 未選択 --</option>
-                  ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
-                  <option value="custom" ${document.getElementById('study-subject')?.value === 'custom' ? 'selected' : ''}>✏️ 自由入力</option>
-                </select>
-                <div id="confirm-custom-container" style="display:${document.getElementById('study-subject')?.value === 'custom' ? 'block' : 'none'}; margin-top:8px">
-                  <input type="text" id="confirm-custom-subject" value="${document.getElementById('input-custom-subject')?.value || ''}" placeholder="自由入力の内容..." style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);" />
+                <div id="confirm-subject-wrapper">
+                  <select id="confirm-subject" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md);" onchange="if(this.value==='custom') document.getElementById('confirm-subject-custom').style.display='block'; else document.getElementById('confirm-subject-custom').style.display='none';">
+                    <option value="">-- 未選択 --</option>
+                    ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
+                    <option value="custom" selected>✍️ 自由入力</option>
+                  </select>
+                  <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${(document.getElementById('study-subject')?.value==='custom'?document.getElementById('study-subject-custom')?.value:'') || ''}" style="width:100%; background:var(--color-bg-input); border:1px solid var(--color-border); color:var(--color-text-primary); padding:10px; border-radius:var(--radius-md); margin-top:8px;" />
                 </div>
               </div>
               <div class="field">
@@ -1163,16 +1205,6 @@ async function renderStudy(){
     });
   });
 
-  // --- Logic ---
-  document.getElementById('study-subject')?.addEventListener('change', (e)=>{
-    const custom = document.getElementById('custom-subject-container');
-    if (custom) custom.style.display = e.target.value === 'custom' ? 'block' : 'none';
-  });
-  document.getElementById('confirm-subject')?.addEventListener('change', (e)=>{
-    const custom = document.getElementById('confirm-custom-container');
-    if (custom) custom.style.display = e.target.value === 'custom' ? 'block' : 'none';
-  });
-
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
   const status=document.getElementById('timer-status');const btnT=document.getElementById('btn-toggle');
   const circ=2*Math.PI*140;
@@ -1277,16 +1309,15 @@ async function renderStudy(){
     const memoEle = document.getElementById('confirm-memo');
     
     const dur = parseInt(durEle.value);
-    const isCustom = subEle.value === 'custom';
-    const subId = isCustom ? null : subEle.value;
-    const subName = isCustom 
-      ? (document.getElementById('confirm-custom-subject')?.value.trim() || '自由学習')
-      : (subEle.options[subEle.selectedIndex]?.text || '未選択');
+    const subId = subEle.value;
+    const customInp = document.getElementById('confirm-subject-custom');
+    const subjVal = subId === 'custom' ? (customInp?.value.trim() || 'その他') : subId;
     const memo = memoEle.value.trim();
     
     if(isNaN(dur) || dur <= 0) { showToast('⚠️ 正しい時間を入力してください'); return; }
+    if(!subjVal) { showToast('⚠️ 学習内容を入力してください'); return; }
     
-    await saveStudyLog(subId || subName, dur, memo);
+    await saveStudyLog(subjVal, dur, memo);
     resetSW();
     renderStudy();
   });
@@ -1979,6 +2010,7 @@ registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayou
 async function initApp(){
   console.log('DEBUG: initApp started');
   if(supabase) {
+    loadTimerState();
     try {
       await fetchCountdowns();
       const { data: { session: initialSession } } = await supabase.auth.getSession();
@@ -1993,23 +2025,6 @@ async function initApp(){
           currentUser.avatar_url = profile.avatar_url;
           currentUser.daily_goal = profile.daily_goal || 60;
         }
-      }
-
-      // Restore Timer State
-      const wasRunning = localStorage.getItem('medfocus_timer_running') === 'true';
-      const savedStart = localStorage.getItem('medfocus_timer_start');
-      const savedElapsed = localStorage.getItem('medfocus_timer_elapsed');
-      
-      if (wasRunning && savedStart) {
-        const startTime = parseInt(savedStart);
-        elapsedSeconds = Math.floor((Date.now() - startTime) / 1000);
-        isCountdown = localStorage.getItem('medfocus_timer_is_countdown') === 'true';
-        initialCountdownSeconds = parseInt(localStorage.getItem('medfocus_timer_initial_countdown')) || 0;
-        isRunning = false; // startSW will set it to true
-        startSW();
-      } else if (savedElapsed) {
-        elapsedSeconds = parseInt(savedElapsed);
-        isRunning = false;
       }
       supabase.auth.onAuthStateChange(async (_event, newSession) => {
         session = newSession;
