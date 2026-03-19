@@ -130,7 +130,7 @@ export function renderCommunity() {
     });
   });
 
-  // Like buttons
+  // Like buttons & Replies
   document.getElementById('post-feed').addEventListener('click', (e) => {
     const likeBtn = e.target.closest('[data-action="like"]');
     if (likeBtn) {
@@ -138,6 +138,19 @@ export function renderCommunity() {
       const span = likeBtn.querySelector('span');
       const curr = parseInt(span.textContent);
       span.textContent = likeBtn.classList.contains('liked') ? curr + 1 : curr - 1;
+    }
+    
+    // Reply submit
+    const btnReply = e.target.closest('.btn-submit-reply');
+    if (btnReply) {
+      const postId = btnReply.dataset.postId;
+      const input = btnReply.previousElementSibling;
+      const body = input.value.trim();
+      if (!body) return;
+      
+      // Since modular uses mock data, just alert
+      alert('✅ 返信を送信しました！（デモモード）\\n内容: ' + body);
+      input.value = '';
     }
   });
 }

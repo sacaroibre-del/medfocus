@@ -138,6 +138,32 @@ async function fetchUserGroups() {
   if (!error && data) myGroups = data.map(d => ({ ...d.groups, role: d.role }));
 }
 
+const MEDICAL_CHECKLIST = [
+  { category: '基礎医学', color: '#4ECDC4', topics: ['解剖学', '生理学', '生化学', '薬理学', '病理学', '微生物学・感染症学', '免疫学'] },
+  { category: '臨床内科', color: '#45B7D1', topics: ['循環器内科', '消化器内科', '呼吸器内科', '神経内科', '血液内科', '腎臓内科', '内分泌内科', '膠原病内科'] },
+  { category: '臨床外科', color: '#96CEB4', topics: ['消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科', '整形外科', '産婦人科', '小児科', '精神科', '救急科', '麻酔科'] },
+  { category: '社会医学', color: '#F7DC6F', topics: ['公衆衛生学', '疫学', '法医学', '産業医学'] }
+];
+let checklistProgressCache = [];
+
+async function fetchChecklists() {
+  if (!supabase || !session) return [];
+  const { data, error } = await supabase.from('user_checklist_progress').select('category, topic, completed').eq('user_id', session.user.id);
+  if (!error && data) checklistProgressCache = data;
+  return checklistProgressCache;
+}
+
+async function toggleChecklistItem(category, topic, checked) {
+  if (!supabase || !session) return;
+  const ex = checklistProgressCache.find(c => c.category === category && c.topic === topic);
+  if (ex) ex.completed = checked;
+  else checklistProgressCache.push({ category, topic, completed: checked });
+  
+  await supabase.from('user_checklist_progress').upsert({
+    user_id: session.user.id, category, topic, completed: checked
+  }, { onConflict: 'user_id, category, topic' });
+}
+
 async function createGroup(name) {
   if (!supabase || !session) return;
   const code = generateInviteCode();
@@ -218,8 +244,15 @@ async function deleteStudyLog(id) {
 
 async function fetchPosts() {
   if (!supabase) return [];
-  const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+  const { data, error } = await supabase.from('posts').select('*, post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
   return error ? [] : data;
+}
+
+async function savePostReply(postId, body) {
+  if (!supabase || !session) return false;
+  const { error } = await supabase.from('post_replies').insert([{ post_id: postId, user_id: session.user.id, body }]);
+  if (error) { showToast('❌ 返信の失敗'); return false; }
+  showToast('✅ 返信を投稿しました！'); return true;
 }
 
 async function savePost(title, body, type, isAnonymous) {
@@ -419,9 +452,27 @@ function renderPostCard(post){
   const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
   const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
-  // Note: Comments implementation will be added later if needed
-  const cmts=''; 
-  return`<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div></div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>0</span></button></div>${cmts}</article>`;
+  
+  let cmts=''; 
+  if (post.type === 'question') {
+    const replies = post.post_replies || [];
+    const repliesHtml = replies.map(r => {
+      const rName = r.profiles ? r.profiles.full_name : '匿名ユーザー';
+      const rCol = getAvatarColor(r.user_id);
+      const rIni = getInitials(rName);
+      return `<div class="post-reply" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(148,163,184,0.12);"><div class="avatar avatar-sm" style="background:${rCol};width:24px;height:24px;font-size:0.7rem;">${rIni}</div><div class="reply-content" style="flex:1;"><div class="reply-header" style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;"><span class="reply-name" style="font-size:0.8rem;font-weight:600;color:var(--color-text-secondary);">${rName}</span><span class="reply-time" style="font-size:0.7rem;color:var(--color-text-tertiary);">${timeAgo(r.created_at)}</span></div><div class="reply-body" style="font-size:0.85rem;color:var(--color-text-primary);line-height:1.4;">${r.body}</div></div></div>`;
+    }).join('');
+    
+    cmts = `<div class="post-replies-section" style="margin-top:16px;">
+      ${replies.length > 0 ? `<div class="post-replies-list">${repliesHtml}</div>` : ''}
+      <div class="post-reply-input-wrapper" style="display:flex;gap:8px;margin-top:12px;">
+        <input type="text" class="post-reply-input" placeholder="返信を入力..." style="flex:1;font-size:0.85rem;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid rgba(148,163,184,0.2);background:var(--color-bg-base);color:white;" />
+        <button class="btn btn-primary btn-sm btn-submit-reply" data-post-id="${post.id}">送信</button>
+      </div>
+    </div>`;
+  }
+  
+  return `<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div></div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>${(post.post_replies||[]).length}</span></button></div>${cmts}</article>`;
 }
 
 // ==================== PAGES ====================
@@ -430,20 +481,23 @@ function renderPostCard(post){
 async function renderDashboard(){
   const ct=document.getElementById('page-container');
   const logs = await fetchStudyLogs();
+  const checks = await fetchChecklists();
   
-  const totalT=subjectProgress.reduce((s,p)=>s+p.totalTopics,0);
-  const compT=subjectProgress.reduce((s,p)=>s+p.completedTopics,0);
-  const overall=Math.round((compT/totalT)*100);
+  const totalT=MEDICAL_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
+  const compT=checks.filter(c=>c.completed).length;
+  const overall=totalT>0?Math.round((compT/totalT)*100):0;
+  
   const today=new Date();const todayS=new Date(today);todayS.setHours(0,0,0,0);
   const weekS=new Date(today);weekS.setDate(weekS.getDate()-7);
   const todayMin=logs.filter(l=>new Date(l.started_at)>=todayS).reduce((s,l)=>s+l.duration_minutes,0);
   const weekMin=logs.filter(l=>new Date(l.started_at)>=weekS).reduce((s,l)=>s+l.duration_minutes,0);
-  const studied=new Set(subjectProgress.filter(p=>p.completedTopics>0).map(p=>p.subjectName)).size;
+  
+  const studied=new Set(logs.map(l=>l.subject_name)).size;
 
-  const catProg=subjectCategories.map(cat=>{
-    const cs=subjectProgress.filter(p=>p.category===cat.name);
-    const t=cs.reduce((s,p)=>s+p.totalTopics,0);const c=cs.reduce((s,p)=>s+p.completedTopics,0);
-    return{name:cat.name,color:cat.color,progress:t>0?Math.round((c/t)*100):0};
+  const catProg=MEDICAL_CHECKLIST.map(cat=>{
+    const t = cat.topics.length;
+    const c = checks.filter(ch => ch.category === cat.category && ch.completed).length;
+    return{name:cat.category,color:cat.color,progress:t>0?Math.round((c/t)*100):0};
   });
 
   const dailyD=[],dailyL=[];
@@ -468,12 +522,39 @@ async function renderDashboard(){
         <div class="category-progress-list">${catProg.map(c=>`<div class="category-progress-item"><div class="category-progress-header"><span class="category-progress-name"><span class="dot" style="background:${c.color}"></span>${c.name}</span><span class="category-progress-value">${c.progress}%</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:0%;background:${c.color}" data-width="${c.progress}"></div></div></div>`).join('')}</div></div>
       <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">🔔 仲間のアクティビティ</div></div>
         <div class="activity-list">${activityFeed.map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
+    </div>
+    <div class="card animate-slide-up" style="animation-delay:.4s;margin-top:var(--space-md);"><div class="card-header"><div class="card-title">✅ 日本医学会分類 履修チェックリスト</div></div>
+      <div class="checklist-container" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:var(--space-md);padding:var(--space-md);">
+        ${MEDICAL_CHECKLIST.map(cat => `
+          <div class="checklist-category" style="background:var(--color-bg-elevated);border-radius:var(--radius-md);padding:var(--space-md);">
+            <h4 style="color:${cat.color};margin-bottom:var(--space-xs);font-size:0.95rem;">${cat.category}</h4>
+            <div style="font-size:0.8rem;color:var(--color-text-secondary);margin-bottom:var(--space-sm);">${checks.filter(ch=>ch.category===cat.category&&ch.completed).length} / ${cat.topics.length} 完了</div>
+            <div style="display:flex;flex-direction:column;gap:8px;">
+              ${cat.topics.map(topic => {
+                const isChecked = checks.some(ch => ch.category === cat.category && ch.topic === topic && ch.completed);
+                return `<label style="display:flex;align-items:center;gap:8px;font-size:0.85rem;cursor:pointer;">
+                  <input type="checkbox" class="med-check-item" data-cat="${cat.category}" data-topic="${topic}" ${isChecked?'checked':''}>
+                  <span style="${isChecked?'text-decoration:line-through;color:var(--color-text-tertiary)':''}">${topic}</span>
+                </label>`;
+              }).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
     </div>`;
 
   setTimeout(()=>{
     createBarChart('weeklyBarChart',dailyL,dailyD);
     createRadarChart('categoryRadarChart',catProg.map(c=>c.name),catProg.map(c=>c.progress));
     document.querySelectorAll('.progress-bar-fill').forEach(b=>{const w=b.dataset.width;requestAnimationFrame(()=>{b.style.width=w+'%';});});
+    
+    document.querySelectorAll('.med-check-item').forEach(cb => cb.addEventListener('change', async (e) => {
+      const cat = e.target.dataset.cat;
+      const top = e.target.dataset.topic;
+      const checked = e.target.checked;
+      await toggleChecklistItem(cat, top, checked);
+      renderDashboard(); // Re-render to update percentages and radar chart
+    }));
   },100);
 }
 
@@ -589,7 +670,22 @@ async function renderCommunity(){
     document.querySelectorAll('.filter-tab').forEach(t=>t.classList.remove('active'));tab.classList.add('active');
     const f=tab.dataset.filter;const filtered=f==='all'?sorted:sorted.filter(p=>p.type===f);
     document.getElementById('post-feed').innerHTML=filtered.map(p=>renderPostCard(p)).join('');}));
-  document.getElementById('post-feed').addEventListener('click',e=>{const lb=e.target.closest('[data-action="like"]');if(lb){lb.classList.toggle('liked');const sp=lb.querySelector('span');const c=parseInt(sp.textContent);sp.textContent=lb.classList.contains('liked')?c+1:c-1;}});
+  document.getElementById('post-feed').addEventListener('click', async (e) => {
+    const lb=e.target.closest('[data-action="like"]');
+    if(lb){lb.classList.toggle('liked');const sp=lb.querySelector('span');const c=parseInt(sp.textContent);sp.textContent=lb.classList.contains('liked')?c+1:c-1;}
+    
+    const btnReply = e.target.closest('.btn-submit-reply');
+    if (btnReply) {
+      const postId = btnReply.dataset.postId;
+      const input = btnReply.previousElementSibling;
+      const body = input.value.trim();
+      if (!body) return;
+      btnReply.disabled = true; btnReply.textContent = '...';
+      const success = await savePostReply(postId, body);
+      if (success) { input.value = ''; renderCommunity(); }
+      else { btnReply.disabled = false; btnReply.textContent = '送信'; }
+    }
+  });
 }
 
 // --- Ranking ---

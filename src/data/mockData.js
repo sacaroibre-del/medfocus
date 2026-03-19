@@ -117,7 +117,22 @@ export const subjectCategories = [
   },
 ];
 
-// --- 科目別進捗（現在のユーザー） ---
+// --- 日本医学会分類 履修チェックリスト ---
+export const MEDICAL_CHECKLIST = [
+  { category: '基礎医学', color: '#4ECDC4', topics: ['解剖学', '生理学', '生化学', '薬理学', '病理学', '微生物学・感染症学', '免疫学'] },
+  { category: '臨床内科', color: '#45B7D1', topics: ['循環器内科', '消化器内科', '呼吸器内科', '神経内科', '血液内科', '腎臓内科', '内分泌内科', '膠原病内科'] },
+  { category: '臨床外科', color: '#96CEB4', topics: ['消化器外科', '心臓血管外科', '呼吸器外科', '脳神経外科', '整形外科', '産婦人科', '小児科', '精神科', '救急科', '麻酔科'] },
+  { category: '社会医学', color: '#F7DC6F', topics: ['公衆衛生学', '疫学', '法医学', '産業医学'] }
+];
+
+export const userChecklistProgress = [
+  { category: '基礎医学', topic: '解剖学', completed: true },
+  { category: '基礎医学', topic: '生理学', completed: true },
+  { category: '基礎医学', topic: '生化学', completed: false },
+  { category: '臨床内科', topic: '循環器内科', completed: true },
+  { category: '臨床内科', topic: '呼吸器内科', completed: true },
+];
+
 export const subjectProgress = [
   { id: 'sp-01', userId: 'user-001', category: '基礎医学', subjectName: '解剖学', subjectId: 'sub-anatomy', completedTopics: 22, totalTopics: 25, progressRate: 88 },
   { id: 'sp-02', userId: 'user-001', category: '基礎医学', subjectName: '生理学', subjectId: 'sub-physiology', completedTopics: 15, totalTopics: 20, progressRate: 75 },
