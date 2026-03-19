@@ -45,6 +45,7 @@ const currentUser = {
 const users = [];
 
 let myGroups = []; // Array of groups the current user has joined
+let examCountdowns = []; // Array of exam countdowns
 
 const subjectCategories = [
   {id:'cat-basic',name:'基礎医学',color:'#4ECDC4',subjects:[
@@ -81,7 +82,6 @@ const subjectProgress = [];
 const studyLogs = [];
 const userStudyTotals = [];
 const posts = [];
-const examCountdowns = [];
 const activityFeed = [];
 
 // ==================== THEME ====================
@@ -125,6 +125,12 @@ Chart.defaults.color='#94a3b8';
 
 // ==================== GROUP HELPERS ====================
 function generateInviteCode() { return Math.random().toString(36).substring(2, 8).toUpperCase(); }
+
+async function fetchCountdowns() {
+  if (!supabase) return;
+  const { data, error } = await supabase.from('exam_countdowns').select('*').order('exam_date', { ascending: true });
+  if (!error && data) examCountdowns = data;
+}
 
 async function fetchUserGroups() {
   if (!supabase || !session) return;
@@ -575,8 +581,13 @@ async function renderRanking(){
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ランキング</h1><p class="page-subtitle">グループメンバーと学習時間を競い合おう</p></div>
     <div class="ranking-layout"><div id="ranking-main"><div style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>
-      <div class="countdown-section"><div style="font-size:1.125rem;font-weight:600;margin-bottom:8px">⏰ 各種設定</div>
-        <div class="card"><div class="card-body" style="color:var(--color-text-secondary);font-size:0.9rem">新しいグループに参加したい場合は左下の「設定画面」から操作を行ってください。<br><br>※ 試験カウントダウン機能は現在メンテナンス中です。</div></div>
+      <div class="countdown-section"><div style="font-size:1.125rem;font-weight:600;margin-bottom:8px">⏰ 試験カウントダウン</div>
+        ${examCountdowns.length===0?'<div class="card"><div class="card-body" style="color:var(--color-text-secondary);font-size:0.9rem">登録されているカウントダウンはありません</div></div>':''}
+        ${examCountdowns.map(e=>{
+          const d=daysUntil(e.exam_date);const dt=new Date(e.exam_date).toLocaleDateString('ja-JP',{year:'numeric',month:'long',day:'numeric'});
+          return`<div class="countdown-card"><div style="position:absolute;top:0;left:0;right:0;height:3px;background:${e.color||'#4ECDC4'}"></div><div class="countdown-name">${e.name}</div><div class="countdown-date">${dt}</div><div class="countdown-days"><span class="countdown-number" style="color:${e.color||'#4ECDC4'}">${d}</span><span class="countdown-label">日</span></div></div>`;
+        }).join('')}
+        <button class="btn btn-secondary btn-sm" id="btn-add-countdown" style="margin-top:var(--space-sm);width:100%;justify-content:center">＋ 追加する</button>
       </div></div>`;
       
   const mainWrapper = document.getElementById('ranking-main');
@@ -589,6 +600,20 @@ async function renderRanking(){
     if(tp||tg){
       mainWrapper.innerHTML='<div style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">よみこみ中...</div>';
       mainWrapper.innerHTML=await renderMain(period, currentRankingGroup);
+    }
+  });
+
+  document.getElementById('btn-add-countdown')?.addEventListener('click', async (e) => {
+    const name = window.prompt('試験や目標の名称を入力してください（例：国家試験、CBT）：');
+    if (!name) return;
+    const dateStr = window.prompt('目標日をハイフン区切りで入力してください（例：2026-10-15）：');
+    if (!dateStr || isNaN(Date.parse(dateStr))) { showToast('❌ 正しい日付形式で入力してください'); return; }
+    
+    e.target.textContent = '追加中...';
+    if (supabase) {
+      const { error } = await supabase.from('exam_countdowns').insert([{ name, exam_date: dateStr }]);
+      if (error) { showToast('❌ 追加に失敗しました'); e.target.textContent = '＋ 追加する'; }
+      else { showToast('✅ カウントダウンを追加しました！'); await fetchCountdowns(); renderRanking(); }
     }
   });
 }
@@ -770,6 +795,7 @@ async function initApp(){
   console.log('DEBUG: initApp started');
   if(supabase) {
     try {
+      await fetchCountdowns();
       const { data: { session: initialSession } } = await supabase.auth.getSession();
       session = initialSession;
       if (session) {
