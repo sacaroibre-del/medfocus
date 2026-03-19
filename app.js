@@ -310,7 +310,7 @@ async function deleteStudyLog(id) {
 }
 
 async function fetchPosts() {
-  if (!supabase) return [];
+  if (!supabase) return posts;
   const { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
   return error ? [] : data;
 }
@@ -330,12 +330,22 @@ async function savePostReply(postId, body) {
 }
 
 async function savePost(title, body, type, isAnonymous) {
-  if (!supabase || !session) return;
+  if (!supabase || !session) {
+    posts.unshift({
+      id: 'post-' + Date.now(),
+      created_at: new Date().toISOString(),
+      user_id: session?.user?.id || currentUser.id,
+      title, body, type, is_anonymous: isAnonymous,
+      likes: 0, post_replies: []
+    });
+    showToast('✅ 投稿しました！(デモ)');
+    return;
+  }
   const { error } = await supabase.from('posts').insert([{ 
     user_id: session.user.id, 
     title, body, type, is_anonymous: isAnonymous 
   }]);
-  if (error) showToast('❌ 投稿に失敗しました');
+  if (error) showToast('❌ 投稿に失敗しました: ' + error.message);
   else showToast('✅ 投稿しました！');
 }
 
