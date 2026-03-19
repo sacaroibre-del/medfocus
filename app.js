@@ -330,16 +330,39 @@ async function fetchPosts() {
 }
 
 async function deletePost(postId) {
-  if (!supabase || !session) return;
+  if (!supabase || !session) {
+    const idx = posts.findIndex(p => p.id === postId);
+    if (idx !== -1) {
+      posts.splice(idx, 1);
+      showToast('✅ 投稿を削除しました（デモ）');
+      await renderCommunity();
+    }
+    return;
+  }
   const { error } = await supabase.from('posts').delete().match({ id: postId, user_id: session.user.id });
-  if (error) showToast('❌ 削除に失敗しました');
+  if (error) showToast('❌ 削除に失敗しました: ' + error.message);
   else { showToast('✅ 投稿を削除しました'); await renderCommunity(); }
 }
 
 async function savePostReply(postId, body) {
-  if (!supabase || !session) return false;
+  if (!supabase || !session) {
+    const post = posts.find(p => p.id === postId);
+    if (post) {
+      if (!post.post_replies) post.post_replies = [];
+      post.post_replies.push({
+        id: 'reply-' + Date.now(),
+        created_at: new Date().toISOString(),
+        user_id: session?.user?.id || currentUser.id,
+        body,
+        profiles: { full_name: currentUser.name }
+      });
+      showToast('✅ 返信しました（デモ）');
+      return true;
+    }
+    return false;
+  }
   const { error } = await supabase.from('post_replies').insert([{ post_id: postId, user_id: session.user.id, body }]);
-  if (error) { showToast('❌ 返信の失敗'); return false; }
+  if (error) { showToast('❌ 返信の失敗: ' + error.message); return false; }
   showToast('✅ 返信を投稿しました！'); return true;
 }
 
@@ -350,7 +373,8 @@ async function savePost(title, body, type, isAnonymous) {
       created_at: new Date().toISOString(),
       user_id: session?.user?.id || currentUser.id,
       title, body, type, is_anonymous: isAnonymous,
-      likes: 0, post_replies: []
+      likes: 0, post_replies: [],
+      profiles: { full_name: currentUser.name }
     });
     showToast('✅ 投稿しました！(デモ)');
     return;
@@ -513,6 +537,8 @@ function handleLogout() {
 
 function mockLogin(email) {
   session = { user: { email, id: 'user-001' } };
+  currentUser.id = 'user-001';
+  currentUser.name = email.split('@')[0];
   showToast('✅ ログインしました（デモモード）');
   renderRoute(currentRoute);
 }
@@ -583,7 +609,23 @@ function renderPostCard(post){
     </div>`;
   }
   
-  return `<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div>${isMine ? `<button class="btn-delete-post" data-id="${post.id}" style="background:none;border:none;color:#f1948a;cursor:pointer;padding:4px;" title="投稿を削除">🗑️</button>` : ''}</div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>${(post.post_replies||[]).length}</span></button></div>${cmts}</article>`;
+  return `<article class="post-card animate-slide-up">
+    <div class="post-card-header">
+      <div class="avatar" style="background:${col}">${ini}</div>
+      <div class="post-author-info">
+        <div class="post-author-name">${name} ${badge}</div>
+        <div class="post-author-meta">${timeAgo(post.created_at)}</div>
+      </div>
+      ${isMine ? `<button class="btn-delete-post" data-id="${post.id}" style="background:rgba(241,148,138,0.1);border:1px solid rgba(241,148,138,0.2);color:#f1948a;padding:4px 10px;border-radius:var(--radius-sm);font-size:0.75rem;cursor:pointer;" title="投稿を削除">削除</button>` : ''}
+    </div>
+    ${post.title ? `<h3 class="post-card-title">${post.title}</h3>` : ''}
+    <div class="post-card-body">${post.body}</div>
+    <div class="post-card-actions">
+      <button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button>
+      <button class="post-action">💬 <span>${(post.post_replies || []).length}</span></button>
+    </div>
+    ${cmts}
+  </article>`;
 }
 
 // ==================== PAGES ====================
@@ -712,7 +754,10 @@ async function renderStudy(){
                 </div>
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
               </div>
-              <div class="study-log-actions"><button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集">✏️</button><button class="btn-log-action delete" data-id="${l.id}" title="削除">🗑️</button></div>
+              <div class="study-log-actions">
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
+              </div>
             </div>`;}).join('')}</div>`;}).join('')}</div></div>
     </div>
     
