@@ -319,18 +319,29 @@ async function deleteStudyLog(id) {
 async function fetchPosts() {
   if (!supabase) return posts;
   
-  // Try to fetch with full relationships first
-  const { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(id, body, created_at, user_id, profiles(full_name))').order('created_at', { ascending: false });
+  // Try to fetch with full relationships first (Vite/Supabase standard join)
+  let { data, error } = await supabase.from('posts').select('*, profiles(full_name), post_replies(*, profiles(full_name))').order('created_at', { ascending: false });
   
   if (error) {
-    console.warn('DEBUG: fetchPosts failed with relationships. Trying simple fetch (*). Error was:', error);
-    // Fallback: Just fetch posts and ignore replies/profiles if relationships aren't configured
-    const fallback = await supabase.from('posts').select('*').order('created_at', { ascending: false });
-    if (fallback.error) {
-      console.error('DEBUG: fetchPosts ultimate fallback failed:', fallback.error);
+    console.warn('DEBUG: fetchPosts joined query failed. Trying robust secondary fetching strategy. Error:', error);
+    
+    // Step 1: Fetch posts only
+    const resPosts = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+    if (resPosts.error) {
+      console.error('DEBUG: fetchPosts cannot even fetch base posts:', resPosts.error);
       return [];
     }
-    return fallback.data.map(p => ({ ...p, post_replies: [] }));
+    
+    // Step 2: Manually fetch replies for these posts if the joined query failed
+    const postIds = resPosts.data.map(p => p.id);
+    const resReplies = await supabase.from('post_replies').select('*').in('post_id', postIds).order('created_at', { ascending: true });
+    
+    // Combine them
+    data = resPosts.data.map(p => ({
+      ...p,
+      profiles: null, // Just show as N/A or default later
+      post_replies: resReplies.data ? resReplies.data.filter(r => r.post_id === p.id) : []
+    }));
   }
   
   return data;
