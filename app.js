@@ -349,7 +349,6 @@ async function fetchPosts() {
 
 async function deletePost(postId) {
   if (!supabase || !session) {
-    console.log('DEBUG: deletePost (local/demo mode)', postId);
     const idx = posts.findIndex(p => p.id === postId);
     if (idx !== -1) {
       posts.splice(idx, 1);
@@ -358,25 +357,31 @@ async function deletePost(postId) {
     }
     return;
   }
-  
-  // Try to delete replies first to satisfy foreign key constraints (if any)
   const { error: replyErr } = await supabase.from('post_replies').delete().eq('post_id', postId);
-  if (replyErr) console.warn('Note: Failed to pre-delete replies, but proceeding to delete post. Error:', replyErr);
-
   const { error } = await supabase.from('posts').delete().match({ id: postId, user_id: session.user.id });
-  
-  if (error) {
-    console.error('DEBUG: Supabase deletePost failed:', error);
-    showToast('❌ 削除に失敗しました: ' + (error.message || '権限がありません'));
-  } else {
-    showToast('✅ 投稿を削除しました');
-    await renderCommunity();
-  }
+  if (error) showToast('❌ 削除に失敗しました: ' + error.message);
+  else { showToast('✅ 投稿を削除しました'); await renderCommunity(); }
 }
 
-async function savePostReply(postId, body) {
+async function deletePostReply(replyId) {
   if (!supabase || !session) {
-    console.log('DEBUG: savePostReply (local/demo mode)', postId);
+    posts.forEach(p => {
+      if (p.post_replies) {
+        const idx = p.post_replies.findIndex(r => r.id === replyId);
+        if (idx !== -1) p.post_replies.splice(idx, 1);
+      }
+    });
+    showToast('✅ 返信を削除しました（デモ）');
+    await renderCommunity();
+    return;
+  }
+  const { error } = await supabase.from('post_replies').delete().match({ id: replyId, user_id: session.user.id });
+  if (error) showToast('❌ 削除に失敗しました: ' + error.message);
+  else { showToast('✅ 返信を削除しました'); await renderCommunity(); }
+}
+
+async function savePostReply(postId, body, isAnonymous) {
+  if (!supabase || !session) {
     const post = posts.find(p => p.id === postId);
     if (post) {
       if (!post.post_replies) post.post_replies = [];
@@ -385,6 +390,7 @@ async function savePostReply(postId, body) {
         created_at: new Date().toISOString(),
         user_id: session?.user?.id || currentUser.id,
         body,
+        is_anonymous: isAnonymous,
         profiles: { full_name: currentUser.name }
       });
       showToast('✅ 返信しました（デモ）');
@@ -393,12 +399,20 @@ async function savePostReply(postId, body) {
     return false;
   }
   
-  const { error } = await supabase.from('post_replies').insert([{ 
+  // Try with is_anonymous
+  let { error } = await supabase.from('post_replies').insert([{ 
     post_id: postId, 
     user_id: session.user.id, 
-    body 
+    body,
+    is_anonymous: isAnonymous
   }]);
   
+  // Fallback if is_anonymous column doesn't exist yet
+  if (error && error.code === '42703') {
+    const fallback = await supabase.from('post_replies').insert([{ post_id: postId, user_id: session.user.id, body }]);
+    error = fallback.error;
+  }
+
   if (error) {
     console.error('DEBUG: Supabase savePostReply failed:', error);
     showToast('❌ 返信の失敗: ' + (error.message || 'エラーが発生しました'));
@@ -633,27 +647,45 @@ function initRouter(){
 
 // ==================== POST CARD ====================
 function renderPostCard(post){
-  const name=post.is_anonymous?'匿名ユーザー':(post.profiles?.full_name || '名前未設定');
+  const isMine = post.user_id === session?.user?.id || post.user_id === currentUser.id;
+  const name=post.is_anonymous?'匿名ユーザー':(post.profiles?.full_name || (isMine ? currentUser.name : '名前未設定'));
   const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
   const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
-  const isMine = post.user_id === session?.user?.id;
   
   let cmts=''; 
   const replies = post.post_replies || [];
   {
     const repliesHtml = replies.map(r => {
-      const rName = r.profiles ? r.profiles.full_name : '匿名ユーザー';
-      const rCol = getAvatarColor(r.user_id);
-      const rIni = getInitials(rName);
-      return `<div class="post-reply" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(148,163,184,0.12);"><div class="avatar avatar-sm" style="background:${rCol};width:24px;height:24px;font-size:0.7rem;">${rIni}</div><div class="reply-content" style="flex:1;"><div class="reply-header" style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;"><span class="reply-name" style="font-size:0.8rem;font-weight:600;color:var(--color-text-secondary);">${rName}</span><span class="reply-time" style="font-size:0.7rem;color:var(--color-text-tertiary);">${timeAgo(r.created_at)}</span></div><div class="reply-body" style="font-size:0.85rem;color:var(--color-text-primary);line-height:1.4;">${r.body}</div></div></div>`;
+      const isReplyMine = r.user_id === session?.user?.id || r.user_id === currentUser.id;
+      const rName = r.is_anonymous ? '匿名ユーザー' : (r.profiles?.full_name || '名前未設定');
+      const rCol = r.is_anonymous ? '#64748b' : getAvatarColor(r.user_id);
+      const rIni = r.is_anonymous ? '匿' : getInitials(rName);
+      return `<div class="post-reply" style="display:flex;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid rgba(148,163,184,0.12);">
+        <div class="avatar avatar-sm" style="background:${rCol};width:24px;height:24px;font-size:0.7rem;">${rIni}</div>
+        <div class="reply-content" style="flex:1;">
+          <div class="reply-header" style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">
+            <span class="reply-name" style="font-size:0.8rem;font-weight:600;color:var(--color-text-secondary);">${rName}</span>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span class="reply-time" style="font-size:0.7rem;color:var(--color-text-tertiary);">${timeAgo(r.created_at)}</span>
+              ${isReplyMine ? `<button class="btn-delete-reply" data-id="${r.id}" style="background:none;border:none;color:var(--color-accent-pink);font-size:0.65rem;cursor:pointer;padding:0;text-decoration:underline;">削除</button>` : ''}
+            </div>
+          </div>
+          <div class="reply-body" style="font-size:0.85rem;color:var(--color-text-primary);line-height:1.4;">${r.body}</div>
+        </div>
+      </div>`;
     }).join('');
     
     cmts = `<div class="post-replies-section" style="margin-top:16px;">
       ${replies.length > 0 ? `<div class="post-replies-list">${repliesHtml}</div>` : ''}
-      <div class="post-reply-input-wrapper" style="display:flex;gap:8px;margin-top:12px;">
-        <input type="text" class="post-reply-input" placeholder="返信を入力..." style="flex:1;font-size:0.85rem;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid rgba(148,163,184,0.2);background:var(--color-bg-base);color:white;" />
-        <button class="btn btn-primary btn-sm btn-submit-reply" data-post-id="${post.id}">送信</button>
+      <div class="post-reply-input-wrapper" style="flex-direction:column; gap:8px; margin-top:12px; display:flex;">
+        <div style="display:flex;gap:8px;">
+          <input type="text" class="post-reply-input" placeholder="返信を入力..." style="flex:1;font-size:0.85rem;padding:6px 10px;border-radius:var(--radius-sm);border:1px solid rgba(148,163,184,0.2);background:var(--color-bg-base);color:white;" />
+          <button class="btn btn-primary btn-sm btn-submit-reply" data-post-id="${post.id}">送信</button>
+        </div>
+        <label style="font-size:0.7rem;color:var(--color-text-secondary);display:flex;align-items:center;gap:4px;cursor:pointer;">
+          <input type="checkbox" class="post-reply-anonymous" /> 匿名で返信する
+        </label>
       </div>
     </div>`;
   }
@@ -984,13 +1016,24 @@ async function renderCommunity(){
     const btnReply = e.target.closest('.btn-submit-reply');
     if (btnReply) {
       const postId = btnReply.dataset.postId;
-      const input = btnReply.previousElementSibling;
+      const wrapper = btnReply.closest('.post-reply-input-wrapper');
+      const input = wrapper.querySelector('.post-reply-input');
+      const anonCheck = wrapper.querySelector('.post-reply-anonymous');
       const body = input.value.trim();
+      const isAnon = anonCheck ? anonCheck.checked : false;
       if (!body) return;
       btnReply.disabled = true; btnReply.textContent = '...';
-      const success = await savePostReply(postId, body);
+      const success = await savePostReply(postId, body, isAnon);
       if (success) { input.value = ''; renderCommunity(); }
       else { btnReply.disabled = false; btnReply.textContent = '送信'; }
+    }
+
+    const btnDelReply = e.target.closest('.btn-delete-reply');
+    if (btnDelReply) {
+      const id = btnDelReply.dataset.id;
+      if (confirm('この返信を削除しますか？')) {
+        await deletePostReply(id);
+      }
     }
   });
 }
