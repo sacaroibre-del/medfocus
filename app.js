@@ -3,19 +3,20 @@ console.log('DEBUG: app.js loaded');
 // MedFocus - Complete Application (No Build Tools)
 // ============================================================
 
-let supabase = null;
+let SUPABASE_URL = '', SUPABASE_KEY = '';
+
 // Initialize Supabase with storage fallback
 function initSupabase() {
   const savedUrl = localStorage.getItem('medfocus-supabase-url');
   const savedKey = localStorage.getItem('medfocus-supabase-key');
   
-  const url = savedUrl || import.meta.env.VITE_SUPABASE_URL || '';
-  const key = savedKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+  SUPABASE_URL = savedUrl || import.meta.env.VITE_SUPABASE_URL || '';
+  SUPABASE_KEY = savedKey || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
   try {
-    if (url && key && !url.includes('your-project') && key !== 'your-anon-key') {
-      supabase = window.supabase.createClient(url, key);
-      console.log('DEBUG: Supabase initialized connected to:', url);
+    if (SUPABASE_URL && SUPABASE_KEY && !SUPABASE_URL.includes('your-project') && SUPABASE_KEY !== 'your-anon-key') {
+      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+      console.log('DEBUG: Supabase initialized connected to:', SUPABASE_URL);
     } else {
       console.log('DEBUG: Supabase bypassing (missing config)');
       supabase = null;
