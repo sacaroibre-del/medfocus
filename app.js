@@ -20,6 +20,16 @@ try {
   console.error('DEBUG: Supabase error:', e);
 }
 
+async function fetchUserProfile(userId) {
+  if (!supabase) return null;
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', userId).single();
+  if (error) {
+    console.warn('Profile not found, creating default:', error);
+    return null;
+  }
+  return data;
+}
+
 // ==================== STATE ====================
 console.log('DEBUG: State initializing');
 let session = null;
@@ -202,9 +212,39 @@ const avatarColors=['#4ECDC4','#45B7D1','#96CEB4','#FFEAA7','#DDA0DD','#F7DC6F',
 function getAvatarColor(id){let h=0;for(let i=0;i<id.length;i++)h=id.charCodeAt(i)+((h<<5)-h);return avatarColors[Math.abs(h)%avatarColors.length];}
 
 // ==================== CHART HELPERS ====================
-const chartInstances = {};
-function destroyChart(id){if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];}}
-function destroyAllCharts(){Object.keys(chartInstances).forEach(destroyChart);}
+// ==================== SUPABASE DATA HELPERS ====================
+async function fetchStudyLogs() {
+  if (!supabase || !session) return [];
+  const { data, error } = await supabase.from('study_logs').select('*').eq('user_id', session.user.id).order('started_at', { ascending: false });
+  return error ? [] : data;
+}
+
+async function saveStudyLog(subjectId, durationMinutes) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('study_logs').insert([{ 
+    user_id: session.user.id, 
+    subject_name: subjectId, 
+    duration_minutes: durationMinutes 
+  }]);
+  if (error) showToast('❌ 保存に失敗しました');
+  else showToast('✅ 勉強記録を保存しました！');
+}
+
+async function fetchPosts() {
+  if (!supabase) return [];
+  const { data, error } = await supabase.from('posts').select('*').order('created_at', { ascending: false });
+  return error ? [] : data;
+}
+
+async function savePost(title, body, type, isAnonymous) {
+  if (!supabase || !session) return;
+  const { error } = await supabase.from('posts').insert([{ 
+    user_id: session.user.id, 
+    title, body, type, is_anonymous: isAnonymous 
+  }]);
+  if (error) showToast('❌ 投稿に失敗しました');
+  else showToast('✅ 投稿しました！');
+}
 
 Chart.defaults.color='#94a3b8';
 Chart.defaults.borderColor='rgba(148,163,184,0.12)';
@@ -310,7 +350,14 @@ async function handleSignUp(email, password, name) {
   if(!supabase || SUPABASE_KEY === 'your-anon-key') { showToast('⚠️ Supabaseキーを設定してください'); return; }
   const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: name } } });
   if(error) { showToast('❌ ' + error.message); }
-  else { showToast('📧 確認メールを送信しました！'); }
+  else { 
+    // Create initial profile
+    const user = data.user;
+    if (user) {
+      await supabase.from('profiles').insert([{ id: user.id, full_name: name, university: '未設定', grade: 1 }]);
+    }
+    showToast('📧 確認メールを送信しました！'); 
+  }
 }
 
 function handleLogout() {
@@ -365,30 +412,29 @@ function initRouter(){
 
 // ==================== POST CARD ====================
 function renderPostCard(post){
-  const author=users.find(u=>u.id===post.userId);
-  const name=post.isAnonymous?'匿名ユーザー':(author?.name||'不明');
-  const col=post.isAnonymous?'#64748b':getAvatarColor(post.userId);
-  const ini=post.isAnonymous?'匿':getInitials(name);
+  const name=post.is_anonymous?'匿名ユーザー':(post.user_id === currentUser.id ? currentUser.name : '他のユーザー');
+  const col=post.is_anonymous?'#64748b':getAvatarColor(post.user_id);
+  const ini=post.is_anonymous?'匿':getInitials(name);
   const badge=post.type==='activity'?'<span class="post-type-badge post-type-activity">📢 アクティビティ</span>':'<span class="post-type-badge post-type-question">❓ 質問</span>';
-  const cmts=post.comments&&post.comments.length>0?`<div class="post-comments"><div class="post-comments-header">💬 ${post.comments.length}件の回答</div>${post.comments.map(c=>{
-    const ca=users.find(u=>u.id===c.userId);const cn=c.isAnonymous?'匿名':(ca?.name||'不明');
-    const cc=c.isAnonymous?'#64748b':getAvatarColor(c.userId);const ci=c.isAnonymous?'匿':getInitials(cn);
-    return`<div class="comment-item"><div class="avatar avatar-sm" style="background:${cc}">${ci}</div><div class="comment-content"><div class="comment-author">${cn}</div><div class="comment-body">${c.body}</div><div class="comment-time">${timeAgo(c.createdAt)}</div></div></div>`;}).join('')}</div>`:'';
-  return`<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.createdAt)}</div></div></div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes}</span></button><button class="post-action">💬 <span>${post.comments?.length||0}</span></button></div>${cmts}</article>`;
+  // Note: Comments implementation will be added later if needed
+  const cmts=''; 
+  return`<article class="post-card animate-slide-up"><div class="post-card-header"><div class="avatar" style="background:${col}">${ini}</div><div class="post-author-info"><div class="post-author-name">${name} ${badge}</div><div class="post-author-meta">${timeAgo(post.created_at)}</div></div></div>${post.title?`<h3 class="post-card-title">${post.title}</h3>`:''}<div class="post-card-body">${post.body}</div><div class="post-card-actions"><button class="post-action" data-action="like">❤️ <span>${post.likes || 0}</span></button><button class="post-action">💬 <span>0</span></button></div>${cmts}</article>`;
 }
 
 // ==================== PAGES ====================
 
 // --- Dashboard ---
-function renderDashboard(){
+async function renderDashboard(){
   const ct=document.getElementById('page-container');
+  const logs = await fetchStudyLogs();
+  
   const totalT=subjectProgress.reduce((s,p)=>s+p.totalTopics,0);
   const compT=subjectProgress.reduce((s,p)=>s+p.completedTopics,0);
   const overall=Math.round((compT/totalT)*100);
   const today=new Date();const todayS=new Date(today);todayS.setHours(0,0,0,0);
   const weekS=new Date(today);weekS.setDate(weekS.getDate()-7);
-  const todayMin=studyLogs.filter(l=>new Date(l.startedAt)>=todayS).reduce((s,l)=>s+l.durationMinutes,0);
-  const weekMin=studyLogs.filter(l=>new Date(l.startedAt)>=weekS).reduce((s,l)=>s+l.durationMinutes,0);
+  const todayMin=logs.filter(l=>new Date(l.started_at)>=todayS).reduce((s,l)=>s+l.duration_minutes,0);
+  const weekMin=logs.filter(l=>new Date(l.started_at)>=weekS).reduce((s,l)=>s+l.duration_minutes,0);
   const studied=new Set(subjectProgress.filter(p=>p.completedTopics>0).map(p=>p.subjectName)).size;
 
   const catProg=subjectCategories.map(cat=>{
@@ -400,7 +446,7 @@ function renderDashboard(){
   const dailyD=[],dailyL=[];
   for(let i=6;i>=0;i--){const d=new Date(today);d.setDate(d.getDate()-i);
     const ds=new Date(d);ds.setHours(0,0,0,0);const de=new Date(d);de.setHours(23,59,59,999);
-    dailyD.push(studyLogs.filter(l=>{const t=new Date(l.startedAt);return t>=ds&&t<=de;}).reduce((s,l)=>s+l.durationMinutes,0));
+    dailyD.push(logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;}).reduce((s,l)=>s+l.duration_minutes,0));
     dailyL.push(d.toLocaleDateString('ja-JP',{weekday:'short'}));}
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
@@ -429,14 +475,15 @@ function renderDashboard(){
 }
 
 // --- Study ---
-function renderStudy(){
+async function renderStudy(){
   const ct=document.getElementById('page-container');
+  const logs = await fetchStudyLogs();
   const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s,category:c.name})));
   const today=new Date();const logsByDay={};
   for(let i=0;i<7;i++){const d=new Date(today);d.setDate(d.getDate()-i);
     const key=d.toLocaleDateString('ja-JP',{month:'short',day:'numeric',weekday:'short'});
     const ds=new Date(d);ds.setHours(0,0,0,0);const de=new Date(d);de.setHours(23,59,59,999);
-    logsByDay[key]=studyLogs.filter(l=>{const t=new Date(l.startedAt);return t>=ds&&t<=de;});}
+    logsByDay[key]=logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;});}
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習タイマー</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
@@ -452,9 +499,9 @@ function renderStudy(){
         <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>記録中...':'開始ボタンを押して勉強を始めましょう'}</div>
       </div>
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
-        <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.durationMinutes,0);
-          return`<div class="study-log-day"><div class="study-log-day-header">${day} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subjectId);const tm=new Date(l.startedAt).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
-            return`<div class="study-log-entry"><span class="study-log-subject">${sub?.name||'不明'}</span><span class="study-log-duration">${formatMinutes(l.durationMinutes)}</span><span class="study-log-time">${tm}</span></div>`;}).join('')}</div>`;}).join('')}</div></div>
+        <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
+          return`<div class="study-log-day"><div class="study-log-day-header">${day} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subject_name);const tm=new Date(l.started_at).toLocaleTimeString('ja-JP',{hour:'2-digit',minute:'2-digit'});
+            return`<div class="study-log-entry"><span class="study-log-subject">${sub?.name||l.subject_name}</span><span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span><span class="study-log-time">${tm}</span></div>`;}).join('')}</div>`;}).join('')}</div></div>
     </div>`;
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
@@ -468,13 +515,14 @@ function renderStudy(){
     if(isRunning){pauseSW();btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='一時停止中';}
     else{startSW(upd);btnT.className='stopwatch-btn stopwatch-btn-pause';btnT.textContent='⏸';status.className='stopwatch-status recording';status.innerHTML='<span class="status-dot"></span>記録中...';}});
   document.getElementById('btn-reset').addEventListener('click',()=>{resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='開始ボタンを押して勉強を始めましょう';});
-  document.getElementById('btn-save').addEventListener('click',()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const nm=sel.options[sel.selectedIndex]?.text||'未選択';alert(`✅ ${nm}の勉強記録を保存しました！\n勉強時間: ${formatMinutes(Math.ceil(elapsedSeconds/60))}`);resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';}});
+  document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60));resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
 }
 
 // --- Community ---
-function renderCommunity(){
+async function renderCommunity(){
   const ct=document.getElementById('page-container');const col=getAvatarColor(currentUser.id);const ini=getInitials(currentUser.name);
-  const sorted=[...posts].sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const realPosts = await fetchPosts();
+  const sorted=[...realPosts].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">質問広場</h1><p class="page-subtitle">仲間と知識を共有し、疑問を解決しよう</p></div>
     <div class="filter-tabs"><button class="filter-tab active" data-filter="all">すべて</button><button class="filter-tab" data-filter="question">❓ 質問</button><button class="filter-tab" data-filter="activity">📢 アクティビティ</button></div>
@@ -484,9 +532,9 @@ function renderCommunity(){
       <div class="community-sidebar">
         <div class="card"><div class="card-header"><div class="card-title">🔔 最新アクティビティ</div></div><div class="activity-list">${activityFeed.slice(0,5).map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
         <div class="card"><div class="card-header"><div class="card-title">📊 広場の統計</div></div><div style="display:flex;flex-direction:column;gap:16px">
-          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">質問数</span><span style="font-weight:700;color:#45B7D1">${posts.filter(p=>p.type==='question').length}</span></div>
-          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">回答数</span><span style="font-weight:700;color:#82E0AA">${posts.reduce((s,p)=>s+(p.comments?.length||0),0)}</span></div>
-          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">いいね</span><span style="font-weight:700;color:#F1948A">${posts.reduce((s,p)=>s+p.likes,0)}</span></div></div></div>
+          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">質問数</span><span style="font-weight:700;color:#45B7D1">${realPosts.filter(p=>p.type==='question').length}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">回答数</span><span style="font-weight:700;color:#82E0AA">${realPosts.reduce((s,p)=>s+(p.comments?.length||0),0)}</span></div>
+          <div style="display:flex;justify-content:space-between"><span style="font-size:.8125rem;color:#94a3b8">いいね</span><span style="font-weight:700;color:#F1948A">${realPosts.reduce((s,p)=>s+p.likes,0)}</span></div></div></div>
       </div>
     </div>
     <div class="modal-overlay" id="post-modal" style="display:none"><div class="modal-content"><div class="modal-header"><div class="modal-title">新しい投稿</div><button class="modal-close" id="close-post-modal">✕</button></div><div class="modal-body"><input type="text" id="post-title-input" placeholder="タイトル（質問の場合）"/><textarea id="post-body-input" placeholder="質問内容や近況を書いてください..."></textarea></div><div class="modal-footer"><label class="anonymous-toggle"><input type="checkbox" id="post-anonymous"/> 匿名で投稿</label><button class="btn btn-primary" id="submit-post">投稿する</button></div></div></div>`;
@@ -495,7 +543,16 @@ function renderCommunity(){
   document.getElementById('open-post-modal').addEventListener('click',()=>modal.style.display='flex');
   document.getElementById('close-post-modal').addEventListener('click',()=>modal.style.display='none');
   modal.addEventListener('click',e=>{if(e.target===modal)modal.style.display='none';});
-  document.getElementById('submit-post').addEventListener('click',()=>{const b=document.getElementById('post-body-input').value;if(b.trim()){alert('✅ 投稿しました！（デモモード）');modal.style.display='none';}});
+  document.getElementById('submit-post').addEventListener('click',async ()=>{
+    const b=document.getElementById('post-body-input').value;
+    const t=document.getElementById('post-title-input').value;
+    const anon=document.getElementById('post-anonymous').checked;
+    if(b.trim()){
+      await savePost(t || null, b, t ? 'question' : 'activity', anon);
+      modal.style.display='none';
+      renderCommunity();
+    }
+  });
   document.querySelectorAll('.filter-tab').forEach(tab=>tab.addEventListener('click',()=>{
     document.querySelectorAll('.filter-tab').forEach(t=>t.classList.remove('active'));tab.classList.add('active');
     const f=tab.dataset.filter;const filtered=f==='all'?sorted:sorted.filter(p=>p.type===f);
@@ -645,13 +702,27 @@ function renderSettings(){
   });
 
   // Save button
-  document.getElementById('save-profile-btn').addEventListener('click', ()=>{
+  document.getElementById('save-profile-btn').addEventListener('click', async ()=>{
     const newName=document.getElementById('input-name').value.trim();
     const newEmail=document.getElementById('input-email').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
     const newGrade=parseInt(document.getElementById('input-grade').value);
     const newBio=document.getElementById('input-bio').value;
     if(!newName){ document.getElementById('input-name').focus(); showToast('⚠️ 名前を入力してください'); return; }
+    
+    if (supabase && session) {
+      const { error } = await supabase.from('profiles').update({
+        full_name: newName,
+        university: newUniv,
+        grade: newGrade
+      }).eq('id', session.user.id);
+      
+      if (error) {
+        showToast('❌ 保存に失敗しました: ' + error.message);
+        return;
+      }
+    }
+
     currentUser.name=newName;
     currentUser.email=newEmail;
     currentUser.university=newUniv||'未設定';
@@ -708,8 +779,26 @@ async function initApp(){
     try {
       const { data: { session: initialSession } } = await supabase.auth.getSession();
       session = initialSession;
-      supabase.auth.onAuthStateChange((_event, newSession) => {
+      if (session) {
+        const profile = await fetchUserProfile(session.user.id);
+        if (profile) {
+          currentUser.id = profile.id;
+          currentUser.name = profile.full_name;
+          currentUser.university = profile.university;
+          currentUser.grade = profile.grade;
+        }
+      }
+      supabase.auth.onAuthStateChange(async (_event, newSession) => {
         session = newSession;
+        if (session) {
+          const profile = await fetchUserProfile(session.user.id);
+          if (profile) {
+            currentUser.id = profile.id;
+            currentUser.name = profile.full_name;
+            currentUser.university = profile.university;
+            currentUser.grade = profile.grade;
+          }
+        }
         renderRoute(currentRoute);
       });
     } catch(e) {
