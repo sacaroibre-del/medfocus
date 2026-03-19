@@ -1520,6 +1520,7 @@ function renderSettings(){
             <h4 style="margin:0;font-size:1.1rem;font-weight:600">${g.name}</h4>
             <div style="font-size:0.85rem;color:var(--color-text-secondary)">招待コード: <span style="font-weight:700;letter-spacing:1px;color:var(--color-text-primary)">${g.invite_code}</span></div>
           </div>
+          </div>
           <div style="display:flex;gap:8px;align-items:center">
             ${g.created_by === (session?.user?.id || currentUser.id) 
               ? `<button class="btn btn-secondary btn-sm edit-group-btn" data-id="${g.id}" data-name="${g.name}" data-icon="${g.icon_url || ''}">編集</button>` 
