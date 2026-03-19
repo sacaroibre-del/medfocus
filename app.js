@@ -327,15 +327,27 @@ function renderLogin(){
 
   document.getElementById('auth-toggle').onclick = () => { isSignUpMode = !isSignUpMode; renderLogin(); };
   document.getElementById('demo-login').onclick = () => mockLogin('demo@example.com');
-  document.getElementById('auth-form').onsubmit = (e) => {
+  document.getElementById('auth-form').onsubmit = async (e) => {
     e.preventDefault();
-    const email = document.getElementById('auth-email').value;
-    const password = document.getElementById('auth-password').value;
-    if(isSignUpMode) {
-      const name = document.getElementById('auth-name').value;
-      handleSignUp(email, password, name);
-    } else {
-      handleLogin(email, password);
+    const btn = e.target.querySelector('button[type="submit"]');
+    const origText = btn.textContent;
+    btn.textContent = '処理中...';
+    btn.disabled = true;
+
+    try {
+      const email = document.getElementById('auth-email').value;
+      const password = document.getElementById('auth-password').value;
+      if(isSignUpMode) {
+        const name = document.getElementById('auth-name').value;
+        await handleSignUp(email, password, name);
+      } else {
+        await handleLogin(email, password);
+      }
+    } catch (err) {
+      showToast('❌ 予期せぬエラー: ' + err.message);
+    } finally {
+      btn.textContent = origText;
+      btn.disabled = false;
     }
   };
 }
@@ -354,7 +366,8 @@ async function handleSignUp(email, password, name) {
     // Create initial profile
     const user = data.user;
     if (user) {
-      await supabase.from('profiles').insert([{ id: user.id, full_name: name, university: '未設定', grade: 1 }]);
+      const { error: insertErr } = await supabase.from('profiles').insert([{ id: user.id, full_name: name, university: '未設定', grade: 1 }]);
+      if (insertErr) console.warn('Profile creation failed:', insertErr);
     }
     if (data.session) {
       showToast('✅ アカウントを作成しました！');
