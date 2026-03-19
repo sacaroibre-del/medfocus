@@ -476,3 +476,26 @@ input:focus, textarea:focus, select:focus { border-color:var(--color-border-focu
 /* Utility */
 .hide-sidebar #sidebar { display: none !important; }
 .hide-sidebar #main-content { margin-left: 0 !important; margin-bottom: 0 !important; }
+
+/* Timer Countdown & Confirmation */
+.timer-mode-switcher { margin-bottom: var(--space-md); border: 1px solid var(--color-border); }
+.mode-tab { transition: all var(--transition-fast); font-weight: 500; background: transparent; color: var(--color-text-secondary); }
+.mode-tab.active { box-shadow: 0 4px 12px rgba(78,205,196,0.3); color: white !important; }
+
+.countdown-settings .preset-btn { padding: 4px 12px; font-size: 0.75rem; border-radius: var(--radius-full); }
+.countdown-settings input::-webkit-outer-spin-button,
+.countdown-settings input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+.timer-overlay { z-index: 1000 !important; cursor: default; }
+.celebration-icon { animation: pulse 2s infinite; }
+@keyframes pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+
+.confirm-form input:focus, .confirm-form select:focus, .confirm-form textarea:focus { 
+  outline: none; border-color: var(--color-primary); background: rgba(255,255,255,0.08); 
+}
+
+.confirm-form label { font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase; }

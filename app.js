@@ -509,13 +509,62 @@ function createBarChart(canvasId,labels,data){
   animation:{duration:800,easing:'easeOutQuart'}}});
 }
 
-// ==================== STOPWATCH ====================
-let timerInterval=null,elapsedSeconds=0,isRunning=false;
-function startSW(onTick){if(isRunning)return;isRunning=true;timerInterval=setInterval(()=>{elapsedSeconds++;if(onTick)onTick(elapsedSeconds);},1000);}
-function pauseSW(){isRunning=false;if(timerInterval){clearInterval(timerInterval);timerInterval=null;}}
-function resetSW(){pauseSW();elapsedSeconds=0;}
-function fmtSW(t){const h=Math.floor(t/3600),m=Math.floor((t%3600)/60),s=t%60;const p=n=>String(n).padStart(2,'0');
-  return h>0?`${p(h)}:${p(m)}<span class="seconds">:${p(s)}</span>`:`${p(m)}<span class="seconds">:${p(s)}</span>`;}
+// ==================== STOPWATCH / TIMER ====================
+let timerInterval=null, elapsedSeconds=0, isRunning=false;
+let isCountdown=false, countdownSeconds=0, initialCountdownSeconds=0, isConfirmingLog=false;
+let pendingLogDuration=0;
+
+function startSW(onTick){
+  if(isRunning) return;
+  isRunning=true;
+  timerInterval=setInterval(()=>{
+    if(isCountdown) {
+      if(countdownSeconds > 0) {
+        countdownSeconds--;
+        elapsedSeconds++; // Still track total elapsed for logs
+      } else {
+        // Countdown Finished
+        finishSession();
+      }
+    } else {
+      elapsedSeconds++;
+    }
+    if(onTick) onTick(isCountdown ? countdownSeconds : elapsedSeconds);
+  }, 1000);
+}
+
+function finishSession() {
+  pauseSW();
+  pendingLogDuration = Math.floor(elapsedSeconds / 60);
+  isConfirmingLog = true;
+  // Try to play a notification sound (beep)
+  try {
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime);
+    osc.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+  } catch(e) { console.warn('Could not play notification sound:', e); }
+  
+  if (typeof renderStudy === 'function') renderStudy();
+}
+
+function pauseSW(){
+  isRunning=false;
+  if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
+}
+
+function resetSW(){
+  pauseSW();
+  elapsedSeconds=0;
+  countdownSeconds=0;
+  isConfirmingLog=false;
+}
+
+function fmtSW(t){
+  const h=Math.floor(t/3600), m=Math.floor((t%3600)/60), s=t%60;
+  const p=n=>String(n).padStart(2,'0');
+  return h>0 ? `${p(h)}:${p(m)}<span class="seconds">:${p(s)}</span>` : `${p(m)}<span class="seconds">:${p(s)}</span>`;
+}
 
 // ==================== AUTH UI ====================
 function renderLogin(){
@@ -829,17 +878,80 @@ async function renderStudy(){
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習タイマー</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
-      <div class="stopwatch-card card animate-slide-up">
+      <!-- Timer Main Card -->
+      <div class="stopwatch-card card animate-slide-up" style="position:relative; overflow:hidden;">
+        <!-- Mode Switcher -->
+        <div class="timer-mode-switcher" style="display:flex; justify-content:center; gap:8px; margin-bottom:var(--space-md); background:rgba(255,255,255,0.05); padding:4px; border-radius:var(--radius-md);">
+          <button class="mode-tab ${!isCountdown?'active':''}" id="mode-up" style="flex:1; border:none; padding:6px; border-radius:var(--radius-sm); font-size:0.8rem; cursor:pointer; background:${!isCountdown?'var(--color-primary)':'transparent'}; color:white;">ストップウォッチ</button>
+          <button class="mode-tab ${isCountdown?'active':''}" id="mode-down" style="flex:1; border:none; padding:6px; border-radius:var(--radius-sm); font-size:0.8rem; cursor:pointer; background:${isCountdown?'var(--color-primary)':'transparent'}; color:white;">カウントダウン</button>
+        </div>
+
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
         <div class="stopwatch-subject-selector"><select id="study-subject"><option value="">-- 科目を選択 --</option>${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}</select></div>
-        <div class="stopwatch-display"><div class="stopwatch-ring"><svg viewBox="0 0 300 300"><circle class="ring-bg" cx="150" cy="150" r="140"/><circle class="ring-progress" id="timer-ring" cx="150" cy="150" r="140"/></svg><div class="stopwatch-time" id="timer-display">${fmtSW(elapsedSeconds)}</div></div></div>
+        
+        <!-- Countdown Settings (only if not running) -->
+        ${isCountdown && !isRunning ? `
+          <div class="countdown-settings animate-fade-in" style="display:flex; flex-direction:column; align-items:center; gap:12px; margin-bottom:var(--space-md);">
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="25">25分</button>
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="50">50分</button>
+              <button class="btn btn-secondary btn-sm preset-btn" data-min="90">90分</button>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px;">
+              <input type="number" id="custom-min" placeholder="分" style="width:60px; text-align:center; background:rgba(255,255,255,0.1); border:1px solid rgba(255,255,255,0.2); color:white; border-radius:var(--radius-sm); padding:4px;" />
+              <span style="font-size:0.8rem; color:var(--color-text-secondary);">分に設定</span>
+            </div>
+          </div>
+        ` : ''}
+
+        <div class="stopwatch-display">
+          <div class="stopwatch-ring">
+            <svg viewBox="0 0 300 300">
+              <circle class="ring-bg" cx="150" cy="150" r="140"/>
+              <circle class="ring-progress" id="timer-ring" cx="150" cy="150" r="140" style="stroke:${isCountdown?'var(--color-accent-pink)':'var(--color-primary)'}"/>
+            </svg>
+            <div class="stopwatch-time" id="timer-display">${fmtSW(isCountdown ? (isRunning ? countdownSeconds : (countdownSeconds || 1500)) : elapsedSeconds)}</div>
+          </div>
+        </div>
+
         <div class="stopwatch-controls">
           <button class="stopwatch-btn stopwatch-btn-reset" id="btn-reset" title="リセット">↺</button>
           <button class="stopwatch-btn ${isRunning?'stopwatch-btn-pause':'stopwatch-btn-start'}" id="btn-toggle">${isRunning?'⏸':'▶'}</button>
-          <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="保存">⏹</button>
+          <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="記録する">⏹</button>
         </div>
-        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>記録中...':'開始ボタンを押して勉強を始めましょう'}</div>
-        <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="学習の短いメモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);color:white;padding:5px;" maxlength="100"/></div>
+        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning?'<span class="status-dot"></span>集中記録中...':'準備ができたら開始しましょう'}</div>
+        <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="メモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:var(--radius-sm);color:white;padding:5px;" maxlength="100"/></div>
+
+        <!-- Confirmation Overlay -->
+        ${isConfirmingLog ? `
+          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; background:rgba(15,23,42,0.9); backdrop-filter:blur(10px); z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-xl); text-align:center;">
+            <div class="celebration-icon" style="font-size:3rem; margin-bottom:var(--space-md);">🎉</div>
+            <h2 style="font-size:1.5rem; font-weight:700; color:white; margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
+            <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg);">今日の学習を記録しましょう</p>
+            
+            <div class="confirm-form" style="width:100%; max-width:320px; display:flex; flex-direction:column; gap:16px; text-align:left;">
+              <div class="field">
+                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習時間 (分)</label>
+                <input type="number" id="confirm-duration" value="${pendingLogDuration}" style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md); font-size:1.1rem; font-weight:700;" />
+              </div>
+              <div class="field">
+                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">学習内容</label>
+                <select id="confirm-subject" style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md);">
+                  <option value="">-- 未選択 --</option>
+                  ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}">${s.name}</option>`).join('')}</optgroup>`).join('')}
+                </select>
+              </div>
+              <div class="field">
+                <label style="font-size:0.75rem; color:var(--color-text-tertiary); display:block; margin-bottom:4px;">振り返りメモ</label>
+                <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.1); color:white; padding:10px; border-radius:var(--radius-md); min-height:80px;"></textarea>
+              </div>
+              <div style="display:flex; gap:12px; margin-top:8px;">
+                <button class="btn btn-secondary" id="btn-discard-log" style="flex:1;">破棄</button>
+                <button class="btn btn-primary" id="btn-confirm-save" style="flex:2;">記録を保存</button>
+              </div>
+            </div>
+          </div>
+        ` : ''}
       </div>
       <div class="card animate-slide-up" style="animation-delay:.1s"><div class="card-header"><div class="card-title">📋 最近の学習ログ</div></div>
         <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
@@ -946,15 +1058,124 @@ async function renderStudy(){
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
   const status=document.getElementById('timer-status');const btnT=document.getElementById('btn-toggle');
   const circ=2*Math.PI*140;
-  function upd(s){display.innerHTML=fmtSW(s);const p=(s%3600)/3600;ring.style.strokeDashoffset=circ-(p*circ);}
+  function upd(s){
+    display.innerHTML=fmtSW(s);
+    let p;
+    if(isCountdown && initialCountdownSeconds > 0) {
+      p = s / initialCountdownSeconds; // Ratio of remaining time
+    } else {
+      p = (s % 3600) / 3600; // Rotary for stopwatch
+    }
+    ring.style.strokeDashoffset=circ-(p*circ);
+  }
   if(isRunning){ring.style.strokeDasharray=circ;startSW(upd);}
-  else if(elapsedSeconds>0){ring.style.strokeDasharray=circ;upd(elapsedSeconds);}
+  else if(isCountdown ? countdownSeconds > 0 : elapsedSeconds > 0){
+    ring.style.strokeDasharray=circ;
+    upd(isCountdown ? countdownSeconds : elapsedSeconds);
+  }
 
-  btnT.addEventListener('click',()=>{ring.style.strokeDasharray=circ;
-    if(isRunning){pauseSW();btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='一時停止中';}
-    else{startSW(upd);btnT.className='stopwatch-btn stopwatch-btn-pause';btnT.textContent='⏸';status.className='stopwatch-status recording';status.innerHTML='<span class="status-dot"></span>記録中...';}});
-  document.getElementById('btn-reset').addEventListener('click',()=>{resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='開始ボタンを押して勉強を始めましょう';});
-  document.getElementById('btn-save').addEventListener('click',async ()=>{if(elapsedSeconds>0){const sel=document.getElementById('study-subject');const subId=sel.value;const nm=sel.options[sel.selectedIndex]?.text||'未選択';const memo=document.getElementById('study-memo').value.trim();await saveStudyLog(subId||nm,Math.ceil(elapsedSeconds/60),memo);resetSW();display.innerHTML=fmtSW(0);ring.style.strokeDashoffset=circ;btnT.className='stopwatch-btn stopwatch-btn-start';btnT.textContent='▶';status.className='stopwatch-status';status.textContent='記録を保存しました 🎉';renderStudy();}});
+  btnT.addEventListener('click',()=>{
+    ring.style.strokeDasharray=circ;
+    if(isRunning){
+      pauseSW();
+      btnT.className='stopwatch-btn stopwatch-btn-start';
+      btnT.textContent='▶';
+      status.className='stopwatch-status';
+      status.textContent='一時停止中';
+    } else {
+      if(isCountdown && countdownSeconds === 0) {
+        showToast('⚠️ 時間をセットしてください');
+        return;
+      }
+      startSW(upd);
+      btnT.className='stopwatch-btn stopwatch-btn-pause';
+      btnT.textContent='⏸';
+      status.className='stopwatch-status recording';
+      status.innerHTML='<span class="status-dot"></span>記録中...';
+      if(isCountdown && !isRunning) renderStudy(); // Re-render to hide settings
+    }
+  });
+
+  document.getElementById('btn-reset').addEventListener('click',()=>{
+    resetSW();
+    display.innerHTML=fmtSW(isCountdown ? (countdownSeconds || 1500) : 0);
+    ring.style.strokeDashoffset=circ;
+    btnT.className='stopwatch-btn stopwatch-btn-start';
+    btnT.textContent='▶';
+    status.className='stopwatch-status';
+    status.textContent='準備ができたら開始しましょう';
+    renderStudy();
+  });
+
+  document.getElementById('btn-save').addEventListener('click', () => {
+    if(elapsedSeconds > 0) {
+      finishSession();
+    } else {
+      showToast('⚠️ 記録する時間がありません');
+    }
+  });
+
+  // Mode Tabs
+  document.getElementById('mode-up')?.addEventListener('click', () => {
+    if(isRunning) return;
+    isCountdown = false;
+    renderStudy();
+  });
+  document.getElementById('mode-down')?.addEventListener('click', () => {
+    if(isRunning) return;
+    isCountdown = true;
+    if(countdownSeconds === 0) {
+      countdownSeconds = 1500; // Default 25m
+      initialCountdownSeconds = 1500;
+    }
+    renderStudy();
+  });
+
+  // Presets
+  document.querySelectorAll('.preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      countdownSeconds = parseInt(btn.dataset.min) * 60;
+      initialCountdownSeconds = countdownSeconds;
+      elapsedSeconds = 0;
+      renderStudy();
+    });
+  });
+
+  // Custom Input
+  document.getElementById('custom-min')?.addEventListener('input', (e) => {
+    const min = parseInt(e.target.value);
+    if(min > 0) {
+      countdownSeconds = min * 60;
+      initialCountdownSeconds = countdownSeconds;
+      elapsedSeconds = 0;
+      if(display) display.innerHTML = fmtSW(countdownSeconds);
+    }
+  });
+
+  // Confirmation Form
+  document.getElementById('btn-confirm-save')?.addEventListener('click', async () => {
+    const durEle = document.getElementById('confirm-duration');
+    const subEle = document.getElementById('confirm-subject');
+    const memoEle = document.getElementById('confirm-memo');
+    
+    const dur = parseInt(durEle.value);
+    const subId = subEle.value;
+    const subName = subEle.options[subEle.selectedIndex]?.text || '未選択';
+    const memo = memoEle.value.trim();
+    
+    if(isNaN(dur) || dur <= 0) { showToast('⚠️ 正しい時間を入力してください'); return; }
+    
+    await saveStudyLog(subId || subName, dur, memo);
+    resetSW();
+    renderStudy();
+  });
+
+  document.getElementById('btn-discard-log')?.addEventListener('click', () => {
+    if(confirm('この記録を破棄しますか？')) {
+      resetSW();
+      renderStudy();
+    }
+  });
   document.querySelectorAll('.btn-log-action.delete').forEach(btn => btn.addEventListener('click', async (e) => {
     const id = e.currentTarget.dataset.id;
     if(confirm('本当にこの記録を削除しますか？')) { await deleteStudyLog(id); renderStudy(); }
