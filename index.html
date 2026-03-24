@@ -11,6 +11,13 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    :root { color-scheme: dark; }
+    body { background: #0a1120 !important; color: #f9fafb !important; margin: 0; font-family: sans-serif; }
+    #app { min-height: 100vh; }
+    svg { width: 24px; height: 24px; display: inline-block; vertical-align: middle; }
+    #auth-overlay { background: #0a1120 !important; }
+  </style>
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" type="image/png" href="icon-192.png" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -27,8 +34,11 @@
   <script type="module" src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => {
-        navigator.serviceWorker.register('/sw.js').catch(err => console.log('SW registration failed:', err));
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        for(let registration of registrations) {
+          registration.unregister();
+          console.log('DEBUG: Service Worker unregistered');
+        }
       });
     }
   </script>

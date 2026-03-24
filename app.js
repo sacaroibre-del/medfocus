@@ -3,6 +3,7 @@ console.log('DEBUG: app.js loaded');
 // MedFocus - Complete Application (No Build Tools)
 // ============================================================
 
+let supabase = null;
 let SUPABASE_URL = '', SUPABASE_KEY = '';
 
 // Initialize Supabase with storage fallback
@@ -14,11 +15,17 @@ function initSupabase() {
   SUPABASE_KEY = savedKey || (typeof import.meta.env !== 'undefined' ? import.meta.env.VITE_SUPABASE_ANON_KEY : '') || '';
 
   try {
+    console.log('DEBUG: Initializing Supabase with URL:', SUPABASE_URL ? 'PRESENT' : 'MISSING');
     if (SUPABASE_URL && SUPABASE_KEY && !SUPABASE_URL.includes('your-project') && SUPABASE_KEY !== 'your-anon-key') {
-      supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
-      console.log('DEBUG: Supabase initialized connected to:', SUPABASE_URL);
+      if (window.supabase) {
+        supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        console.log('DEBUG: Supabase client created');
+      } else {
+        console.warn('DEBUG: Supabase global not found (window.supabase is undefined)');
+        supabase = null;
+      }
     } else {
-      console.log('DEBUG: Supabase bypassing (missing config)');
+      console.log('DEBUG: Supabase bypassing (missing or placeholder config)');
       supabase = null;
     }
   } catch (e) {
@@ -27,6 +34,9 @@ function initSupabase() {
   }
 }
 initSupabase();
+
+console.log('DEBUG: Browser check - Safari:', /^((?!chrome|android).)*safari/i.test(navigator.userAgent));
+console.log('DEBUG: LocalStorage available:', (() => { try { localStorage.setItem('test', '1'); localStorage.removeItem('test'); return true; } catch(e) { return false; } })());
 
 async function fetchUserProfile(userId) {
   if (!supabase) return null;
@@ -98,12 +108,18 @@ let isDark = localStorage.getItem('medfocus-theme') !== 'light';
 function applyTheme(){
   if(isDark){ document.documentElement.classList.remove('light'); }
   else { document.documentElement.classList.add('light'); }
-  localStorage.setItem('medfocus-theme', isDark ? 'dark' : 'light');
+  
+  try {
+    localStorage.setItem('medfocus-theme', isDark ? 'dark' : 'light');
+  } catch(e) { console.warn('localStorage not available', e); }
+
   // Update Chart.js defaults
-  const textColor = isDark ? '#94a3b8' : '#3d6380';
-  const borderColor = isDark ? 'rgba(148,163,184,0.12)' : 'rgba(43,181,171,0.15)';
-  Chart.defaults.color = textColor;
-  Chart.defaults.borderColor = borderColor;
+  if (typeof Chart !== 'undefined') {
+    const textColor = isDark ? '#94a3b8' : '#3d6380';
+    const borderColor = isDark ? 'rgba(148,163,184,0.12)' : 'rgba(43,181,171,0.15)';
+    Chart.defaults.color = textColor;
+    Chart.defaults.borderColor = borderColor;
+  }
 }
 function toggleTheme(){ isDark = !isDark; applyTheme(); renderSidebar(); }
 applyTheme();
@@ -130,7 +146,14 @@ function getAvatarColor(id){let h=0;for(let i=0;i<id.length;i++)h=id.charCodeAt(
 const chartInstances = {};
 function destroyChart(id){if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];}}
 function destroyAllCharts(){Object.keys(chartInstances).forEach(destroyChart);}
-Chart.defaults.color='#94a3b8';
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.color='#94a3b8';
+  Chart.defaults.borderColor='rgba(148,163,184,0.12)';
+  Chart.defaults.font.family="'Inter','Noto Sans JP',sans-serif";
+} else {
+  console.warn('DEBUG: Chart.js not loaded. Charts will be skipped.');
+}
+
 
 // ==================== GROUP HELPERS ====================
 function generateInviteCode() { return Math.random().toString(36).substring(2, 8).toUpperCase(); }
@@ -525,33 +548,43 @@ async function saveFeedback(title, body, category, isAnonymous) {
   return true;
 }
 
-Chart.defaults.color='#94a3b8';
-Chart.defaults.borderColor='rgba(148,163,184,0.12)';
-Chart.defaults.font.family="'Inter','Noto Sans JP',sans-serif";
+if (typeof Chart !== 'undefined') {
+  Chart.defaults.color='#94a3b8';
+  Chart.defaults.borderColor='rgba(148,163,184,0.12)';
+  Chart.defaults.font.family="'Inter','Noto Sans JP',sans-serif";
+}
+
 
 function createRadarChart(canvasId,labels,data){
+  if (typeof Chart === 'undefined') { console.warn('DEBUG: Chart.js is not loaded, skipping radar chart'); return; }
   destroyChart(canvasId);const ctx=document.getElementById(canvasId);if(!ctx)return;
-  chartInstances[canvasId]=new Chart(ctx,{type:'radar',data:{labels,datasets:[{label:'進捗率',data,
-    backgroundColor:'rgba(78,205,196,0.15)',borderColor:'#4ECDC4',borderWidth:2,
-    pointBackgroundColor:'#4ECDC4',pointBorderColor:'#0a0e1a',pointBorderWidth:2,pointRadius:5}]},
-  options:{responsive:true,maintainAspectRatio:true,scales:{r:{beginAtZero:true,max:100,ticks:{stepSize:20,display:false},
-    grid:{color:'rgba(148,163,184,0.08)'},angleLines:{color:'rgba(148,163,184,0.08)'},
-    pointLabels:{font:{size:11,weight:'500'},color:'#94a3b8'}}},
-  plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',
-    borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8,callbacks:{label:c=>`${c.raw}%`}}},
-  animation:{duration:1000,easing:'easeOutQuart'}}});
+  try {
+    chartInstances[canvasId]=new Chart(ctx,{type:'radar',data:{labels,datasets:[{label:'進捗率',data,
+      backgroundColor:'rgba(78,205,196,0.15)',borderColor:'#4ECDC4',borderWidth:2,
+      pointBackgroundColor:'#4ECDC4',pointBorderColor:'#0a0e1a',pointBorderWidth:2,pointRadius:5}]},
+    options:{responsive:true,maintainAspectRatio:true,scales:{r:{beginAtZero:true,max:100,ticks:{stepSize:20,display:false},
+      grid:{color:'rgba(148,163,184,0.08)'},angleLines:{color:'rgba(148,163,184,0.08)'},
+      pointLabels:{font:{size:11,weight:'500'},color:'#94a3b8'}}},
+    plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',
+      borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8,callbacks:{label:c=>`${c.raw}%`}}},
+    animation:{duration:1000,easing:'easeOutQuart'}}});
+  } catch(e) { console.error('DEBUG: Chart.js createRadarChart error:', e); }
 }
 
 function createBarChart(canvasId,labels,data){
+  if (typeof Chart === 'undefined') { console.warn('DEBUG: Chart.js is not loaded, skipping bar chart'); return; }
   destroyChart(canvasId);const ctx=document.getElementById(canvasId);if(!ctx)return;
-  chartInstances[canvasId]=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'勉強時間(分)',data,
-    backgroundColor:(context)=>{const{ctx:c,chartArea}=context.chart;if(!chartArea)return'#4ECDC4';
-      const g=c.createLinearGradient(0,chartArea.bottom,0,chartArea.top);
-      g.addColorStop(0,'rgba(78,205,196,0.4)');g.addColorStop(1,'rgba(69,183,209,0.8)');return g;},
-    borderRadius:6,borderSkipped:false,maxBarThickness:40}]},
-  options:{responsive:true,maintainAspectRatio:true,scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.06)'}}},
-  plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8}},
-  animation:{duration:800,easing:'easeOutQuart'}}});
+  try {
+    chartInstances[canvasId]=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'勉強時間(分)',data,
+      backgroundColor:(context)=>{
+        const{ctx:c,chartArea}=context.chart;if(!chartArea)return'#4ECDC4';
+        const g=c.createLinearGradient(0,chartArea.bottom,0,chartArea.top);
+        g.addColorStop(0,'rgba(78,205,196,0.4)');g.addColorStop(1,'rgba(69,183,209,0.8)');return g;},
+      borderRadius:6,borderSkipped:false,maxBarThickness:40}]},
+    options:{responsive:true,maintainAspectRatio:true,scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.06)'}}},
+    plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8}},
+    animation:{duration:800,easing:'easeOutQuart'}}});
+  } catch(e) { console.error('DEBUG: Chart.js createBarChart error:', e); }
 }
 
 // ==================== STOPWATCH / TIMER ====================
@@ -670,8 +703,23 @@ function fmtSW(t){
 function renderLogin(){
   const app = document.getElementById('app');
   document.body.classList.add('hide-sidebar');
-  app.innerHTML = `
-    <div class="auth-container">
+  
+  // Ensure we have an auth overlay instead of replacing everything if possible
+  // Fix: The previous app.innerHTML = ... was wiping out #sidebar and #main-content
+  let authOverlay = document.getElementById('auth-overlay');
+  if (!authOverlay) {
+    authOverlay = document.createElement('div');
+    authOverlay.id = 'auth-overlay';
+    authOverlay.style.position = 'fixed';
+    authOverlay.style.inset = '0';
+    authOverlay.style.zIndex = '9999';
+    authOverlay.style.backgroundColor = 'var(--color-bg-primary)';
+    document.body.appendChild(authOverlay);
+  }
+  authOverlay.style.display = 'flex';
+  
+  authOverlay.innerHTML = `
+    <div class="auth-container" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center;">
       <div class="auth-card">
         <div class="auth-header">
           <div class="auth-logo">M</div>
@@ -709,7 +757,11 @@ function renderLogin(){
   `;
 
   document.getElementById('auth-toggle').onclick = () => { isSignUpMode = !isSignUpMode; renderLogin(); };
-  document.getElementById('demo-login').onclick = () => mockLogin('demo@example.com');
+  document.getElementById('demo-login').onclick = () => {
+    // Hide auth overlay on demo login
+    authOverlay.style.display = 'none';
+    mockLogin('demo@example.com');
+  };
   document.getElementById('auth-form').onsubmit = async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button[type="submit"]');
@@ -739,6 +791,10 @@ async function handleLogin(email, password) {
   if(!supabase || SUPABASE_KEY === 'your-anon-key') { mockLogin(email); return; }
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
   if(error) { showToast('❌ ' + error.message); }
+  else {
+    const overlay = document.getElementById('auth-overlay');
+    if (overlay) overlay.style.display = 'none';
+  }
 }
 
 async function handleSignUp(email, password, name) {
@@ -769,6 +825,8 @@ function mockLogin(email) {
   session = { user: { email, id: 'user-001' } };
   currentUser.id = 'user-001';
   currentUser.name = email.split('@')[0];
+  const overlay = document.getElementById('auth-overlay');
+  if (overlay) overlay.style.display = 'none';
   showToast('✅ ログインしました（デモモード）');
   renderRoute(currentRoute);
 }
@@ -2108,51 +2166,85 @@ registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayou
 
 async function initApp(){
   console.log('DEBUG: initApp started');
+  // Initial Theme Check
+  applyTheme();
+
   if(supabase) {
     loadTimerState();
     try {
       await fetchCountdowns();
-      const { data: { session: initialSession } } = await supabase.auth.getSession();
-      session = initialSession;
+      const { data, error } = await supabase.auth.getSession();
+      if (!error && data) session = data.session;
+      
       if (session) {
-        const profile = await fetchUserProfile(session.user.id);
+        const profile = await fetchUserProfile(session.user.id).catch(e => {
+          console.error('DEBUG: Profile fetch failed:', e);
+          return null;
+        });
         if (profile) {
           currentUser.id = profile.id;
-          currentUser.name = profile.full_name;
-          currentUser.university = profile.university;
-          currentUser.grade = profile.grade;
-          currentUser.avatar_url = profile.avatar_url;
+          currentUser.name = profile.full_name || '名前未設定';
+          currentUser.university = profile.university || '未設定';
+          currentUser.grade = profile.grade || 1;
+          currentUser.avatar_url = profile.avatar_url || '';
           currentUser.daily_goal = profile.daily_goal || 60;
         }
+        await fetchUserGroups().catch(e => console.warn('DEBUG: Group fetch failed:', e));
       }
+
       supabase.auth.onAuthStateChange(async (_event, newSession) => {
+        console.log('DEBUG: Auth state changed:', _event);
         session = newSession;
         if (session) {
-          const profile = await fetchUserProfile(session.user.id);
+          const profile = await fetchUserProfile(session.user.id).catch(() => null);
           if (profile) {
             currentUser.id = profile.id;
-            currentUser.name = profile.full_name;
-            currentUser.university = profile.university;
-            currentUser.grade = profile.grade;
-            currentUser.avatar_url = profile.avatar_url;
+            currentUser.name = profile.full_name || '名前未設定';
+            currentUser.university = profile.university || '未設定';
+            currentUser.grade = profile.grade || 1;
+            currentUser.avatar_url = profile.avatar_url || '';
             currentUser.daily_goal = profile.daily_goal || 60;
           }
-          await fetchUserGroups();
+          await fetchUserGroups().catch(() => {});
         }
         renderRoute(currentRoute);
       });
 
     } catch(e) {
-      console.error('DEBUG: Auth session error:', e);
+      console.error('DEBUG: Auth/Supabase init error:', e);
     }
   }
   
-  window.addEventListener('popstate',()=>renderRoute(window.location.pathname));
-  document.addEventListener('click',e=>{const n=e.target.closest('[data-route]');if(n){e.preventDefault();navigate(n.dataset.route);}});
+  // Clean up global router listeners to avoid duplicates
+  window.removeEventListener('popstate', handlePopState);
+  window.addEventListener('popstate', handlePopState);
   
-  console.log('DEBUG: App: Initial route render:', window.location.pathname);
+  document.removeEventListener('click', handleInternalLinkClick);
+  document.addEventListener('click', handleInternalLinkClick);
+  
+  console.log('DEBUG: App initial route render:', window.location.pathname);
   renderRoute(window.location.pathname);
 }
+
+function handlePopState() { renderRoute(window.location.pathname); }
+function handleInternalLinkClick(e) {
+  const n = e.target.closest('[data-route]');
+  if(n){ e.preventDefault(); navigate(n.dataset.route); }
+}
+
+// Global Error Handler
+window.onerror = function(msg, url, line) {
+  console.error("CRITICAL ERROR: " + msg + " at " + line);
+  // Optional: show emergency UI if screen is blank
+  const app = document.getElementById('app');
+  if (app && app.innerHTML.trim() === "") {
+    app.innerHTML = `<div style="padding: 40px; text-align: center; color: white;">
+      <h2>⚠️ アプリの起動中にエラーが発生しました</h2>
+      <p style="opacity: 0.7;">${msg}</p>
+      <button onclick="localStorage.clear(); location.reload();" style="margin-top: 20px; padding: 10px 20px; background: #4ECDC4; border: none; border-radius: 8px; font-weight: bold; cursor: pointer;">再読み込み・キャッシュクリア</button>
+    </div>`;
+  }
+};
 
 initApp();
 console.log('DEBUG: app.js finished executing');
