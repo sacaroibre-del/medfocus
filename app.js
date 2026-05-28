@@ -245,6 +245,62 @@ const KOKUSHI_CHECKLIST = [
 
 let checklistProgressCache = [];
 
+// ==================== SLEEP LOGS (Local Storage) ====================
+function getSleepLogs() {
+  try {
+    const data = localStorage.getItem('medfocus_sleep_logs');
+    return data ? JSON.parse(data) : {};
+  } catch(e) { return {}; }
+}
+function saveSleepLogs(logs) {
+  localStorage.setItem('medfocus_sleep_logs', JSON.stringify(logs));
+}
+function getLogicalDate(d = new Date()) {
+  const cd = new Date(d);
+  if (cd.getHours() < 4) cd.setDate(cd.getDate() - 1);
+  return cd;
+}
+function toLocalDateKey(d) {
+  return d.toLocaleDateString('ja-JP', {year:'numeric',month:'2-digit',day:'2-digit'}).replace(/\//g, '-');
+}
+function getSleepLogForDate(dateKey) {
+  return getSleepLogs()[dateKey];
+}
+function getSleepToggleState() {
+  const today = getLogicalDate();
+  const dateKey = toLocalDateKey(today);
+  const log = getSleepLogForDate(dateKey);
+  if (!log || (!log.wake_up && !log.bedtime)) return 'wake_up';
+  if (log.wake_up && !log.bedtime) return 'bedtime';
+  return 'wake_up';
+}
+function recordSleepEvent(state) {
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('ja-JP', {hour:'2-digit',minute:'2-digit'});
+  const logicalDate = getLogicalDate(now);
+  const dateKey = toLocalDateKey(logicalDate);
+  
+  const logs = getSleepLogs();
+  if (!logs[dateKey]) logs[dateKey] = { wake_up: null, bedtime: null };
+  
+  if (state === 'wake_up') {
+    logs[dateKey].wake_up = timeStr;
+  } else {
+    logs[dateKey].bedtime = timeStr;
+  }
+  
+  saveSleepLogs(logs);
+  return timeStr;
+}
+function updateSleepTime(dateKey, type, timeStr) {
+  const logs = getSleepLogs();
+  if (!logs[dateKey]) logs[dateKey] = { wake_up: null, bedtime: null };
+  if (type === 'wake_up') logs[dateKey].wake_up = timeStr;
+  else logs[dateKey].bedtime = timeStr;
+  saveSleepLogs(logs);
+}
+
+
 async function fetchChecklists() {
   if (!supabase || !session) return [];
   const { data, error } = await supabase.from('user_checklist_progress').select('category, topic, completed').eq('user_id', session.user.id);
@@ -837,6 +893,7 @@ const navItems=[
   {route:'/study',label:'学習記録',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>'},
   {route:'/community',label:'質問広場',icon:'<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'},
   {route:'/ranking',label:'ランキング',icon:'<svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5C7 4 7 7 7 7"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5C17 4 17 7 17 7"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>'},
+  {route:'/insights',label:'分析インサイト',icon:'<svg viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>'},
   {route:'/settings',label:'設定',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'}
 ];
 
@@ -1037,28 +1094,54 @@ async function renderDashboard(){
     dailyD.push(logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;}).reduce((s,l)=>s+l.duration_minutes,0));
     dailyL.push(d.toLocaleDateString('ja-JP',{weekday:'short'}));}
 
+  const logicalToday = getLogicalDate(new Date());
+  
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
+    
+    <!-- Sleep Toggle -->
+    <div class="sleep-toggle-card animate-slide-up" style="margin-bottom:var(--space-md); display:flex; align-items:center; gap:16px; background:var(--color-bg-elevated); padding:16px; border-radius:var(--radius-lg); box-shadow:var(--shadow-sm);">
+      <button class="btn ${getSleepToggleState() === 'wake_up' ? 'btn-primary' : 'btn-secondary'}" id="sleep-toggle-btn" style="flex:1; display:flex; justify-content:center; align-items:center; gap:8px;">
+        <span class="sleep-toggle-icon">${getSleepToggleState() === 'wake_up' ? IC.sun : IC.moon}</span>
+        <span class="sleep-toggle-label">${getSleepToggleState() === 'wake_up' ? '起床' : '就寝'}</span>
+      </button>
+      <div style="flex:2; display:flex; gap:16px; flex-wrap:wrap; font-size:0.9rem; color:var(--color-text-secondary);">
+        ${(() => {
+          const todayEntry = getSleepLogForDate(toLocalDateKey(logicalToday));
+          let html = '';
+          if (todayEntry) {
+            if (todayEntry.wake_up) {
+              html += `<div style="display:flex; align-items:center; gap:6px;">起床 <input type="time" id="edit-wakeup-time" value="${todayEntry.wake_up}" class="sleep-time-input" style="background:transparent; border:1px solid var(--color-border); border-radius:4px; padding:2px 4px; color:var(--color-text-primary);"></div>`;
+            }
+            if (todayEntry.bedtime) {
+              html += `<div style="display:flex; align-items:center; gap:6px;">就寝 <input type="time" id="edit-bedtime-time" value="${todayEntry.bedtime}" class="sleep-time-input" style="background:transparent; border:1px solid var(--color-border); border-radius:4px; padding:2px 4px; color:var(--color-text-primary);"></div>`;
+            }
+          }
+          return html || '<span style="color:var(--color-text-tertiary)">まだ記録がありません</span>';
+        })()}
+      </div>
+    </div>
+
     <div class="dashboard-stats">
-      <div class="stat-card animate-slide-up"><div class="stat-label">📊 総合進捗率</div><div class="stat-value">${overall}<span class="stat-unit">%</span></div><div class="stat-change positive">▲ ${compT}/${totalT} トピック完了</div></div>
+      <div class="stat-card animate-slide-up"><div class="stat-label">${IC.chart} 総合進捗率</div><div class="stat-value">${overall}<span class="stat-unit">%</span></div><div class="stat-change positive">▲ ${compT}/${totalT} トピック完了</div></div>
       <div class="stat-card animate-slide-up" style="animation-delay:.05s">
-        <div class="stat-label">🎯 今日の目標進捗</div>
+        <div class="stat-label">${IC.target} 今日の目標進捗</div>
         <div class="stat-value">${Math.min(100, Math.round((todayMin / (currentUser.daily_goal || 60)) * 100))}<span class="stat-unit">%</span></div>
         <div style="height:6px; background:rgba(255,255,255,0.1); border-radius:3px; margin-top:8px; overflow:hidden;">
           <div style="width:${Math.min(100, (todayMin / (currentUser.daily_goal || 60)) * 100)}%; height:100%; background:var(--color-accent-teal);"></div>
         </div>
         <div class="stat-change positive" style="margin-top:4px">目標: ${currentUser.daily_goal || 60}分 / 現在: ${todayMin}分</div>
       </div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.1s"><div class="stat-label">🔥 連続達成</div><div class="stat-value">${streak}<span class="stat-unit">日</span></div><div class="stat-change positive">▲ 自己ベスト更新中！</div></div>
-      <div class="stat-card animate-slide-up" style="animation-delay:.15s"><div class="stat-label">⏳ 総学習時間</div><div class="stat-value">${Math.floor(totalMinutes/60)}<span class="stat-unit">時間</span></div><div class="stat-change positive">▲ 1日平均 ${formatMinutes(avgMin)}</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.1s"><div class="stat-label">${IC.flame} 連続達成</div><div class="stat-value">${streak}<span class="stat-unit">日</span></div><div class="stat-change positive">▲ 自己ベスト更新中！</div></div>
+      <div class="stat-card animate-slide-up" style="animation-delay:.15s"><div class="stat-label">${IC.hourglass} 総学習時間</div><div class="stat-value">${Math.floor(totalMinutes/60)}<span class="stat-unit">時間</span></div><div class="stat-change positive">▲ 1日平均 ${formatMinutes(avgMin)}</div></div>
     </div>
     <div class="dashboard-charts">
-      <div class="card animate-slide-up" style="animation-delay:.2s"><div class="card-header"><div class="card-title">📊 週間学習時間</div></div><div class="chart-container"><canvas id="weeklyBarChart"></canvas></div></div>
-      <div class="card animate-slide-up" style="animation-delay:.25s"><div class="card-header"><div class="card-title">🎯 カテゴリ別進捗</div></div><div class="chart-container"><canvas id="categoryRadarChart"></canvas></div></div>
+      <div class="card animate-slide-up" style="animation-delay:.2s"><div class="card-header"><div class="card-title">${IC.chart} 週間学習時間</div></div><div class="chart-container"><canvas id="weeklyBarChart"></canvas></div></div>
+      <div class="card animate-slide-up" style="animation-delay:.25s"><div class="card-header"><div class="card-title">${IC.target} カテゴリ別進捗</div></div><div class="chart-container"><canvas id="categoryRadarChart"></canvas></div></div>
     </div>
     <div class="dashboard-bottom">
-      <div class="card animate-slide-up" style="animation-delay:.3s"><div class="card-header"><div class="card-title">📈 進捗詳細 (8カテゴリ)</div></div>
+      <div class="card animate-slide-up" style="animation-delay:.3s"><div class="card-header"><div class="card-title">${IC.trendUp} 進捗詳細 (8カテゴリ)</div></div>
         <div class="category-progress-list">${bucketProg.map(b=>`<div class="category-progress-item"><div class="category-progress-header"><span class="category-progress-name">${b.name}</span><span class="category-progress-value">${b.value}%</span></div><div class="progress-bar"><div class="progress-bar-fill" style="width:0%;background:var(--color-primary)" data-width="${b.value}"></div></div></div>`).join('')}</div></div>
-      <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">🔔 仲間のアクティビティ</div></div>
+      <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">${IC.bell} 仲間のアクティビティ</div></div>
         <div class="activity-list">${activityFeed.map(a=>`<div class="activity-item"><div class="activity-icon">${a.icon}</div><div class="activity-content"><div class="activity-name">${a.name}</div><div class="activity-action">${a.action}</div></div><div class="activity-time">${a.time}</div></div>`).join('')}</div></div>
     </div>`;
 
@@ -1067,7 +1150,27 @@ async function renderDashboard(){
     createRadarChart('categoryRadarChart',bucketProg.map(b=>b.name),bucketProg.map(b=>b.value));
     document.querySelectorAll('.progress-bar-fill').forEach(b=>{const w=b.dataset.width;requestAnimationFrame(()=>{b.style.width=w+'%';});});
   },100);
+
+  // Sleep event listeners
+  document.getElementById('sleep-toggle-btn')?.addEventListener('click', () => {
+    const state = getSleepToggleState();
+    const time = recordSleepEvent(state);
+    if (state === 'wake_up') showToast(IC.sun + ` 起床を記録しました（${time}）`);
+    else showToast(IC.moon + ` 就寝を記録しました（${time}）`);
+    renderDashboard();
+  });
+
+  const dateKey = toLocalDateKey(logicalToday);
+  document.getElementById('edit-wakeup-time')?.addEventListener('change', (e) => {
+    updateSleepTime(dateKey, 'wake_up', e.target.value);
+    showToast(IC.checkCircle + ' 起床時間を更新しました');
+  });
+  document.getElementById('edit-bedtime-time')?.addEventListener('change', (e) => {
+    updateSleepTime(dateKey, 'bedtime', e.target.value);
+    showToast(IC.checkCircle + ' 就寝時間を更新しました');
+  });
 }
+
 
 // --- Study ---
 async function renderStudy(){
@@ -2163,6 +2266,220 @@ registerRoute('/study',()=>{if(!session){renderLogin();return;}ensureAppLayout()
 registerRoute('/community',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCommunity();});
 registerRoute('/ranking',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderRanking();});
 registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
+registerRoute('/insights',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderInsights();});
+
+// --- Insights ---
+async function renderInsights() {
+  const ct = document.getElementById('page-container');
+  if (!ct) return;
+
+  const logs = await fetchStudyLogs();
+  const sleepLogs = getSleepLogs();
+  
+  // Basic analysis calculations
+  let wakeUpVariabilityText = "データ不足";
+  let wakeUpVariabilityValue = "-";
+  let firstStudyLagText = "データ不足";
+  let firstStudyLagValue = "-";
+  let bestSleepText = "データ不足";
+  let bestSleepValue = "-";
+  let cooldownText = "データ不足";
+  let cooldownValue = "-";
+
+  // Compute stats if we have some data
+  const dateKeys = Object.keys(sleepLogs).sort();
+  if (dateKeys.length >= 2) {
+    // 1. Wake up variability (standard deviation of wake up time in minutes)
+    const wakeUpMins = dateKeys
+      .map(k => sleepLogs[k].wake_up)
+      .filter(w => w)
+      .map(w => {
+        const [h, m] = w.split(':').map(Number);
+        return h * 60 + m;
+      });
+    
+    if (wakeUpMins.length > 1) {
+      const avgWakeUp = wakeUpMins.reduce((a,b) => a+b, 0) / wakeUpMins.length;
+      const variance = wakeUpMins.reduce((a,b) => a + Math.pow(b - avgWakeUp, 2), 0) / wakeUpMins.length;
+      const stdDev = Math.sqrt(variance);
+      wakeUpVariabilityValue = `±${Math.round(stdDev)}分`;
+      if (stdDev < 30) wakeUpVariabilityText = "とても安定しています";
+      else if (stdDev < 60) wakeUpVariabilityText = "比較的安定しています";
+      else wakeUpVariabilityText = "リズムが乱れがちです";
+    }
+
+    // 2. First study lag (time between wake up and first study log of the day)
+    const lags = [];
+    dateKeys.forEach(k => {
+      const sl = sleepLogs[k];
+      if (sl.wake_up) {
+        const [wh, wm] = sl.wake_up.split(':').map(Number);
+        const wakeMin = wh * 60 + wm;
+        
+        // find first study log for this day
+        const dayLogs = logs.filter(l => toLocalDateKey(getLogicalDate(new Date(l.started_at))) === k);
+        if (dayLogs.length > 0) {
+          dayLogs.sort((a,b) => new Date(a.started_at) - new Date(b.started_at));
+          const firstStudy = new Date(dayLogs[0].started_at);
+          const studyMin = firstStudy.getHours() * 60 + firstStudy.getMinutes();
+          let lag = studyMin - wakeMin;
+          if (lag < 0) lag += 24 * 60; // Next day crossing
+          lags.push(lag);
+        }
+      }
+    });
+
+    if (lags.length > 0) {
+      const avgLag = lags.reduce((a,b) => a+b, 0) / lags.length;
+      firstStudyLagValue = `${Math.floor(avgLag/60)}h${Math.round(avgLag%60)}m`;
+      if (avgLag < 60) firstStudyLagText = "目覚めてすぐ学習できています";
+      else if (avgLag < 120) firstStudyLagText = "良好なペースで開始できています";
+      else firstStudyLagText = "開始までに時間がかかっています";
+    }
+
+    // 3. Best sleep (sleep duration on the day with max study time)
+    // Needs bedtime of previous day and wakeup of current day
+    let maxStudyDuration = 0;
+    let bestSleepDuration = null;
+    
+    for (let i = 1; i < dateKeys.length; i++) {
+      const prevK = dateKeys[i-1];
+      const currK = dateKeys[i];
+      if (sleepLogs[prevK].bedtime && sleepLogs[currK].wake_up) {
+        const [bh, bm] = sleepLogs[prevK].bedtime.split(':').map(Number);
+        const [wh, wm] = sleepLogs[currK].wake_up.split(':').map(Number);
+        
+        let sleepMin = (wh * 60 + wm) - (bh * 60 + bm);
+        if (sleepMin < 0) sleepMin += 24 * 60;
+        
+        const dayStudy = logs.filter(l => toLocalDateKey(getLogicalDate(new Date(l.started_at))) === currK)
+                             .reduce((s,l) => s + l.duration_minutes, 0);
+                             
+        if (dayStudy > maxStudyDuration) {
+          maxStudyDuration = dayStudy;
+          bestSleepDuration = sleepMin;
+        }
+      }
+    }
+    
+    if (bestSleepDuration !== null) {
+      bestSleepValue = `${Math.floor(bestSleepDuration/60)}h${Math.round(bestSleepDuration%60)}m`;
+      bestSleepText = `最も集中できた日（${maxStudyDuration}分）の睡眠時間`;
+    }
+
+    // 4. Cooldown (time between last study and bedtime)
+    const cooldowns = [];
+    dateKeys.forEach(k => {
+      const sl = sleepLogs[k];
+      if (sl.bedtime) {
+        const [bh, bm] = sl.bedtime.split(':').map(Number);
+        const bedMin = bh * 60 + bm;
+        
+        const dayLogs = logs.filter(l => toLocalDateKey(getLogicalDate(new Date(l.started_at))) === k);
+        if (dayLogs.length > 0) {
+          dayLogs.sort((a,b) => new Date(b.started_at) - new Date(a.started_at));
+          const lastStudy = new Date(dayLogs[0].started_at);
+          // approximation
+          const studyEndMin = lastStudy.getHours() * 60 + lastStudy.getMinutes() + dayLogs[0].duration_minutes;
+          let cooldown = bedMin - studyEndMin;
+          if (cooldown < 0) cooldown += 24 * 60;
+          cooldowns.push(cooldown);
+        }
+      }
+    });
+
+    if (cooldowns.length > 0) {
+      const avgCooldown = cooldowns.reduce((a,b) => a+b, 0) / cooldowns.length;
+      cooldownValue = `${Math.floor(avgCooldown/60)}h${Math.round(avgCooldown%60)}m`;
+      if (avgCooldown < 30) cooldownText = "寝る直前まで勉強しており、脳が休まっていません";
+      else if (avgCooldown < 90) cooldownText = "理想的なクールダウンができています";
+      else cooldownText = "リラックスタイムが十分に取れています";
+    }
+  }
+
+  ct.innerHTML = `
+    <div class="page-header">
+      <h1 class="page-title">分析インサイト</h1>
+      <p class="page-subtitle">睡眠リズムと学習の相関関係を確認しよう</p>
+    </div>
+    
+    <div class="insights-grid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:20px; margin-top:20px;">
+      
+      <!-- 1. Wake up variability -->
+      <div class="card animate-slide-up" style="position:relative; overflow:visible;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">${IC.sun} 起床リズム安定度</div>
+          <div class="tooltip-container" style="position:relative; display:inline-block; cursor:help; color:var(--color-text-tertiary);">
+            ${IC.helpCircle}
+            <div class="tooltip-text" style="visibility:hidden; width:220px; background-color:var(--color-bg-elevated); color:var(--color-text-primary); text-align:center; border-radius:6px; padding:10px; position:absolute; z-index:100; bottom:125%; left:50%; margin-left:-110px; opacity:0; transition:opacity 0.3s; font-size:0.8rem; border:1px solid var(--color-border); box-shadow:var(--shadow-md);">
+              <strong>起床リズム安定度</strong><br>
+              日々の起床時間のバラつき（標準偏差）を示します。この数値が小さいほど、毎日同じ時間に起きられていることを意味し、睡眠の質が高いとされます。
+            </div>
+          </div>
+        </div>
+        <div style="font-size:2rem; font-weight:700; color:var(--color-text-primary); margin:16px 0;">${wakeUpVariabilityValue}</div>
+        <div style="color:var(--color-text-secondary); font-size:0.9rem;">${wakeUpVariabilityText}</div>
+      </div>
+
+      <!-- 2. First study lag -->
+      <div class="card animate-slide-up" style="animation-delay:0.1s; position:relative; overflow:visible;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">${IC.timer} 初動タイムラグ</div>
+          <div class="tooltip-container" style="position:relative; display:inline-block; cursor:help; color:var(--color-text-tertiary);">
+            ${IC.helpCircle}
+            <div class="tooltip-text" style="visibility:hidden; width:220px; background-color:var(--color-bg-elevated); color:var(--color-text-primary); text-align:center; border-radius:6px; padding:10px; position:absolute; z-index:100; bottom:125%; left:50%; margin-left:-110px; opacity:0; transition:opacity 0.3s; font-size:0.8rem; border:1px solid var(--color-border); box-shadow:var(--shadow-md);">
+              <strong>初動タイムラグ</strong><br>
+              起床してから、その日の最初の学習を開始するまでの平均時間です。短いほど、スムーズに勉強モードに切り替えられていることを示します。
+            </div>
+          </div>
+        </div>
+        <div style="font-size:2rem; font-weight:700; color:var(--color-text-primary); margin:16px 0;">${firstStudyLagValue}</div>
+        <div style="color:var(--color-text-secondary); font-size:0.9rem;">${firstStudyLagText}</div>
+      </div>
+
+      <!-- 3. Best sleep -->
+      <div class="card animate-slide-up" style="animation-delay:0.2s; position:relative; overflow:visible;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">${IC.star} ベストパフォーマンス睡眠</div>
+          <div class="tooltip-container" style="position:relative; display:inline-block; cursor:help; color:var(--color-text-tertiary);">
+            ${IC.helpCircle}
+            <div class="tooltip-text" style="visibility:hidden; width:220px; background-color:var(--color-bg-elevated); color:var(--color-text-primary); text-align:center; border-radius:6px; padding:10px; position:absolute; z-index:100; bottom:125%; left:50%; margin-left:-110px; opacity:0; transition:opacity 0.3s; font-size:0.8rem; border:1px solid var(--color-border); box-shadow:var(--shadow-md);">
+              <strong>ベストパフォーマンス睡眠</strong><br>
+              これまでで最も学習時間が長かった日の前夜に、何時間睡眠をとっていたかを示します。あなたにとっての最適な睡眠時間の目安になります。
+            </div>
+          </div>
+        </div>
+        <div style="font-size:2rem; font-weight:700; color:var(--color-text-primary); margin:16px 0;">${bestSleepValue}</div>
+        <div style="color:var(--color-text-secondary); font-size:0.9rem;">${bestSleepText}</div>
+      </div>
+
+      <!-- 4. Cooldown -->
+      <div class="card animate-slide-up" style="animation-delay:0.3s; position:relative; overflow:visible;">
+        <div class="card-header" style="display:flex; justify-content:space-between; align-items:center;">
+          <div class="card-title" style="display:flex; align-items:center; gap:8px;">${IC.moon} 就寝前クールダウン</div>
+          <div class="tooltip-container" style="position:relative; display:inline-block; cursor:help; color:var(--color-text-tertiary);">
+            ${IC.helpCircle}
+            <div class="tooltip-text" style="visibility:hidden; width:220px; background-color:var(--color-bg-elevated); color:var(--color-text-primary); text-align:center; border-radius:6px; padding:10px; position:absolute; z-index:100; bottom:125%; left:50%; margin-left:-110px; opacity:0; transition:opacity 0.3s; font-size:0.8rem; border:1px solid var(--color-border); box-shadow:var(--shadow-md);">
+              <strong>就寝前クールダウン</strong><br>
+              その日の最後の学習を終えてから就寝するまでの平均時間です。寝る直前まで勉強すると脳が興奮して睡眠の質が下がるため、30〜90分程度のクールダウンが推奨されます。
+            </div>
+          </div>
+        </div>
+        <div style="font-size:2rem; font-weight:700; color:var(--color-text-primary); margin:16px 0;">${cooldownValue}</div>
+        <div style="color:var(--color-text-secondary); font-size:0.9rem;">${cooldownText}</div>
+      </div>
+
+    </div>
+    
+    <!-- Add styles for tooltips -->
+    <style>
+      .tooltip-container:hover .tooltip-text {
+        visibility: visible !important;
+        opacity: 1 !important;
+      }
+    </style>
+  `;
+}
 
 async function initApp(){
   console.log('DEBUG: initApp started');
