@@ -199,6 +199,70 @@ function getTodayGoalMinutes() {
   return goals[today.getDay()];
 }
 
+// ==================== SLEEP LOG ====================
+function getSleepLogs() {
+  try { return JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]'); } catch(e) { return []; }
+}
+function saveSleepLogs(logs) {
+  localStorage.setItem('medfocus_sleep_log', JSON.stringify(logs));
+}
+function getSleepLogForDate(dateKey) {
+  return getSleepLogs().find(l => l.date === dateKey) || null;
+}
+function recordSleepEvent(type) {
+  // type: 'wake_up' or 'bedtime'
+  const now = new Date();
+  const timeStr = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
+  const logicalDate = getLogicalDate(now);
+  const dateKey = toLocalDateKey(logicalDate);
+  const logs = getSleepLogs();
+  let entry = logs.find(l => l.date === dateKey);
+  if (!entry) {
+    entry = { date: dateKey };
+    logs.push(entry);
+  }
+  entry[type] = timeStr;
+  saveSleepLogs(logs);
+  return timeStr;
+}
+function getSleepToggleState() {
+  const logicalDate = getLogicalDate(new Date());
+  const dateKey = toLocalDateKey(logicalDate);
+  const entry = getSleepLogForDate(dateKey);
+  if (!entry || !entry.wake_up) return 'wake_up'; // show 起床 button
+  return 'bedtime'; // show 就寝 button
+}
+
+// ==================== INSIGHT ANALYSIS HELPERS ====================
+function calculateCV(values) {
+  if (!values || values.length === 0) return 0;
+  const count = values.length;
+  const sum = values.reduce((a, v) => a + v, 0);
+  const mean = sum / count;
+  if (mean === 0) return 0;
+  const variance = values.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / count;
+  return Math.sqrt(variance) / mean;
+}
+function getMinutesFromBase5AM(timeStr) {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  let total = hours * 60 + minutes;
+  let offset = total - 300;
+  if (offset < 0) offset += 1440;
+  return offset;
+}
+function getTimeSlotForHour(h) {
+  if (h >= 5 && h < 11) return 'morning';
+  if (h >= 11 && h < 17) return 'afternoon';
+  if (h >= 17 && h < 23) return 'evening';
+  return 'night';
+}
+function getTimeSlotLabel(slot) {
+  if (slot === 'morning') return '朝';
+  if (slot === 'afternoon') return '昼';
+  if (slot === 'evening') return '夜';
+  return '深夜';
+}
+
 function setTodayGoalOverride(minutes) {
   const today = getLogicalDate(new Date());
   const dateKey = toLocalDateKey(today);
@@ -2313,6 +2377,28 @@ async function renderDashboard(){
   }
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
 
+    <!-- Sleep Toggle -->
+    <div class="sleep-toggle-card animate-slide-up">
+      <button class="sleep-toggle-btn ${getSleepToggleState() === 'wake_up' ? 'is-wakeup' : 'is-bedtime'}" id="sleep-toggle-btn">
+        <span class="sleep-toggle-icon">${getSleepToggleState() === 'wake_up' 
+          ? IC._s('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>')
+          : IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</span>
+        <span class="sleep-toggle-label">${getSleepToggleState() === 'wake_up' ? '起床' : '就寝'}</span>
+      </button>
+      <span class="sleep-toggle-info" id="sleep-info-container">
+        ${(() => {
+          const todayEntry = getSleepLogForDate(toLocalDateKey(logicalToday));
+          if (todayEntry && todayEntry.wake_up) {
+            return `起床 ${todayEntry.wake_up}${todayEntry.bedtime ? ' / 就寝 ' + todayEntry.bedtime : ''}`;
+          }
+          return '睡眠未記録';
+        })()}
+        <button class="sleep-edit-btn" id="sleep-edit-modal-trigger" title="睡眠記録を編集/追加">
+          ${IC._s('<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4z"></path>')}
+        </button>
+      </span>
+    </div>
+
     <!-- HERO: Goal Ring -->
     <div class="card goal-ring-hero animate-slide-up">
       ${streak > 0 ? `<div class="goal-ring-streak"><span style="display:inline-flex;align-items:center;gap:4px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2c0 4-4 6-4 10a4 4 0 0 0 8 0c0-4-4-6-4-10z"/></svg> 連続達成 ${streak}日目</span></div>` : ''}
@@ -2748,6 +2834,162 @@ async function renderDashboard(){
     setTodayGoalOverride(next);
     renderDashboard();
   });
+
+  document.getElementById('sleep-toggle-btn')?.addEventListener('click', () => {
+    const state = getSleepToggleState();
+    const time = recordSleepEvent(state);
+    if (state === 'wake_up') {
+      showToast(IC._s('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>') + ` 起床を記録しました（${time}）`);
+    } else {
+      showToast(IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>') + ` 就寝を記録しました（${time}）`);
+    }
+    renderDashboard();
+  });
+
+  document.getElementById('sleep-edit-modal-trigger')?.addEventListener('click', () => {
+    showSleepEditModal();
+  });
+
+  function showSleepEditModal() {
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay animate-fade-in';
+    modal.style.zIndex = '2000';
+
+    const localTodayStr = toLocalDateKey(new Date());
+    
+    modal.innerHTML = `
+      <div class="modal-content animate-slide-up" style="max-width:420px;">
+        <div class="modal-header">
+          <div class="modal-title">睡眠記録の編集・追加</div>
+          <button class="modal-close" id="close-sleep-modal">✕</button>
+        </div>
+        <div class="modal-body">
+          <p style="font-size:0.8rem; color:var(--color-text-secondary); margin-bottom:16px;">
+            起床・就寝ボタンの押し忘れや、過去の記録を修正・追加できます。
+          </p>
+          
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>日付</label>
+            <input type="date" id="sleep-edit-date" value="${localTodayStr}" max="${localTodayStr}" />
+          </div>
+          
+          <div style="display:flex; gap:12px; margin-bottom:16px;">
+            <div class="settings-field" style="flex:1;">
+              <label>起床時間</label>
+              <input type="time" id="sleep-edit-wakeup" />
+            </div>
+            <div class="settings-field" style="flex:1;">
+              <label>就寝時間</label>
+              <input type="time" id="sleep-edit-bedtime" />
+            </div>
+          </div>
+          
+          <button class="btn btn-primary" id="btn-save-sleep-edit" style="width:100%; margin-bottom:16px;">
+            記録を保存する
+          </button>
+
+          <hr style="border:none; border-top:1px solid var(--color-border); margin:16px 0;" />
+
+          <div style="font-weight:700; font-size:0.85rem; margin-bottom:8px;">最近の睡眠記録</div>
+          <div class="sleep-history-list" id="sleep-history-container">
+            <!-- Dynamically populated -->
+          </div>
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(modal);
+
+    const dateInput = modal.querySelector('#sleep-edit-date');
+    const wakeupInput = modal.querySelector('#sleep-edit-wakeup');
+    const bedtimeInput = modal.querySelector('#sleep-edit-bedtime');
+    const historyContainer = modal.querySelector('#sleep-history-container');
+
+    const updateInputsForSelectedDate = () => {
+      const selectedDate = dateInput.value;
+      const entry = getSleepLogForDate(selectedDate);
+      wakeupInput.value = entry && entry.wake_up ? entry.wake_up : '';
+      bedtimeInput.value = entry && entry.bedtime ? entry.bedtime : '';
+    };
+
+    const renderSleepHistory = () => {
+      const logs = getSleepLogs();
+      // Sort newest first
+      const sortedLogs = [...logs].sort((a,b) => b.date.localeCompare(a.date));
+      if (sortedLogs.length === 0) {
+        historyContainer.innerHTML = '<div style="text-align:center; padding:12px; color:var(--color-text-tertiary); font-size:0.8rem;">記録がありません</div>';
+        return;
+      }
+      historyContainer.innerHTML = sortedLogs.map(log => `
+        <div class="sleep-history-item">
+          <div>
+            <span class="sleep-history-date">${log.date}</span>
+            <span class="sleep-history-times" style="margin-left:8px;">
+              起床: ${log.wake_up || '--:--'} / 就寝: ${log.bedtime || '--:--'}
+            </span>
+          </div>
+          <button class="sleep-history-delete" data-date="${log.date}">削除</button>
+        </div>
+      `).join('');
+
+      historyContainer.querySelectorAll('.sleep-history-delete').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const targetDate = e.target.dataset.date;
+          if (confirm(`${targetDate} の睡眠記録を削除しますか？`)) {
+            const currentLogs = getSleepLogs();
+            const filtered = currentLogs.filter(l => l.date !== targetDate);
+            saveSleepLogs(filtered);
+            renderSleepHistory();
+            updateInputsForSelectedDate();
+            showToast('睡眠記録を削除しました');
+          }
+        });
+      });
+    };
+
+    dateInput.addEventListener('change', updateInputsForSelectedDate);
+
+    modal.querySelector('#btn-save-sleep-edit').onclick = () => {
+      const dateVal = dateInput.value;
+      const wakeVal = wakeupInput.value;
+      const bedVal = bedtimeInput.value;
+
+      if (!dateVal) {
+        alert('日付を選択してください');
+        return;
+      }
+
+      const currentLogs = getSleepLogs();
+      let entry = currentLogs.find(l => l.date === dateVal);
+      if (!entry) {
+        entry = { date: dateVal };
+        currentLogs.push(entry);
+      }
+
+      if (wakeVal) entry.wake_up = wakeVal; else delete entry.wake_up;
+      if (bedVal) entry.bedtime = bedVal; else delete entry.bedtime;
+
+      // If both empty, clean up entry
+      if (!entry.wake_up && !entry.bedtime) {
+        const idx = currentLogs.indexOf(entry);
+        if (idx > -1) currentLogs.splice(idx, 1);
+      }
+
+      saveSleepLogs(currentLogs);
+      showToast('睡眠記録を保存しました');
+      modal.remove();
+      renderDashboard();
+    };
+
+    // Initialize
+    updateInputsForSelectedDate();
+    renderSleepHistory();
+
+    const close = () => modal.remove();
+    modal.querySelector('#close-sleep-modal').onclick = close;
+    modal.onclick = (e) => { if (e.target === modal) close(); };
+  }
+
 
   // (Redundant click logic removed as input is now directly overlayed)
   document.querySelectorAll('.subject-color-picker').forEach(picker => {
@@ -3979,10 +4221,60 @@ async function renderInsights(){
   const maxHeatVal = Math.max(...Object.values(todDowMap), 1);
 
   // --- Daily trend for chart ---
-  const trendDays = Math.min(30, Math.max(7, studyDays + 3));
+  let graphStart = new Date(logicalToday);
+  let graphEnd = new Date(logicalToday);
+
+  if (insightFilters.preset === 'today') {
+    graphStart.setDate(logicalToday.getDate() - 6);
+  } else if (insightFilters.preset === 'week') {
+    const day = logicalToday.getDay();
+    const diff = (day === 0 ? 6 : day - 1);
+    graphStart.setDate(logicalToday.getDate() - diff);
+  } else if (insightFilters.preset === 'month') {
+    graphStart = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 1);
+  } else if (insightFilters.preset === 'lastmonth') {
+    graphStart = new Date(logicalToday.getFullYear(), logicalToday.getMonth() - 1, 1);
+    graphEnd = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 0);
+  } else if (insightFilters.preset === 'custom') {
+    if (insightFilters.dateFrom) graphStart = new Date(insightFilters.dateFrom);
+    else if (allLogs.length > 0) {
+      const dates = allLogs.map(l => new Date(l.started_at)).sort((a,b)=>a-b);
+      graphStart = getLogicalDate(dates[0]);
+    } else {
+      graphStart.setDate(logicalToday.getDate() - 29);
+    }
+    if (insightFilters.dateTo) graphEnd = new Date(insightFilters.dateTo);
+  } else {
+    // 'all'
+    if (allLogs.length > 0) {
+      const dates = allLogs.map(l => new Date(l.started_at)).sort((a,b)=>a-b);
+      graphStart = getLogicalDate(dates[0]);
+    } else {
+      graphStart.setDate(logicalToday.getDate() - 29);
+    }
+  }
+
+  if (graphStart > graphEnd) {
+    const tmp = graphStart; graphStart = graphEnd; graphEnd = tmp;
+  }
+
+  const oneDayMs = 24 * 60 * 60 * 1000;
+  let diffDays = Math.round((graphEnd - graphStart) / oneDayMs) + 1;
+  let loopStart = new Date(graphStart);
+
+  if (diffDays > 90) {
+    loopStart = new Date(graphEnd);
+    loopStart.setDate(loopStart.getDate() - 89);
+    diffDays = 90;
+  }
+  if (diffDays < 7) {
+    loopStart.setDate(loopStart.getDate() - (7 - diffDays));
+    diffDays = 7;
+  }
+
   const trendLabels = [], trendData = [];
-  for (let i = trendDays - 1; i >= 0; i--) {
-    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+  for (let i = 0; i < diffDays; i++) {
+    const d = new Date(loopStart); d.setDate(d.getDate() + i);
     const ds = new Date(d); ds.setHours(5,0,0,0);
     const de = new Date(d); de.setHours(28,59,59,999);
     const mins = logs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s,l) => s + l.duration_minutes, 0);
@@ -4028,6 +4320,247 @@ async function renderInsights(){
 
   // Preset label
   const presetLabels = {all:'全期間',today:'今日',week:'今週',month:'今月',lastmonth:'先月',custom:'カスタム'};
+
+  // --- Section A: Weekly Comparison ---
+  const thisWeekLogs = [];
+  const lastWeekLogs = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    const dayLogs = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+    thisWeekLogs.push(...dayLogs);
+  }
+  for (let i = 7; i < 14; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    const dayLogs = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+    lastWeekLogs.push(...dayLogs);
+  }
+
+  // A-1: Average first study start time
+  function getWeekAvgStartTime(weekLogs, startOffset) {
+    const startTimes = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(logicalToday); d.setDate(d.getDate() - startOffset - i);
+      const ds = new Date(d); ds.setHours(5,0,0,0);
+      const de = new Date(d); de.setHours(28,59,59,999);
+      const dayL = weekLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+      if (dayL.length > 0) {
+        const earliest = dayL.reduce((min, l) => { const t = new Date(l.started_at); return t < min ? t : min; }, new Date(dayL[0].started_at));
+        startTimes.push(getMinutesFromBase5AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0')));
+      }
+    }
+    if (startTimes.length === 0) return null;
+    return Math.round(startTimes.reduce((a, b) => a + b, 0) / startTimes.length);
+  }
+  const thisWeekAvgStart = getWeekAvgStartTime(thisWeekLogs, 0);
+  const lastWeekAvgStart = getWeekAvgStartTime(lastWeekLogs, 7);
+  function minutesFromBase5AMToTimeStr(mins) {
+    let actual = (mins + 300) % 1440;
+    return String(Math.floor(actual / 60)).padStart(2,'0') + ':' + String(actual % 60).padStart(2,'0');
+  }
+
+  // A-2: Daily average study time
+  const thisWeekTotalMin = thisWeekLogs.reduce((s, l) => s + l.duration_minutes, 0);
+  const lastWeekTotalMin = lastWeekLogs.reduce((s, l) => s + l.duration_minutes, 0);
+  const thisWeekDailyAvg = Math.round(thisWeekTotalMin / 7);
+  const lastWeekDailyAvg = Math.round(lastWeekTotalMin / 7);
+  const dailyAvgChange = lastWeekDailyAvg > 0 ? Math.round(((thisWeekDailyAvg - lastWeekDailyAvg) / lastWeekDailyAvg) * 100) : 0;
+
+  // A-3: Average focus
+  const thisWeekFocusLogs = thisWeekLogs.filter(l => l.focus_level);
+  const lastWeekFocusLogs = lastWeekLogs.filter(l => l.focus_level);
+  const thisWeekAvgFocus = thisWeekFocusLogs.length > 0 ? (thisWeekFocusLogs.reduce((s, l) => s + Number(l.focus_level), 0) / thisWeekFocusLogs.length) : null;
+  const lastWeekAvgFocus = lastWeekFocusLogs.length > 0 ? (lastWeekFocusLogs.reduce((s, l) => s + Number(l.focus_level), 0) / lastWeekFocusLogs.length) : null;
+  const focusChangeVal = (thisWeekAvgFocus !== null && lastWeekAvgFocus !== null) ? (thisWeekAvgFocus - lastWeekAvgFocus) : null;
+
+  // A-4: Late night study percentage
+  function getLateNightPct(wkLogs) {
+    const total = wkLogs.reduce((s, l) => s + l.duration_minutes, 0);
+    if (total === 0) return 0;
+    const lateNight = wkLogs.filter(l => { const h = new Date(l.started_at).getHours(); return h >= 23 || h < 5; }).reduce((s, l) => s + l.duration_minutes, 0);
+    return Math.round((lateNight / total) * 100);
+  }
+  const thisWeekLateNight = getLateNightPct(thisWeekLogs);
+  const lastWeekLateNight = getLateNightPct(lastWeekLogs);
+  const lateNightDiff = thisWeekLateNight - lastWeekLateNight;
+
+  // Overall rhythm status
+  const startTimeDiff = (thisWeekAvgStart !== null && lastWeekAvgStart !== null) ? (thisWeekAvgStart - lastWeekAvgStart) : 0;
+  let rhythmStatus = 'good'; let rhythmLabel = '良好';
+  if (Math.abs(startTimeDiff) >= 90 || lateNightDiff >= 15) { rhythmStatus = 'danger'; rhythmLabel = '要注意'; }
+  else if (Math.abs(startTimeDiff) >= 45 || lateNightDiff >= 5) { rhythmStatus = 'warning'; rhythmLabel = '警戒'; }
+
+  // --- Section B: Personal Analysis (last 30 days) ---
+  const last30Logs = [];
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+    last30Logs.push(...dayL);
+  }
+
+  // B-1: Chronotype
+  const chronoSlots = { morning: 0, afternoon: 0, evening: 0, night: 0 };
+  last30Logs.forEach(l => { const h = new Date(l.started_at).getHours(); chronoSlots[getTimeSlotForHour(h)] += l.duration_minutes; });
+  const chronoTotal30 = Object.values(chronoSlots).reduce((a, b) => a + b, 0) || 1;
+  const morningPct = Math.round((chronoSlots.morning / chronoTotal30) * 100);
+  const nightPct = Math.round(((chronoSlots.evening + chronoSlots.night) / chronoTotal30) * 100);
+  let chronoType = 'balanced', chronoName = 'オールラウンダー';
+  let chronoIconSvg = IC._s('<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/>');
+  let chronoColor = 'var(--color-accent-teal)';
+  if (morningPct >= 40) {
+    chronoType = 'morning'; chronoName = '朝型スプリンター';
+    chronoIconSvg = IC._s('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>');
+    chronoColor = '#f59e0b';
+  } else if (nightPct >= 50) {
+    chronoType = 'night'; chronoName = '夜型ディープフォーカス';
+    chronoIconSvg = IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>');
+    chronoColor = '#8b5cf6';
+  }
+
+  // B-2: Learning pace CV
+  const dailyMinutes30 = [];
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    const dayMin = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
+    dailyMinutes30.push(dayMin);
+  }
+  const paceCV = calculateCV(dailyMinutes30);
+  const isConsistent = paceCV < 0.6;
+  const paceName = isConsistent ? 'コツコツ習慣化タイプ' : '追い込み集中タイプ';
+  const paceIconSvg = isConsistent ? IC._s('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>') : IC._s('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/>');
+  const paceColor = isConsistent ? '#22c55e' : '#f59e0b';
+
+  // B-3: Best focus environment (location x timeSlot)
+  const envMap = {};
+  last30Logs.forEach(l => {
+    if (!l.focus_level) return;
+    const loc = l.location || '未設定';
+    const h = new Date(l.started_at).getHours();
+    const slot = getTimeSlotLabel(getTimeSlotForHour(h));
+    const key = `${loc} × ${slot}`;
+    if (!envMap[key]) envMap[key] = { sum: 0, count: 0 };
+    envMap[key].sum += Number(l.focus_level);
+    envMap[key].count++;
+  });
+  const bestEnvs = Object.entries(envMap).filter(([, v]) => v.count >= 3).map(([k, v]) => ({ name: k, avg: (v.sum / v.count).toFixed(1), count: v.count })).sort((a, b) => b.avg - a.avg);
+  const bestEnv = bestEnvs.length > 0 ? bestEnvs[0] : null;
+
+  // --- Section C: Sleep Correlation ---
+  const sleepLogs = getSleepLogs();
+  const recentSleep = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const dk = toLocalDateKey(d);
+    const entry = sleepLogs.find(sl => sl.date === dk);
+    if (entry && entry.wake_up) recentSleep.push(entry);
+  }
+
+  // C-1: Wake-up time stability
+  let wakeStabilityStatus = null, wakeStabilitySD = null;
+  if (recentSleep.length >= 3) {
+    const wakeMins = recentSleep.filter(s => s.wake_up).map(s => getMinutesFromBase5AM(s.wake_up));
+    if (wakeMins.length >= 3) {
+      const wMean = wakeMins.reduce((a, b) => a + b, 0) / wakeMins.length;
+      const wVariance = wakeMins.reduce((a, v) => a + Math.pow(v - wMean, 2), 0) / wakeMins.length;
+      wakeStabilitySD = Math.round(Math.sqrt(wVariance));
+      if (wakeStabilitySD < 30) wakeStabilityStatus = 'good';
+      else if (wakeStabilitySD < 60) wakeStabilityStatus = 'warning';
+      else wakeStabilityStatus = 'danger';
+    }
+  }
+
+  // C-2: First study lag
+  function getAvgLag(days, offset) {
+    const lags = [];
+    for (let i = 0; i < days; i++) {
+      const d = new Date(logicalToday); d.setDate(d.getDate() - offset - i);
+      const dk = toLocalDateKey(d);
+      const sl = sleepLogs.find(s => s.date === dk);
+      if (!sl || !sl.wake_up) continue;
+      const ds = new Date(d); ds.setHours(5,0,0,0);
+      const de = new Date(d); de.setHours(28,59,59,999);
+      const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+      if (dayL.length === 0) continue;
+      const earliest = dayL.reduce((min, l) => { const t = new Date(l.started_at); return t < min ? t : min; }, new Date(dayL[0].started_at));
+      const wakeMn = getMinutesFromBase5AM(sl.wake_up);
+      const studyMn = getMinutesFromBase5AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0'));
+      let lag = studyMn - wakeMn;
+      if (lag < 0) lag += 1440;
+      if (lag < 720) lags.push(lag);
+    }
+    return lags.length === 0 ? null : Math.round(lags.reduce((a, b) => a + b, 0) / lags.length);
+  }
+  const thisWeekLag = getAvgLag(7, 0);
+  const lastWeekLag = getAvgLag(7, 7);
+
+  // C-3: Best sleep duration
+  let bestSleepSlot = null;
+  const sleepSlotFocus = { '<6h': { sum: 0, count: 0 }, '6-7h': { sum: 0, count: 0 }, '7-8h': { sum: 0, count: 0 }, '8h+': { sum: 0, count: 0 } };
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const dk = toLocalDateKey(d);
+    const prevD = new Date(d); prevD.setDate(prevD.getDate() - 1);
+    const prevDk = toLocalDateKey(prevD);
+    const todaySl = sleepLogs.find(s => s.date === dk);
+    const prevSl = sleepLogs.find(s => s.date === prevDk);
+    if (!todaySl || !todaySl.wake_up || !prevSl || !prevSl.bedtime) continue;
+    const wakeMin = getMinutesFromBase5AM(todaySl.wake_up);
+    const bedMin = getMinutesFromBase5AM(prevSl.bedtime);
+    let sleepMin = wakeMin - bedMin; if (sleepMin < 0) sleepMin += 1440;
+    const sleepHours = sleepMin / 60;
+    let slotKey; if (sleepHours < 6) slotKey = '<6h'; else if (sleepHours < 7) slotKey = '6-7h'; else if (sleepHours < 8) slotKey = '7-8h'; else slotKey = '8h+';
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de && l.focus_level; }).forEach(l => { sleepSlotFocus[slotKey].sum += Number(l.focus_level); sleepSlotFocus[slotKey].count++; });
+  }
+  const sleepSlotResults = Object.entries(sleepSlotFocus).filter(([, v]) => v.count >= 2).map(([k, v]) => ({ slot: k, avg: v.sum / v.count, count: v.count })).sort((a, b) => b.avg - a.avg);
+  bestSleepSlot = sleepSlotResults.length > 0 ? sleepSlotResults[0] : null;
+
+  // C-4: Pre-sleep cooldown
+  let shortCooldownDays = 0;
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const dk = toLocalDateKey(d);
+    const sl = sleepLogs.find(s => s.date === dk);
+    if (!sl || !sl.bedtime) continue;
+    const ds = new Date(d); ds.setHours(5,0,0,0);
+    const de = new Date(d); de.setHours(28,59,59,999);
+    const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+    if (dayL.length === 0) continue;
+    const latest = dayL.reduce((max, l) => { const end = new Date(new Date(l.started_at).getTime() + l.duration_minutes * 60000); return end > max ? end : max; }, new Date(0));
+    const latestEndMin = getMinutesFromBase5AM(String(latest.getHours()).padStart(2,'0') + ':' + String(latest.getMinutes()).padStart(2,'0'));
+    const bedMn = getMinutesFromBase5AM(sl.bedtime);
+    let gap = bedMn - latestEndMin; if (gap < 0) gap += 1440;
+    if (gap < 30) shortCooldownDays++;
+  }
+  const cooldownWarning = shortCooldownDays >= 3;
+
+  // C-5: Late night buffer exceeded
+  let lateNightAlert = false;
+  const allBedMins = sleepLogs.filter(s => s.bedtime).map(s => getMinutesFromBase5AM(s.bedtime));
+  if (allBedMins.length >= 10) {
+    const avgBedMin = Math.round(allBedMins.reduce((a, b) => a + b, 0) / allBedMins.length);
+    let consecutive = 0;
+    for (let i = 0; i < 3; i++) {
+      const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+      const dk = toLocalDateKey(d);
+      const sl = sleepLogs.find(s => s.date === dk);
+      if (sl && sl.bedtime) {
+        const bm = getMinutesFromBase5AM(sl.bedtime);
+        let diff = bm - avgBedMin; if (diff < -720) diff += 1440;
+        if (diff >= 90) consecutive++;
+      }
+    }
+    lateNightAlert = consecutive >= 3;
+  }
+  const hasSleepData = recentSleep.length >= 3;
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -4116,6 +4649,101 @@ async function renderInsights(){
         <div class="insight-summary-label">平均セッション</div>
         <div class="insight-summary-sub">${sortedSubjects.length}科目</div>
       </div>
+    </div>
+    <!-- Section A: Recent Rhythm & Trends -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
+      <div class="section-header" style="justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:var(--space-md)">
+          <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.clock}</div>
+          <div><div class="section-title">生活リズムと最近の傾向</div><div class="section-subtitle">先週との比較で変化をチェック</div></div>
+        </div>
+        <span class="rhythm-status-badge ${rhythmStatus}">${rhythmLabel}</span>
+      </div>
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 平均勉強開始</div>
+          <div class="rhythm-stat-value">${thisWeekAvgStart !== null ? minutesFromBase5AMToTimeStr(thisWeekAvgStart) : '--:--'}</div>
+          ${thisWeekAvgStart !== null && lastWeekAvgStart !== null ? `<div class="rhythm-stat-change ${startTimeDiff > 30 ? 'change-negative' : startTimeDiff < -30 ? 'change-positive' : 'change-neutral'}">${startTimeDiff > 0 ? '+' : ''}${startTimeDiff}分${startTimeDiff > 30 ? ' (後退)' : startTimeDiff < -30 ? ' (早起き化)' : ''}</div>` : '<div class="rhythm-stat-change change-neutral">先週データなし</div>'}
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.clock} 1日平均学習</div>
+          <div class="rhythm-stat-value">${formatMinutes(thisWeekDailyAvg)}</div>
+          <div class="rhythm-stat-change ${dailyAvgChange >= 0 ? 'change-positive' : 'change-negative'}">${dailyAvgChange >= 0 ? '+' : ''}${dailyAvgChange}%</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} 平均集中度</div>
+          <div class="rhythm-stat-value">${thisWeekAvgFocus !== null ? '★' + thisWeekAvgFocus.toFixed(1) : '--'}</div>
+          ${focusChangeVal !== null ? `<div class="rhythm-stat-change ${focusChangeVal >= 0 ? 'change-positive' : 'change-negative'}">${focusChangeVal >= 0 ? '+' : ''}${focusChangeVal.toFixed(1)}</div>` : '<div class="rhythm-stat-change change-neutral">--</div>'}
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 深夜学習割合</div>
+          <div class="rhythm-stat-value">${thisWeekLateNight}%</div>
+          <div class="rhythm-stat-change ${lateNightDiff >= 5 ? 'change-warning' : lateNightDiff <= -5 ? 'change-positive' : 'change-neutral'}">${lateNightDiff >= 0 ? '+' : ''}${lateNightDiff}%</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Section B: Personal Analysis -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.14s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
+        <div><div class="section-title">学習タイプ自己分析</div><div class="section-subtitle">直近30日間のデータから診断</div></div>
+      </div>
+      ${chronoTotal30 > 1 ? `
+      <div class="personal-type-grid">
+        <div class="personal-type-item">
+          <div class="personal-type-icon" style="background:${chronoColor}22;color:${chronoColor}">${chronoIconSvg}</div>
+          <div class="personal-type-name">${chronoName}</div>
+          <div class="personal-type-detail">朝${morningPct}% / 夜${nightPct}%</div>
+        </div>
+        <div class="personal-type-item">
+          <div class="personal-type-icon" style="background:${paceColor}22;color:${paceColor}">${paceIconSvg}</div>
+          <div class="personal-type-name">${paceName}</div>
+          <div class="personal-type-detail">CV: ${paceCV.toFixed(2)}</div>
+        </div>
+        <div class="personal-type-item">
+          <div class="personal-type-icon" style="background:rgba(78,205,196,0.13);color:var(--color-accent-teal)">${IC._s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')}</div>
+          <div class="personal-type-name">${bestEnv ? bestEnv.name : '分析中...'}</div>
+          <div class="personal-type-detail">${bestEnv ? '★' + bestEnv.avg + '（' + bestEnv.count + '件）' : 'データ蓄積中'}</div>
+        </div>
+      </div>
+      ` : '<div class="data-collecting-msg">データを蓄積中です...</div>'}
+    </div>
+
+    <!-- Section C: Sleep Correlation -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.16s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
+        <div><div class="section-title">睡眠と学習の相関</div><div class="section-subtitle">起床・就寝データから分析</div></div>
+      </div>
+      ${hasSleepData ? `
+      <div class="sleep-insight-grid">
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.timer} 起床リズム安定度</div>
+          <div class="sleep-insight-value">
+            ${wakeStabilityStatus ? `<span class="rhythm-status-badge ${wakeStabilityStatus}">${wakeStabilityStatus === 'good' ? '安定' : wakeStabilityStatus === 'warning' ? 'やや不安定' : '不安定'}</span>` : '--'}
+          </div>
+          ${wakeStabilitySD !== null ? `<div class="sleep-insight-note">標準偏差: ${wakeStabilitySD}分</div>` : ''}
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.clock} 初動タイムラグ</div>
+          <div class="sleep-insight-value">${thisWeekLag !== null ? thisWeekLag + '分' : '--'}</div>
+          ${thisWeekLag !== null && lastWeekLag !== null ? `<div class="sleep-insight-note">先週比: <span class="${(thisWeekLag - lastWeekLag) <= 0 ? 'change-positive' : 'change-negative'}">${thisWeekLag - lastWeekLag >= 0 ? '+' : ''}${thisWeekLag - lastWeekLag}分</span></div>` : ''}
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.star} ベスト睡眠時間</div>
+          <div class="sleep-insight-value">${bestSleepSlot ? bestSleepSlot.slot : '--'}</div>
+          ${bestSleepSlot ? `<div class="sleep-insight-note">翌日の平均集中度: ★${bestSleepSlot.avg.toFixed(1)}</div>` : '<div class="sleep-insight-note">データ蓄積中</div>'}
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.shield} クールダウン</div>
+          <div class="sleep-insight-value">${cooldownWarning ? '<span class="change-warning">要注意</span>' : '<span class="change-positive">良好</span>'}</div>
+          <div class="sleep-insight-note">${cooldownWarning ? '直近7日中' + shortCooldownDays + '日が就寝直前まで勉強' : '適切なクールダウン時間を確保'}</div>
+        </div>
+      </div>
+      ${cooldownWarning ? '<div class="sleep-alert-box alert-warning">' + IC.warn + ' 就寝直前まで勉強する傾向があり、睡眠の質を下げている可能性があります。勉強終了後は30分以上のクールダウンを心がけましょう。</div>' : ''}
+      ${lateNightAlert ? '<div class="sleep-alert-box alert-danger">' + IC.warn + ' 3日連続で就寝が大幅に後退しています。夜型化の兆候です。</div>' : ''}
+      ` : '<div class="data-collecting-msg">ダッシュボードの起床/就寝ボタンでデータを蓄積しましょう（3日分以上必要）</div>'}
     </div>
 
     <!-- Trend Chart + Subject Donut -->
@@ -4315,7 +4943,9 @@ async function renderInsights(){
     resetInsightFilters();
     renderInsights();
   });
+
 }
+
 // --- Settings ---
 function renderSettings(){
   const ct=document.getElementById('page-container');
