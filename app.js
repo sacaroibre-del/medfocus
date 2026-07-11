@@ -135,6 +135,7 @@ const IC = {
   get crown() { return this._s('<path d="M2 4l3 12h14l3-12-5 4-5-4-5 4z" fill="currentColor"/>'); },
   get globe() { return this._s('<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'); },
   get lock() { return this._s('<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'); },
+  get pdca() { return this._s('<path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>'); },
 };
 
 // Location icon helper
@@ -200,38 +201,162 @@ function getTodayGoalMinutes() {
 }
 
 // ==================== SLEEP LOG ====================
+// インメモリキャッシュ（Supabase取得後にここに保持）
+let cachedSleepLogs = null;
+
 function getSleepLogs() {
+  // キャッシュがあればキャッシュを返す、なければlocalStorageにフォールバック
+  if (cachedSleepLogs !== null) return cachedSleepLogs;
   try { return JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]'); } catch(e) { return []; }
 }
+
 function saveSleepLogs(logs) {
-  localStorage.setItem('medfocus_sleep_log', JSON.stringify(logs));
+  // localStorageにも書いておく（オフライン対応）
+  try { localStorage.setItem('medfocus_sleep_log', JSON.stringify(logs)); } catch(e) {}
 }
+
 function getSleepLogForDate(dateKey) {
   return getSleepLogs().find(l => l.date === dateKey) || null;
 }
-function recordSleepEvent(type) {
+
+// Supabaseから全睡眠ログを取得してキャッシュに保存
+async function fetchSleepLogs() {
+  if (!supabase || !session) {
+    // オフライン時はlocalStorageから読む
+    cachedSleepLogs = null;
+    return getSleepLogs();
+  }
+  try {
+    // ① まずマイグレーション（localStorageを上書きする前に実行）
+    await migrateSleepLogsToSupabase();
+
+    // ② Supabaseから最新データを取得
+    const { data, error } = await supabase
+      .from('sleep_logs')
+      .select('date, wake_up, bedtime')
+      .eq('user_id', session.user.id)
+      .order('date', { ascending: false });
+    if (error) throw error;
+
+    // ③ Supabaseのデータが0件でも、既存localStorageを保護して返す
+    const remoteData = data || [];
+    if (remoteData.length === 0) {
+      // Supabase側がまだ空 → localStorageのデータを使い続ける
+      const localData = (() => { try { return JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]'); } catch(e) { return []; } })();
+      cachedSleepLogs = localData;
+      return cachedSleepLogs;
+    }
+
+    cachedSleepLogs = remoteData;
+    // localStorageにも同期（バックアップ）
+    saveSleepLogs(cachedSleepLogs);
+    return cachedSleepLogs;
+  } catch(e) {
+    console.warn('fetchSleepLogs fallback to localStorage:', e);
+    cachedSleepLogs = null;
+    return getSleepLogs();
+  }
+}
+
+
+// localStorageの既存データをSupabaseに移行（初回のみ）
+async function migrateSleepLogsToSupabase() {
+  const migratedKey = 'medfocus_sleep_migrated';
+  if (localStorage.getItem(migratedKey)) return;
+  try {
+    const localLogs = JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]');
+    if (localLogs.length === 0) { localStorage.setItem(migratedKey, '1'); return; }
+    const upsertData = localLogs
+      .filter(l => l.date)
+      .map(l => ({ user_id: session.user.id, date: l.date, wake_up: l.wake_up || null, bedtime: l.bedtime || null, updated_at: new Date().toISOString() }));
+    if (upsertData.length > 0) {
+      const { error } = await supabase.from('sleep_logs').upsert(upsertData, { onConflict: 'user_id,date' });
+      if (!error) {
+        localStorage.setItem(migratedKey, '1');
+        // キャッシュ更新
+        const { data } = await supabase.from('sleep_logs').select('date, wake_up, bedtime').eq('user_id', session.user.id).order('date', { ascending: false });
+        if (data) { cachedSleepLogs = data; saveSleepLogs(cachedSleepLogs); }
+      }
+    } else {
+      localStorage.setItem(migratedKey, '1');
+    }
+  } catch(e) { console.warn('Sleep migration error:', e); }
+}
+
+// Supabaseに1件upsert（キャッシュも即時更新）
+async function upsertSleepLog(dateKey, type, timeStr) {
+  // キャッシュを先に更新（楽観的更新でUIを即レスポンス）
+  if (cachedSleepLogs === null) cachedSleepLogs = getSleepLogs();
+  let entry = cachedSleepLogs.find(l => l.date === dateKey);
+  if (!entry) { entry = { date: dateKey }; cachedSleepLogs.push(entry); }
+  entry[type] = timeStr;
+  saveSleepLogs(cachedSleepLogs);
+
+  if (!supabase || !session) return; // オフラインは終了
+  try {
+    const payload = {
+      user_id: session.user.id,
+      date: dateKey,
+      [type]: timeStr,
+      updated_at: new Date().toISOString()
+    };
+    const { error } = await supabase.from('sleep_logs').upsert(payload, { onConflict: 'user_id,date' });
+    if (error) throw error;
+  } catch(e) {
+    console.warn('upsertSleepLog error (saved to localStorage only):', e);
+    showToast(IC.warn + ' オフライン: 睡眠記録はローカルに保存されました');
+  }
+}
+
+// 1件削除
+async function deleteSleepLog(dateKey) {
+  // キャッシュから削除
+  if (cachedSleepLogs !== null) {
+    cachedSleepLogs = cachedSleepLogs.filter(l => l.date !== dateKey);
+    saveSleepLogs(cachedSleepLogs);
+  } else {
+    const local = getSleepLogs().filter(l => l.date !== dateKey);
+    saveSleepLogs(local);
+  }
+  if (!supabase || !session) return;
+  try {
+    await supabase.from('sleep_logs').delete().match({ user_id: session.user.id, date: dateKey });
+  } catch(e) { console.warn('deleteSleepLog error:', e); }
+}
+
+async function recordSleepEvent(type) {
   // type: 'wake_up' or 'bedtime'
   const now = new Date();
   const timeStr = String(now.getHours()).padStart(2,'0') + ':' + String(now.getMinutes()).padStart(2,'0');
   const logicalDate = getLogicalDate(now);
   const dateKey = toLocalDateKey(logicalDate);
-  const logs = getSleepLogs();
-  let entry = logs.find(l => l.date === dateKey);
-  if (!entry) {
-    entry = { date: dateKey };
-    logs.push(entry);
-  }
-  entry[type] = timeStr;
-  saveSleepLogs(logs);
+  await upsertSleepLog(dateKey, type, timeStr);
   return timeStr;
 }
+
 function getSleepToggleState() {
   const logicalDate = getLogicalDate(new Date());
   const dateKey = toLocalDateKey(logicalDate);
   const entry = getSleepLogForDate(dateKey);
+  
+  const prevDate = new Date(logicalDate);
+  prevDate.setDate(prevDate.getDate() - 1);
+  const prevEntry = getSleepLogForDate(toLocalDateKey(prevDate));
+
+  // 前日が徹夜なら、今日の起床ボタンはスキップ（すでに起きているため）
+  if ((!entry || !entry.wake_up) && isAllNighter(prevEntry)) {
+    return 'bedtime';
+  }
+
   if (!entry || !entry.wake_up) return 'wake_up'; // show 起床 button
   return 'bedtime'; // show 就寝 button
 }
+
+// 徹夜判定: bedtime === 'ALLNIGHTER'
+function isAllNighter(entry) {
+  return entry && entry.bedtime === 'ALLNIGHTER';
+}
+
 
 // ==================== INSIGHT ANALYSIS HELPERS ====================
 function calculateCV(values) {
@@ -243,15 +368,15 @@ function calculateCV(values) {
   const variance = values.reduce((a, v) => a + Math.pow(v - mean, 2), 0) / count;
   return Math.sqrt(variance) / mean;
 }
-function getMinutesFromBase5AM(timeStr) {
+function getMinutesFromBase3AM(timeStr) {
   const [hours, minutes] = timeStr.split(':').map(Number);
   let total = hours * 60 + minutes;
-  let offset = total - 300;
+  let offset = total - 180;
   if (offset < 0) offset += 1440;
   return offset;
 }
 function getTimeSlotForHour(h) {
-  if (h >= 5 && h < 11) return 'morning';
+  if (h >= 3 && h < 11) return 'morning';
   if (h >= 11 && h < 17) return 'afternoon';
   if (h >= 17 && h < 23) return 'evening';
   return 'night';
@@ -409,7 +534,7 @@ function showToast(msg){
 }
 
 // ==================== HELPERS ====================
-function getLogicalDate(d) { const l=new Date(d); if(l.getHours()<5){ l.setDate(l.getDate()-1); } return l; }
+function getLogicalDate(d) { const l=new Date(d); if(l.getHours()<3){ l.setDate(l.getDate()-1); } return l; }
 function toLocalDateKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function formatMinutes(m){const h=Math.floor(m/60);const min=m%60;if(h===0)return`${min}分`;if(min===0)return`${h}時間`;return`${h}時間${min}分`;}
 function daysUntil(d){return Math.max(0,Math.ceil((new Date(d)-new Date())/(1000*60*60*24)));}
@@ -623,10 +748,10 @@ async function fetchGroupRanking(groupId, period) {
     const day = logicalNow.getDay(); // 0:Sun, 1:Mon...
     const diff = (day === 0 ? 6 : day - 1); // Days since Monday
     timeLimit.setDate(logicalNow.getDate() - diff);
-    timeLimit.setHours(5,0,0,0);
+    timeLimit.setHours(3,0,0,0);
   } else {
     // Today: From 5:00 AM of today's logical date
-    timeLimit.setHours(5,0,0,0);
+    timeLimit.setHours(3,0,0,0);
   }
 
   const { data: logs, error: logErr } = await supabase.from('study_logs').select('user_id, duration_minutes').in('user_id', userIds).gte('started_at', timeLimit.toISOString());
@@ -665,7 +790,7 @@ async function fetchStudyLogs() {
   return result;
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null) {
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other') {
   if (!supabase || !session) return true; // Pretend success in offline demo mode
   try {
     const now = new Date().toISOString();
@@ -676,6 +801,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       memo: memo || null,
       focus_level: focusLevel,
       location: location,
+      study_purpose: studyPurpose,
       started_at: startedAt || now,
       ended_at: endedAt || now
     };
@@ -955,23 +1081,23 @@ function createBarChart(canvasId,labels,data){
 // ==================== STOPWATCH / TIMER ====================
 let timerInterval=null, elapsedSeconds=0, isRunning=false;
 let isCountdown=false, countdownSeconds=0, initialCountdownSeconds=0, isConfirmingLog=false;
-let isPomodoro=false, pomodoroPhase='study';
+let isPomodoro=false, pomodoroPhase='study', pomodoroStudySec=25*60, pomodoroBreakSec=5*60;
 let isSimulation=false, simulationPhase='study';
 let simulationBlockCurrent=1, simulationBlockTotal=6, simulationStudyMin=60, simulationBreakMin=10;
 let pendingLogDuration=0, timerStartTime=0, baseElapsed=0, baseCountdown=0;
 let selectedSubjectId='', selectedSubjectCustom='';
-let selectedLocation='自宅', selectedFocusLevel=2;
+let selectedLocation='自宅', selectedFocusLevel=2, selectedPurpose='other';
 let cumulativeStudySeconds=0; // New: actual study seconds accumulated in session
 let sessionStartedAt=null; // ISO string: when user first started the session
 let sessionBreaks=[]; // Array of {start: ISO, end: ISO} for pause periods
 
 function saveTimerState() {
   localStorage.setItem('medfocus_timer_v2', JSON.stringify({
-    isRunning, isCountdown, isPomodoro, pomodoroPhase, elapsedSeconds, countdownSeconds,
+    isRunning, isCountdown, isPomodoro, pomodoroPhase, pomodoroStudySec, pomodoroBreakSec, elapsedSeconds, countdownSeconds,
     isSimulation, simulationPhase, simulationBlockCurrent, simulationBlockTotal, simulationStudyMin, simulationBreakMin,
     isConfirmingLog, pendingLogDuration,
     selectedSubjectId, selectedSubjectCustom,
-    selectedLocation, selectedFocusLevel,
+    selectedLocation, selectedFocusLevel, selectedPurpose,
     cumulativeStudySeconds,
     sessionStartedAt, sessionBreaks,
     lastUpdate: Date.now()
@@ -986,6 +1112,8 @@ function loadTimerState() {
   isCountdown = state.isCountdown;
   isPomodoro = state.isPomodoro || false;
   pomodoroPhase = state.pomodoroPhase || 'study';
+  pomodoroStudySec = state.pomodoroStudySec || 25 * 60;
+  pomodoroBreakSec = state.pomodoroBreakSec || 5 * 60;
   isSimulation = state.isSimulation || false;
   simulationPhase = state.simulationPhase || 'study';
   simulationBlockCurrent = state.simulationBlockCurrent || 1;
@@ -998,6 +1126,7 @@ function loadTimerState() {
   selectedSubjectCustom = state.selectedSubjectCustom || '';
   selectedLocation = state.selectedLocation || '自宅';
   selectedFocusLevel = state.selectedFocusLevel || 2;
+  selectedPurpose = state.selectedPurpose || 'other';
   cumulativeStudySeconds = state.cumulativeStudySeconds || 0;
   sessionStartedAt = state.sessionStartedAt || null;
   sessionBreaks = state.sessionBreaks || [];
@@ -1366,13 +1495,13 @@ function finishSession(manualStop = false) {
   if (isPomodoro) {
     if (pomodoroPhase === 'study') {
       cumulativeStudySeconds += elapsedSeconds;
-      showToast(IC.tomato+' 25分の集中完了！5分休憩に入ります。');
-      // Removed auto-save here
-      
+      const studyMin = Math.round(pomodoroStudySec / 60);
+      const breakMin = Math.round(pomodoroBreakSec / 60);
+      showToast(IC.tomato+` ${studyMin}分の集中完了！${breakMin}分休憩に入ります。`);
       pomodoroPhase = 'break';
-      countdownSeconds = 5 * 60;
-      baseCountdown = 5 * 60;
-      initialCountdownSeconds = 5 * 60;
+      countdownSeconds = pomodoroBreakSec;
+      baseCountdown = pomodoroBreakSec;
+      initialCountdownSeconds = pomodoroBreakSec;
       elapsedSeconds = 0;
       baseElapsed = 0;
       saveTimerState();
@@ -1382,9 +1511,9 @@ function finishSession(manualStop = false) {
     } else {
       showToast('🚀 休憩終了！ポモドーロ再開！');
       pomodoroPhase = 'study';
-      countdownSeconds = 25 * 60;
-      baseCountdown = 25 * 60;
-      initialCountdownSeconds = 25 * 60;
+      countdownSeconds = pomodoroStudySec;
+      baseCountdown = pomodoroStudySec;
+      initialCountdownSeconds = pomodoroStudySec;
       elapsedSeconds = 0;
       baseElapsed = 0;
       saveTimerState();
@@ -1448,6 +1577,15 @@ function finishSession(manualStop = false) {
             </div>
           </div>
           <div class="field">
+            <label>学習の目的</label>
+            <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
+              <button type="button" class="btn ${selectedPurpose==='cbt'?'btn-primary':'btn-secondary'} purpose-btn" data-val="cbt" style="flex:1; padding:6px 0; font-size:0.85rem;">CBT</button>
+              <button type="button" class="btn ${selectedPurpose==='regular_exam'?'btn-primary':'btn-secondary'} purpose-btn" data-val="regular_exam" style="flex:1; padding:6px 0; font-size:0.85rem;">定期試験</button>
+              <button type="button" class="btn ${selectedPurpose==='assignment'?'btn-primary':'btn-secondary'} purpose-btn" data-val="assignment" style="flex:1; padding:6px 0; font-size:0.85rem;">課題・実習</button>
+              <button type="button" class="btn ${selectedPurpose==='other'?'btn-primary':'btn-secondary'} purpose-btn" data-val="other" style="flex:1; padding:6px 0; font-size:0.85rem;">その他</button>
+            </div>
+          </div>
+          <div class="field">
             <label>振り返りメモ</label>
             <textarea id="confirm-memo" placeholder="学んだことや一言..." style="width:100%; min-height:80px;"></textarea>
           </div>
@@ -1485,6 +1623,13 @@ function finishSession(manualStop = false) {
       customSubjectInput.style.display = e.target.value === 'custom' ? 'block' : 'none';
     });
     
+    overlay.querySelectorAll('.purpose-btn').forEach(b => {
+      b.onclick = (ev) => {
+        overlay.querySelectorAll('.purpose-btn').forEach(btn => btn.classList.replace('btn-primary', 'btn-secondary'));
+        ev.target.classList.replace('btn-secondary', 'btn-primary');
+        selectedPurpose = ev.target.dataset.val;
+      };
+    });
     overlay.querySelector('#btn-discard-log-sync').onclick = () => { 
       overlay.remove();
       resetSW(); 
@@ -1519,7 +1664,8 @@ function finishSession(manualStop = false) {
 
         const endedAt = new Date().toISOString();
         const startedAt = sessionStartedAt || endedAt;
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks);
+        saveTimerState();
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose);
         
         if (success) {
           // Remove overlay completely to prevent duplicate ID issues in DOM
@@ -1952,16 +2098,48 @@ function mockLogin(email) {
 }
 
 // ==================== SIDEBAR ====================
-const navItems=[
-  {route:'/',label:'ダッシュボード',icon:'<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>'},
-  {route:'/study',label:'学習記録',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>'},
-  {route:'/insights',label:'インサイト',icon:'<svg viewBox="0 0 24 24"><path d="M21 12c0 1.2-4 6-9 6s-9-4.8-9-6c0-1.2 4-6 9-6s9 4.8 9 6z"/><circle cx="12" cy="12" r="3"/></svg>'},
-  {route:'/qb',label:'QB進捗',icon:'<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>'},
-  {route:'/countdown',label:'カウントダウン',icon:'<svg viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="M10 14l2 2 4-4"/></svg>'},
-  {route:'/community',label:'質問広場',icon:'<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'},
-  {route:'/ranking',label:'ランキング',icon:'<svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5C7 4 7 7 7 7"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5C17 4 17 7 17 7"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>'},
-  {route:'/settings',label:'設定',icon:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>'}
+const navItems = [
+  { route: '/', label: 'ダッシュボード', icon: '<svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>' },
+  {
+    group: 'study',
+    label: '学習管理',
+    icon: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 3 2 5.5 4 7.5L12 20l3-3.5c2-2 4-4.5 4-7.5a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2"/></svg>',
+    items: [
+      { route: '/study', label: '学習記録', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>' },
+      { route: '/pdca', label: 'PDCAサイクル', icon: '<svg viewBox="0 0 24 24"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>' },
+      { route: '/insights', label: 'インサイト', icon: '<svg viewBox="0 0 24 24"><path d="M21 12c0 1.2-4 6-9 6s-9-4.8-9-6c0-1.2 4-6 9-6s9 4.8 9 6z"/><circle cx="12" cy="12" r="3"/></svg>' },
+      { route: '/qb', label: 'QB進捗', icon: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>' }
+    ]
+  },
+  {
+    group: 'community',
+    label: 'コミュニティ',
+    icon: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>',
+    items: [
+      { route: '/community', label: '質問広場', icon: '<svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' },
+      { route: '/ranking', label: 'ランキング', icon: '<svg viewBox="0 0 24 24"><path d="M6 9H4.5a2.5 2.5 0 0 1 0-5C7 4 7 7 7 7"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5C17 4 17 7 17 7"/><path d="M4 22h16"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/></svg>' }
+    ]
+  },
+  {
+    group: 'others',
+    label: 'その他',
+    icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M1 12h2M21 12h2"/></svg>',
+    items: [
+      { route: '/countdown', label: 'カウントダウン', icon: '<svg viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="M10 14l2 2 4-4"/></svg>' },
+      { route: '/settings', label: '設定', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>' }
+    ]
+  }
 ];
+
+let sidebarAccordionState = {
+  study: true,
+  community: false,
+  others: false
+};
+try {
+  const saved = localStorage.getItem('medfocus_sidebar_groups');
+  if (saved) sidebarAccordionState = JSON.parse(saved);
+} catch (e) {}
 
 function renderSidebar(){
   const sb=document.getElementById('sidebar');const path=currentRoute;
@@ -1974,8 +2152,38 @@ function renderSidebar(){
     avatarHtml = `<div class="sidebar-avatar" style="background:var(--color-bg-elevated); overflow:hidden;"><img src="${currentUser.avatar_url}" style="width:100%; height:100%; object-fit:cover;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/></div>`;
   }
 
+  const navHtml = navItems.map(i => {
+    if (i.route) {
+      return `<div class="nav-item ${path===i.route?'active':''}" data-route="${i.route}"><div class="nav-item-icon">${i.icon}</div><span>${i.label}</span></div>`;
+    } else if (i.group) {
+      const isExpanded = sidebarAccordionState[i.group] || i.items.some(child => path === child.route);
+      if (i.items.some(child => path === child.route)) {
+        sidebarAccordionState[i.group] = true;
+      }
+      const childItemsHtml = i.items.map(child => {
+        return `<div class="nav-item ${path===child.route?'active':''}" data-route="${child.route}"><div class="nav-item-icon">${child.icon}</div><span>${child.label}</span></div>`;
+      }).join('');
+      
+      const chevronIcon = `<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+      return `<div class="nav-group">
+        <div class="nav-group-header ${isExpanded?'expanded':''} ${i.items.some(child => path === child.route)?'active-parent':''}" data-group-toggle="${i.group}">
+          <div class="nav-group-header-left">
+            <div class="nav-item-icon">${i.icon}</div>
+            <span>${i.label}</span>
+          </div>
+          ${chevronIcon}
+        </div>
+        <div class="nav-group-items ${isExpanded?'':'collapsed'}" id="group-items-${i.group}">
+          ${childItemsHtml}
+        </div>
+      </div>`;
+    }
+    return '';
+  }).join('');
+
   sb.innerHTML=`<div class="sidebar-header"><div class="sidebar-logo"><div class="sidebar-logo-icon">M</div><span class="sidebar-logo-text">MedFocus</span></div></div>
-    <nav class="sidebar-nav">${navItems.map(i=>`<div class="nav-item ${path===i.route?'active':''}" data-route="${i.route}"><div class="nav-item-icon">${i.icon}</div><span>${i.label}</span></div>`).join('')}</nav>
+    <nav class="sidebar-nav">${navHtml}</nav>
     <div class="sidebar-theme-row"><span class="sidebar-theme-label">${themeIcon} ${themeLabel}</span><button class="theme-toggle" id="theme-btn" title="テーマ切り替え"></button></div>
     <div class="sidebar-profile" id="logout-btn" title="クリックでログアウト" style="cursor:pointer">
       ${avatarHtml}
@@ -1985,20 +2193,65 @@ function renderSidebar(){
         <div class="sidebar-profile-id" style="font-size:0.65rem; color:var(--color-text-tertiary); margin-top:2px;">ID: ${currentUser.login_id || '---'}</div>
       </div>
     </div>`;
+
   document.getElementById('theme-btn').addEventListener('click', toggleTheme);
   document.getElementById('logout-btn').addEventListener('click', () => { if(confirm('ログアウトしますか？')) handleLogout(); });
+
+  document.querySelectorAll('[data-group-toggle]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      const group = el.dataset.groupToggle;
+      const itemsContainer = document.getElementById(`group-items-${group}`);
+      const isCollapsed = itemsContainer.classList.contains('collapsed');
+      
+      if (isCollapsed) {
+        itemsContainer.classList.remove('collapsed');
+        el.classList.add('expanded');
+        sidebarAccordionState[group] = true;
+      } else {
+        itemsContainer.classList.add('collapsed');
+        el.classList.remove('expanded');
+        sidebarAccordionState[group] = false;
+      }
+      localStorage.setItem('medfocus_sidebar_groups', JSON.stringify(sidebarAccordionState));
+    });
+  });
 }
 
 // ==================== ROUTER ====================
 const routes={};
 function registerRoute(p,h){routes[p]=h;}
 function navigate(p){if(currentRoute===p)return;window.history.pushState({},'',p);renderRoute(p);}
-function renderRoute(p){currentRoute=p;const h=routes[p]||routes['/'];if(h)h();document.querySelectorAll('.nav-item').forEach(i=>i.classList.toggle('active',i.dataset.route===p));}
+function renderRoute(p){
+  currentRoute=p;
+  const h=routes[p]||routes['/'];
+  if(h)h();
+  
+  document.querySelectorAll('.nav-item').forEach(i=>i.classList.toggle('active',i.dataset.route===p));
+  
+  navItems.forEach(group => {
+    if (group.items) {
+      const hasActiveChild = group.items.some(child => child.route === p);
+      const header = document.querySelector(`[data-group-toggle="${group.group}"]`);
+      const itemsContainer = document.getElementById(`group-items-${group.group}`);
+      
+      if (header) {
+        header.classList.toggle('active-parent', hasActiveChild);
+        if (hasActiveChild && itemsContainer && itemsContainer.classList.contains('collapsed')) {
+          itemsContainer.classList.remove('collapsed');
+          header.classList.add('expanded');
+          sidebarAccordionState[group.group] = true;
+          localStorage.setItem('medfocus_sidebar_groups', JSON.stringify(sidebarAccordionState));
+        }
+      }
+    }
+  });
+}
 function initRouter(){
   window.addEventListener('popstate',()=>renderRoute(window.location.pathname));
   document.addEventListener('click',e=>{const n=e.target.closest('[data-route]');if(n){e.preventDefault();navigate(n.dataset.route);}});
   renderRoute(window.location.pathname);
 }
+
 
 // ==================== POST CARD ====================
 function renderPostCard(post){
@@ -2153,10 +2406,1193 @@ function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLab
   } catch (e) { console.error('DEBUG: createMixedChart error:', e); }
 }
 
+
+// ==================== PDCA DATA HELPERS ====================
+let cachedPDCACycles = null;
+
+async function fetchPDCACycles() {
+  if (cachedPDCACycles !== null) return cachedPDCACycles;
+  if (!supabase || !session) {
+    try {
+      cachedPDCACycles = JSON.parse(localStorage.getItem('medfocus_pdca_cycles') || '[]');
+    } catch(e) {
+      cachedPDCACycles = [];
+    }
+    return cachedPDCACycles;
+  }
+  
+  try {
+    await migratePDCACyclesToSupabase();
+    const { data, error } = await supabase
+      .from('pdca_cycles')
+      .select('*')
+      .eq('user_id', session.user.id)
+      .order('start_date', { ascending: false });
+    
+    if (error) throw error;
+    
+    cachedPDCACycles = data || [];
+    localStorage.setItem('medfocus_pdca_cycles', JSON.stringify(cachedPDCACycles));
+    return cachedPDCACycles;
+  } catch(e) {
+    console.warn('fetchPDCACycles fallback to localStorage:', e);
+    try {
+      cachedPDCACycles = JSON.parse(localStorage.getItem('medfocus_pdca_cycles') || '[]');
+    } catch(err) {
+      cachedPDCACycles = [];
+    }
+    return cachedPDCACycles;
+  }
+}
+
+async function migratePDCACyclesToSupabase() {
+  const migratedKey = 'medfocus_pdca_migrated';
+  if (localStorage.getItem(migratedKey)) return;
+  try {
+    const localCycles = JSON.parse(localStorage.getItem('medfocus_pdca_cycles') || '[]');
+    if (localCycles.length === 0) {
+      localStorage.setItem(migratedKey, '1');
+      return;
+    }
+    
+    const upsertData = localCycles.map(c => ({
+      user_id: session.user.id,
+      start_date: c.start_date,
+      end_date: c.end_date,
+      plan_time: c.plan_time,
+      plan_subjects: typeof c.plan_subjects === 'object' ? c.plan_subjects : {},
+      plan_memo: c.plan_memo || null,
+      todos: Array.isArray(c.todos) ? c.todos : [],
+      check_score: c.check_score || null,
+      check_keep: c.check_keep || null,
+      check_problem: c.check_problem || null,
+      problem_tags: Array.isArray(c.problem_tags) ? c.problem_tags : [],
+      action_try: c.action_try || null,
+      achievement_rate: c.achievement_rate || null,
+      subject_achievement: typeof c.subject_achievement === 'object' ? c.subject_achievement : {},
+      status: c.status || 'active',
+      updated_at: new Date().toISOString()
+    }));
+    
+    if (upsertData.length > 0) {
+      const { error } = await supabase.from('pdca_cycles').upsert(upsertData, { onConflict: 'user_id,start_date' });
+      if (!error) {
+        localStorage.setItem(migratedKey, '1');
+      }
+    } else {
+      localStorage.setItem(migratedKey, '1');
+    }
+  } catch(e) {
+    console.warn('PDCA migration error:', e);
+  }
+}
+
+async function savePDCACycle(cycle) {
+  if (cachedPDCACycles === null) cachedPDCACycles = [];
+  
+  const existingIdx = cachedPDCACycles.findIndex(c => c.id === cycle.id || (c.start_date === cycle.start_date));
+  if (existingIdx >= 0) {
+    cachedPDCACycles[existingIdx] = { ...cachedPDCACycles[existingIdx], ...cycle, updated_at: new Date().toISOString() };
+  } else {
+    cachedPDCACycles.push({ ...cycle, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  }
+  localStorage.setItem('medfocus_pdca_cycles', JSON.stringify(cachedPDCACycles));
+  
+  if (!supabase || !session) return true;
+  
+  try {
+    const payload = {
+      ...cycle,
+      user_id: session.user.id,
+      updated_at: new Date().toISOString()
+    };
+    if (payload.id && !payload.id.includes('-')) {
+      delete payload.id;
+    }
+    const { error } = await supabase.from('pdca_cycles').upsert(payload, { onConflict: 'user_id,start_date' });
+    if (error) throw error;
+    
+    cachedPDCACycles = null;
+    await fetchPDCACycles();
+    return true;
+  } catch(e) {
+    console.warn('savePDCACycle Supabase error (saved to localStorage only):', e);
+    return true;
+  }
+}
+
+async function deletePDCACycle(id) {
+  if (cachedPDCACycles !== null) {
+    cachedPDCACycles = cachedPDCACycles.filter(c => c.id !== id);
+    localStorage.setItem('medfocus_pdca_cycles', JSON.stringify(cachedPDCACycles));
+  }
+  if (!supabase || !session) return;
+  try {
+    await supabase.from('pdca_cycles').delete().eq('id', id).eq('user_id', session.user.id);
+  } catch(e) {
+    console.warn('deletePDCACycle error:', e);
+  }
+}
+
+// ==================== PDCA HELPERS ====================
+function aggregateBySubject(studyLogs, weekStart, planSubjects) {
+  const bySubject = {};
+  studyLogs
+    .filter(log => {
+      const logDate = new Date(log.started_at);
+      return logDate >= weekStart;
+    })
+    .forEach(log => {
+      const subjectName = normalizeSubjectName(log.subject_name);
+      bySubject[subjectName] = (bySubject[subjectName] || 0) + log.duration_minutes;
+    });
+
+  const targets = planSubjects || {};
+  return Object.keys(targets).map(subject => {
+    const targetMin = targets[subject];
+    const actualMin = bySubject[subject] || 0;
+    return {
+      subject,
+      target: targetMin,
+      actual: actualMin,
+      rate: targetMin > 0 ? Math.round((actualMin / targetMin) * 100) : null
+    };
+  });
+}
+
+function carryOverIncompleteTodos(prevCycle) {
+  if (!prevCycle || !Array.isArray(prevCycle.todos)) return [];
+  return prevCycle.todos
+    .filter(todo => !todo.done)
+    .map(todo => ({
+      id: 'todo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      text: todo.text,
+      done: false,
+      carriedFromCycleId: prevCycle.id
+    }));
+}
+
+function computeDelta(currentRate, prevRate) {
+  if (prevRate == null) return null;
+  return Math.round(currentRate - prevRate);
+}
+
+// ==================== PDCA UI RENDERERS ====================
+const PROBLEM_TAGS = ['時間不足', '理解不足', 'モチベーション低下', '計画が過大', '体調不良', 'その他'];
+
+async function renderPDCA() {
+  const ct = document.getElementById('page-container');
+  if (!ct) return;
+
+  const cycles = await fetchPDCACycles();
+  const logs = await fetchStudyLogs();
+
+  const logicalToday = getLogicalDate(new Date());
+  const dayIdx = logicalToday.getDay();
+  const diffSinceMon = (dayIdx === 0 ? 6 : dayIdx - 1);
+  const monDate = new Date(logicalToday);
+  monDate.setDate(logicalToday.getDate() - diffSinceMon);
+  const monKey = toLocalDateKey(monDate);
+
+  const activeCycle = cycles.find(c => c.start_date === monKey && c.status === 'active');
+  const completedCycles = cycles.filter(c => c.status === 'completed').sort((a,b) => a.start_date.localeCompare(b.start_date));
+  const lastCycle = cycles.filter(c => c.status === 'completed').sort((a,b) => b.end_date.localeCompare(a.end_date))[0];
+
+  const ds = new Date(monDate); ds.setHours(5, 0, 0, 0);
+  const de = new Date(logicalToday); de.setHours(28, 59, 59, 999);
+  const thisWeekMinutes = logs.filter(l => {
+    const t = new Date(l.started_at);
+    return t >= ds && t <= de;
+  }).reduce((s, l) => s + l.duration_minutes, 0);
+
+  if (activeCycle) {
+    renderPDCAActive(activeCycle, thisWeekMinutes, logs);
+  } else {
+    renderPDCANew(lastCycle);
+  }
+}
+
+function renderPDCANew(lastCycle) {
+  const ct = document.getElementById('page-container');
+  
+  const logicalToday = getLogicalDate(new Date());
+  const dayIdx = logicalToday.getDay();
+  const diffSinceMon = (dayIdx === 0 ? 6 : dayIdx - 1);
+  const monDate = new Date(logicalToday); monDate.setDate(logicalToday.getDate() - diffSinceMon);
+  const sunDate = new Date(monDate); sunDate.setDate(monDate.getDate() + 6);
+  
+  const monKey = toLocalDateKey(monDate);
+  const sunKey = toLocalDateKey(sunDate);
+
+  const prevTryHtml = lastCycle && lastCycle.action_try 
+    ? `<div class="carryover-section" style="border-color: rgba(78,205,196,0.3); background: rgba(78,205,196,0.03);">
+        <div class="carryover-title" style="color: var(--color-accent-teal);">💡 前回のサイクルからの改善策 (Try)</div>
+        <div style="font-size:0.85rem; line-height:1.5;">${lastCycle.action_try}</div>
+       </div>`
+    : '';
+
+  const incompleteTodos = lastCycle ? lastCycle.todos.filter(t => !t.done) : [];
+  let carryoverHtml = '';
+  if (incompleteTodos.length > 0) {
+    carryoverHtml = `
+      <div class="carryover-section">
+        <div class="carryover-title">${IC.megaphone} 未完了のTo-Doを引き継ぐ</div>
+        <p style="font-size:0.75rem; color:var(--color-text-secondary); margin-bottom:8px;">
+          前回完了しなかったタスクです。チェックを入れたものを今週の計画に引き継ぎます。
+        </p>
+        <div class="carryover-list">
+          ${incompleteTodos.map((todo, idx) => `
+            <label class="carryover-item">
+              <input type="checkbox" class="carryover-todo-cb" data-text="${todo.text}" data-prev-id="${lastCycle.id}" checked />
+              <span>${todo.text}</span>
+            </label>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  const allSubjects = subjectCategories.flatMap(c => c.subjects);
+
+  ct.innerHTML = `
+    <div class="pdca-header">
+      <div class="pdca-title-area">
+        <h1 class="page-title">PDCAサイクル</h1>
+        <p class="page-subtitle">今週の学習計画を立てましょう (${monKey} 〜 ${sunKey})</p>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-show-pdca-history">履歴を表示</button>
+    </div>
+
+    <div class="pdca-stepper animate-slide-up">
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">P</div>
+        <div class="pdca-step-name">Plan (計画)</div>
+        <div class="pdca-step-desc">目標とTo-Doを設定</div>
+      </div>
+      <div class="pdca-step">
+        <div class="pdca-step-badge">D</div>
+        <div class="pdca-step-name">Do (実行)</div>
+        <div class="pdca-step-desc">学習を記録</div>
+      </div>
+      <div class="pdca-step">
+        <div class="pdca-step-badge">C</div>
+        <div class="pdca-step-name">Check (評価)</div>
+        <div class="pdca-step-desc">達成率と課題の分析</div>
+      </div>
+      <div class="pdca-step">
+        <div class="pdca-step-badge">A</div>
+        <div class="pdca-step-name">Action (改善)</div>
+        <div class="pdca-step-desc">改善策の策定</div>
+      </div>
+    </div>
+
+    <div class="pdca-grid">
+      <div class="card animate-slide-up" style="animation-delay:0.1s">
+        <div class="card-header"><div class="card-title">${IC.target} 学習目標の設定</div></div>
+        
+        ${prevTryHtml}
+        ${carryoverHtml}
+
+        <div style="display:flex; flex-direction:column; gap:var(--space-md); margin-top:var(--space-md);">
+          <div class="settings-field">
+            <label style="font-weight:700;">今週の総目標学習時間 (時間)</label>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+              <input type="number" id="new-plan-hours" value="15" min="1" max="100" style="width:100px; text-align:right;" />
+              <span>時間 (合計 <span id="new-plan-minutes-text">900</span> 分)</span>
+            </div>
+            <p style="font-size:0.75rem; color:var(--color-text-tertiary); margin-top:4px;">
+              ※ 科目ごとの目標時間を設定すると、その合計値が自動的に総目標時間になります。
+            </p>
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">重点的に学習する科目と目標時間</label>
+            <div style="font-size:0.75rem; color:var(--color-text-secondary); margin-bottom:8px;">
+              今週フォーカスする科目を選択し、目標時間を入力してください。
+            </div>
+            
+            <div style="max-height:220px; overflow-y:auto; border:1px solid var(--color-border); border-radius:var(--radius-md); padding:var(--space-sm); background:var(--color-bg-input);">
+              <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                ${allSubjects.map(s => `
+                  <label style="display:flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer; padding:4px;">
+                    <input type="checkbox" class="plan-subject-cb" data-id="${s.name}" />
+                    <span>${s.name}</span>
+                  </label>
+                `).join('')}
+              </div>
+            </div>
+
+            <div class="subject-target-list" id="subject-target-container"></div>
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">計画の詳細・意気込み</label>
+            <textarea id="new-plan-memo" rows="3" placeholder="例: 消化管の過去問を全て解き、Ankiで毎日復習を行う。" style="width:100%; margin-top:6px; resize:vertical;"></textarea>
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">今週のTo-Doリスト</label>
+            <div class="todo-input-row" style="margin-top:6px;">
+              <input type="text" id="new-todo-input" placeholder="タスクを入力（例: 解剖学のまとめノート作成）" />
+              <button class="btn btn-secondary" id="btn-add-todo">追加</button>
+            </div>
+            <div class="pdca-todo-list" id="new-todo-list-container"></div>
+          </div>
+
+          <button class="btn btn-primary" id="btn-submit-pdca-plan" style="width:100%; margin-top:var(--space-md); font-size:1rem; justify-content:center;">
+            🚀 今週のPDCAサイクルを開始する
+          </button>
+        </div>
+      </div>
+
+      <div class="card animate-slide-up" style="animation-delay:0.2s; font-size:0.85rem; line-height:1.6;">
+        <div class="card-header"><div class="card-title">💡 Plan（計画）のコツ</div></div>
+        <p style="margin-bottom: var(--space-md);">
+          目標は「スマート (SMART) 」に立てましょう。曖昧な計画は挫折の原因になります。
+        </p>
+        <ul style="padding-left: var(--space-lg); display:flex; flex-direction:column; gap:var(--space-sm);">
+          <li><strong>S (Specific)</strong>: 「たくさん勉強する」ではなく「消化管の講義動画を見る」のように具体的に。</li>
+          <li><strong>M (Measurable)</strong>: 科目ごとの目標時間や、To-Doの個数など数値で測れるように。</li>
+          <li><strong>A (Achievable)</strong>: 睡眠を削るような無理な計画ではなく、現実的に達成可能な時間幅で設定。</li>
+          <li><strong>R (Relevant)</strong>: 近い将来の試験やCBT、国試の範囲に直結する科目を「重点科目」に指定。</li>
+          <li><strong>T (Time-bound)</strong>: 1週間の期限内でこなせるタスク量に絞りましょう。</li>
+        </ul>
+      </div>
+    </div>
+  `;
+
+  let planTodos = [];
+  const carryoverCbs = document.querySelectorAll('.carryover-todo-cb');
+  
+  const getCarryoverTodos = () => {
+    const arr = [];
+    carryoverCbs.forEach(cb => {
+      if (cb.checked) {
+        arr.push({
+          id: 'todo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+          text: cb.dataset.text,
+          done: false,
+          carriedFromCycleId: cb.dataset.prevId
+        });
+      }
+    });
+    return arr;
+  };
+  
+  const refreshTodoList = () => {
+    const listContainer = document.getElementById('new-todo-list-container');
+    const combinedTodos = [...getCarryoverTodos(), ...planTodos];
+    
+    if (combinedTodos.length === 0) {
+      listContainer.innerHTML = '<p style="font-size:0.8rem; color:var(--color-text-tertiary); text-align:center; padding:12px;">タスクが登録されていません</p>';
+      return;
+    }
+    
+    listContainer.innerHTML = combinedTodos.map((t, idx) => `
+      <div class="pdca-todo-item">
+        <div class="pdca-todo-item-left">
+          <span>•</span>
+          <span class="pdca-todo-text">${t.text}</span>
+          ${t.carriedFromCycleId ? '<span class="carried-badge">前回から持ち越し</span>' : ''}
+        </div>
+        <button class="btn-delete-todo" data-index="${idx}" style="color:var(--color-accent-pink); font-size:0.75rem;">削除</button>
+      </div>
+    `).join('');
+
+    listContainer.querySelectorAll('.btn-delete-todo').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const index = parseInt(e.target.dataset.index);
+        const carryoverLen = getCarryoverTodos().length;
+        if (index < carryoverLen) {
+          carryoverCbs[index].checked = false;
+        } else {
+          planTodos.splice(index - carryoverLen, 1);
+        }
+        refreshTodoList();
+      });
+    });
+  };
+
+  carryoverCbs.forEach(cb => cb.addEventListener('change', refreshTodoList));
+  refreshTodoList();
+
+  document.getElementById('btn-add-todo').onclick = () => {
+    const input = document.getElementById('new-todo-input');
+    const text = input.value.trim();
+    if (!text) return;
+    planTodos.push({
+      id: 'todo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+      text: text,
+      done: false
+    });
+    input.value = '';
+    refreshTodoList();
+  };
+  
+  document.getElementById('new-todo-input').onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      document.getElementById('btn-add-todo').click();
+    }
+  };
+
+  const selectedSubjectTargets = {};
+  const subjectTargetContainer = document.getElementById('subject-target-container');
+  const planHoursInput = document.getElementById('new-plan-hours');
+  const planMinutesText = document.getElementById('new-plan-minutes-text');
+
+  const updateOverallTimeFromSubjects = () => {
+    const checkedCbs = document.querySelectorAll('.plan-subject-cb:checked');
+    if (checkedCbs.length === 0) return;
+    let totalMin = 0;
+    checkedCbs.forEach(cb => {
+      const subjectName = cb.dataset.id;
+      const targetMin = selectedSubjectTargets[subjectName] || 120;
+      totalMin += targetMin;
+    });
+    const hours = (totalMin / 60).toFixed(1);
+    planHoursInput.value = hours;
+    planMinutesText.textContent = totalMin;
+  };
+
+  const renderSubjectTargets = () => {
+    const checkedCbs = document.querySelectorAll('.plan-subject-cb:checked');
+    if (checkedCbs.length === 0) {
+      subjectTargetContainer.innerHTML = '';
+      return;
+    }
+    
+    subjectTargetContainer.innerHTML = Array.from(checkedCbs).map(cb => {
+      const name = cb.dataset.id;
+      const curVal = selectedSubjectTargets[name] || 120;
+      return `
+        <div class="subject-target-row animate-slide-up">
+          <div class="subject-target-label">
+            <span class="dot" style="background:var(--color-accent-teal); width:8px; height:8px; border-radius:50%"></span>
+            <span>${name}</span>
+          </div>
+          <div class="subject-target-input-group">
+            <input type="number" class="subject-target-input" data-subject="${name}" value="${curVal}" min="10" step="10" />
+            <span style="font-size:0.75rem; color:var(--color-text-secondary)">分</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    subjectTargetContainer.querySelectorAll('.subject-target-input').forEach(input => {
+      input.addEventListener('change', (e) => {
+        const name = e.target.dataset.subject;
+        const val = parseInt(e.target.value) || 0;
+        selectedSubjectTargets[name] = val;
+        updateOverallTimeFromSubjects();
+      });
+    });
+  };
+
+  document.querySelectorAll('.plan-subject-cb').forEach(cb => {
+    cb.addEventListener('change', (e) => {
+      const name = e.target.dataset.id;
+      if (e.target.checked) {
+        if (!selectedSubjectTargets[name]) selectedSubjectTargets[name] = 120;
+      }
+      renderSubjectTargets();
+      updateOverallTimeFromSubjects();
+    });
+  });
+
+  planHoursInput.addEventListener('change', () => {
+    planMinutesText.textContent = Math.round(parseFloat(planHoursInput.value) * 60);
+  });
+
+  document.getElementById('btn-submit-pdca-plan').onclick = async () => {
+    const hours = parseFloat(planHoursInput.value) || 0;
+    const planMinutes = Math.round(hours * 60);
+    const planMemo = document.getElementById('new-plan-memo').value.trim();
+    
+    if (planMinutes <= 0) {
+      alert('目標学習時間を正しく入力してください');
+      return;
+    }
+
+    const planSubjectsMap = {};
+    document.querySelectorAll('.plan-subject-cb:checked').forEach(cb => {
+      const name = cb.dataset.id;
+      planSubjectsMap[name] = selectedSubjectTargets[name] || 120;
+    });
+
+    const combinedTodos = [...getCarryoverTodos(), ...planTodos];
+
+    const newCycle = {
+      id: 'cycle_' + Date.now(),
+      start_date: monKey,
+      end_date: sunKey,
+      plan_time: planMinutes,
+      plan_subjects: planSubjectsMap,
+      plan_memo: planMemo,
+      todos: combinedTodos,
+      status: 'active'
+    };
+
+    const success = await savePDCACycle(newCycle);
+    if (success) {
+      showToast(IC.check + ' 今週のPDCA計画を開始しました！');
+      renderPDCA();
+    }
+  };
+
+  document.getElementById('btn-show-pdca-history').onclick = async () => {
+    const cycles = await fetchPDCACycles();
+    const completed = cycles.filter(c => c.status === 'completed');
+    renderPDCAHistory(completed);
+  };
+}
+
+function renderPDCAActive(cycle, thisWeekMinutes, studyLogs) {
+  const ct = document.getElementById('page-container');
+
+  const progressPct = cycle.plan_time > 0 ? Math.min(150, Math.round((thisWeekMinutes / cycle.plan_time) * 100)) : 0;
+  const ringColor = getGoalRingColor(progressPct);
+  const remainMin = Math.max(0, cycle.plan_time - thisWeekMinutes);
+  const remainH = (remainMin / 60).toFixed(1);
+
+  const radius = 105;
+  const circ = 2 * Math.PI * radius;
+  const dashOffset = circ - (Math.min(progressPct, 100) / 100) * circ;
+
+  const weekStart = new Date(cycle.start_date); weekStart.setHours(5,0,0,0);
+  const subjectAchievement = aggregateBySubject(studyLogs, weekStart, cycle.plan_subjects);
+
+  const completedTodos = cycle.todos.filter(t => t.done).length;
+  const totalTodos = cycle.todos.length;
+
+  ct.innerHTML = `
+    <div class="pdca-header">
+      <div class="pdca-title-area">
+        <h1 class="page-title">PDCAサイクル</h1>
+        <p class="page-subtitle">実行と学習状況の確認 (${cycle.start_date} 〜 ${cycle.end_date})</p>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-show-pdca-history">履歴を表示</button>
+    </div>
+
+    <div class="pdca-stepper animate-slide-up">
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">P</div>
+        <div class="pdca-step-name">Plan (計画)</div>
+        <div class="pdca-step-desc">目標: ${formatMinutes(cycle.plan_time)}</div>
+      </div>
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">D</div>
+        <div class="pdca-step-name">Do (実行)</div>
+        <div class="pdca-step-desc">実績: ${formatMinutes(thisWeekMinutes)}</div>
+      </div>
+      <div class="pdca-step">
+        <div class="pdca-step-badge">C</div>
+        <div class="pdca-step-name">Check (評価)</div>
+        <div class="pdca-step-desc">未完了</div>
+      </div>
+      <div class="pdca-step">
+        <div class="pdca-step-badge">A</div>
+        <div class="pdca-step-name">Action (改善)</div>
+        <div class="pdca-step-desc">未完了</div>
+      </div>
+    </div>
+
+    <div class="pdca-grid">
+      <div style="display:flex; flex-direction:column; gap:var(--space-lg);">
+        <div class="card animate-slide-up" style="animation-delay:0.05s">
+          <div class="card-header"><div class="card-title">${IC.target} 今週のアクションプラン</div></div>
+          ${cycle.plan_memo ? `<p style="font-size:0.875rem; line-height:1.6; margin-bottom:var(--space-md); padding:10px; background:var(--color-bg-input); border-radius:8px; border-left:3px solid var(--color-accent-teal);">${cycle.plan_memo}</p>` : ''}
+          
+          <div style="font-weight:700; font-size:0.85rem; margin-bottom:var(--space-sm);">計画したTo-Do (${completedTodos}/${totalTodos}個完了)</div>
+          <div class="pdca-todo-list" id="active-todo-list">
+            ${totalTodos > 0 ? cycle.todos.map((todo, idx) => `
+              <div class="pdca-todo-item ${todo.done ? 'done' : ''}">
+                <div class="pdca-todo-item-left">
+                  <input type="checkbox" class="active-todo-cb" data-id="${todo.id}" ${todo.done ? 'checked' : ''} />
+                  <span class="pdca-todo-text">${todo.text}</span>
+                  ${todo.carriedFromCycleId ? '<span class="carried-badge">前回から持ち越し</span>' : ''}
+                </div>
+              </div>
+            `).join('') : '<p style="text-align:center; color:var(--color-text-tertiary); font-size:0.8rem; padding:12px;">今週のTo-Doはありません</p>'}
+          </div>
+        </div>
+
+        <div class="card animate-slide-up" style="animation-delay:0.1s">
+          <div class="card-header"><div class="card-title">${IC.stats} 科目別目標と実績</div></div>
+          <div class="subject-progress-section">
+            ${subjectAchievement.length > 0 ? subjectAchievement.map(sa => {
+              const rateText = sa.rate !== null ? `${sa.rate}%` : '目標設定なし';
+              const progressPct = sa.rate !== null ? Math.min(100, sa.rate) : 100;
+              return `
+                <div class="subject-progress-card">
+                  <div class="subject-progress-header">
+                    <span class="subject-progress-name">${sa.subject}</span>
+                    <span class="subject-progress-stats">
+                      ${formatMinutes(sa.actual)} / ${sa.target ? formatMinutes(sa.target) : '---'} (${rateText})
+                    </span>
+                  </div>
+                  <div class="subject-progress-bar-bg">
+                    <div class="subject-progress-bar-fill" style="width:0%" data-width="${progressPct}"></div>
+                  </div>
+                </div>
+              `;
+            }).join('') : '<p style="text-align:center; color:var(--color-text-tertiary); font-size:0.8rem;">重点科目の設定はありません</p>'}
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:var(--space-lg);">
+        <div class="card goal-ring-hero animate-slide-up" style="animation-delay:0.15s">
+          <div class="card-header"><div class="card-title">今週の進捗</div></div>
+          <div class="goal-ring-container ${progressPct >= 100 ? 'achieved' : ''}" style="margin-top:0;">
+            <svg viewBox="0 0 240 240">
+              <circle class="goal-ring-bg" cx="120" cy="120" r="${radius}"/>
+              <circle class="goal-ring-glow" cx="120" cy="120" r="${radius}"
+                stroke="${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="pdca-ring-glow"/>
+              <circle class="goal-ring-progress" cx="120" cy="120" r="${radius}"
+                stroke="${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="pdca-ring-arc"/>
+            </svg>
+            <div class="goal-ring-text">
+              <div class="goal-ring-current" style="color:${ringColor}">${progressPct}%</div>
+              <div class="goal-ring-target">目標: ${(cycle.plan_time/60).toFixed(1)}h</div>
+              <div class="goal-ring-remaining">${progressPct >= 100 ? IC.check+' 達成！' : `残り ${remainH}h`}</div>
+            </div>
+          </div>
+          
+          <button class="btn btn-primary" id="btn-trigger-pdca-check" style="width:100%; margin-top:var(--space-md); font-size:0.9rem; justify-content:center;">
+            📝 今週の振り返り (Check & Action)
+          </button>
+          
+          <button class="btn btn-secondary btn-sm" id="btn-delete-current-pdca" style="width:100%; margin-top:var(--space-sm); font-size:0.8rem; justify-content:center; border:1px solid rgba(239, 68, 68, 0.2); color:var(--color-accent-pink);">
+            計画の削除
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  setTimeout(() => {
+    const arc = document.getElementById('pdca-ring-arc');
+    const glow = document.getElementById('pdca-ring-glow');
+    if (arc) arc.style.strokeDashoffset = dashOffset;
+    if (glow) glow.style.strokeDashoffset = dashOffset;
+
+    document.querySelectorAll('.subject-progress-bar-fill').forEach(fill => {
+      const w = fill.getAttribute('data-width');
+      if (w) fill.style.width = w + '%';
+    });
+  }, 100);
+
+  document.querySelectorAll('.active-todo-cb').forEach(cb => {
+    cb.addEventListener('change', async (e) => {
+      const todoId = e.target.dataset.id;
+      const checked = e.target.checked;
+      
+      const targetTodo = cycle.todos.find(t => t.id === todoId);
+      if (targetTodo) {
+        targetTodo.done = checked;
+        e.target.closest('.pdca-todo-item').classList.toggle('done', checked);
+      }
+      
+      await savePDCACycle(cycle);
+      showToast(checked ? IC.check + ' タスクを完了しました！' : 'タスクを未完了に戻しました');
+    });
+  });
+
+  document.getElementById('btn-trigger-pdca-check').onclick = () => {
+    renderPDCACheck(cycle, thisWeekMinutes, subjectAchievement);
+  };
+
+  document.getElementById('btn-delete-current-pdca').onclick = async () => {
+    if (confirm('今週の計画を削除しますか？計画した目標やTo-Doはリセットされます。')) {
+      await deletePDCACycle(cycle.id);
+      showToast('計画を削除しました');
+      renderPDCA();
+    }
+  };
+
+  document.getElementById('btn-show-pdca-history').onclick = async () => {
+    const cycles = await fetchPDCACycles();
+    const completed = cycles.filter(c => c.status === 'completed');
+    renderPDCAHistory(completed);
+  };
+}
+
+function renderPDCACheck(cycle, thisWeekMinutes, subjectAchievement) {
+  const ct = document.getElementById('page-container');
+  const progressPct = cycle.plan_time > 0 ? Math.min(100, Math.round((thisWeekMinutes / cycle.plan_time) * 100)) : 0;
+  
+  ct.innerHTML = `
+    <div class="pdca-header">
+      <div class="pdca-title-area">
+        <h1 class="page-title">振り返り (Check & Action)</h1>
+        <p class="page-subtitle">今週の学習結果を冷静に評価し、次に繋げましょう</p>
+      </div>
+      <button class="btn btn-secondary btn-sm" id="btn-cancel-check">キャンセル</button>
+    </div>
+
+    <div class="pdca-stepper animate-slide-up">
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">P</div>
+        <div class="pdca-step-name">Plan (計画)</div>
+        <div class="pdca-step-desc">完了</div>
+      </div>
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">D</div>
+        <div class="pdca-step-name">Do (実行)</div>
+        <div class="pdca-step-desc">完了</div>
+      </div>
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">C</div>
+        <div class="pdca-step-name">Check (評価)</div>
+        <div class="pdca-step-desc">入力中</div>
+      </div>
+      <div class="pdca-step active">
+        <div class="pdca-step-badge">A</div>
+        <div class="pdca-step-name">Action (改善)</div>
+        <div class="pdca-step-desc">入力中</div>
+      </div>
+    </div>
+
+    <div class="pdca-grid">
+      <div class="card animate-slide-up" style="animation-delay:0.05s">
+        
+        <div style="background:var(--color-bg-input); padding:var(--space-md); border:1px solid var(--color-border); border-radius:var(--radius-lg); margin-bottom:var(--space-lg);">
+          <div style="font-weight:700; font-size:0.9rem; margin-bottom:8px;">📊 客観的な実績（今週の集計結果）</div>
+          <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:1.1rem; font-weight:bold;">
+            <span>総合学習目標達成率:</span>
+            <span style="color:var(--color-accent-teal)">${progressPct}%</span>
+          </div>
+          <div class="progress-bar" style="margin-bottom:12px;">
+            <div class="progress-bar-fill" style="width:${progressPct}%;"></div>
+          </div>
+          
+          <div style="font-size:0.8rem; color:var(--color-text-secondary); margin-bottom:4px;">科目別の達成率:</div>
+          <div style="display:flex; flex-direction:column; gap:4px;">
+            ${subjectAchievement.map(sa => {
+              const saRate = sa.rate !== null ? `${sa.rate}%` : '未設定';
+              return `
+                <div style="display:flex; justify-content:space-between; font-size:0.75rem;">
+                  <span>• ${sa.subject}</span>
+                  <span style="font-weight:bold;">${formatMinutes(sa.actual)} / ${sa.target ? formatMinutes(sa.target) : '---'} (${saRate})</span>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:var(--space-md);">
+          <div class="settings-field">
+            <label style="font-weight:700;">今週の自己評価 (主観評価)</label>
+            <div class="star-rating-container" style="margin-top:6px;">
+              <span class="star-rating-btn" data-star="1">☆</span>
+              <span class="star-rating-btn" data-star="2">☆</span>
+              <span class="star-rating-btn" data-star="3">☆</span>
+              <span class="star-rating-btn" data-star="4">☆</span>
+              <span class="star-rating-btn" data-star="5">☆</span>
+            </div>
+            <input type="hidden" id="check-score" value="3" />
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">Keep (良かった点・継続すること)</label>
+            <textarea id="check-keep" rows="2" placeholder="例: カフェでの勉強は集中できた。水曜日は目標以上の時間を達成できた。" style="width:100%; margin-top:6px; resize:vertical;"></textarea>
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">Problem (課題・阻害要因の分類タグ)</label>
+            <div style="font-size:0.75rem; color:var(--color-text-secondary); margin-bottom:8px;">
+              今週目標を達成できなかった、あるいは改善の余地がある原因をすべて選択してください。
+            </div>
+            <div class="problem-tags-container">
+              ${PROBLEM_TAGS.map(t => `<div class="problem-tag-chip" data-tag="${t}">${t}</div>`).join('')}
+            </div>
+          </div>
+
+          <div class="settings-field">
+            <label style="font-weight:700;">Problem (課題の具体的な詳細)</label>
+            <textarea id="check-problem" rows="2" placeholder="例: 木曜日にスマホに気を取られて3時間近く時間を無駄にしてしまった。" style="width:100%; margin-top:6px; resize:vertical;"></textarea>
+          </div>
+
+          <div class="settings-field" style="border-top:1px solid var(--color-border); padding-top:var(--space-md);">
+            <label style="font-weight:700; color:var(--color-accent-teal);">Try (次週の具体的な改善アクション)</label>
+            <textarea id="action-try" rows="2" placeholder="例: 勉強中はスマホの電源をオフにしてカバンにしまう。" style="width:100%; margin-top:6px; resize:vertical;"></textarea>
+          </div>
+
+          <button class="btn btn-primary" id="btn-submit-pdca-check" style="width:100%; margin-top:var(--space-md); font-size:1rem; justify-content:center;">
+            ✓ 振り返りを保存してサイクルを完了する
+          </button>
+        </div>
+      </div>
+
+      <div class="card animate-slide-up" style="animation-delay:0.15s; font-size:0.85rem; line-height:1.6;">
+        <div class="card-header"><div class="card-title">💡 Check & Action のコツ</div></div>
+        <p style="margin-bottom:var(--space-md);">
+          PDCAサイクルで最も大切なのは「CとA」です。目標が未達でも自分を責めず、<strong>客観的・建設的</strong>に分析しましょう。
+        </p>
+        <ul style="padding-left: var(--space-lg); display:flex; flex-direction:column; gap:var(--space-sm);">
+          <li><strong>Keep</strong>: 成功した要素を明確にして、習慣化に繋げます。</li>
+          <li><strong>Problem</strong>: 課題を分類タグと記述で具体化することで、ボトルネックが見えてきます。</li>
+          <li><strong>Try</strong>: 改善策は「スマホをいじらない」といった禁止令ではなく、<strong>「スマホの電源を切りカバンに入れる」</strong>のような具体的なアクションに落とし込みましょう。</li>
+        </ul>
+      </div>
+    </div>
+  `;
+
+  const stars = document.querySelectorAll('.star-rating-btn');
+  const scoreInput = document.getElementById('check-score');
+  
+  const setStars = (score) => {
+    scoreInput.value = score;
+    stars.forEach((s, idx) => {
+      if (idx < score) {
+        s.textContent = '★';
+        s.classList.add('active');
+      } else {
+        s.textContent = '☆';
+        s.classList.remove('active');
+      }
+    });
+  };
+
+  stars.forEach((star, idx) => {
+    star.addEventListener('click', () => setStars(idx + 1));
+  });
+  setStars(3);
+
+  const selectedTags = new Set();
+  document.querySelectorAll('.problem-tag-chip').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      const tag = e.target.dataset.tag;
+      if (selectedTags.has(tag)) {
+        selectedTags.delete(tag);
+        e.target.classList.remove('selected');
+      } else {
+        selectedTags.add(tag);
+        e.target.classList.add('selected');
+      }
+    });
+  });
+
+  document.getElementById('btn-cancel-check').onclick = () => {
+    renderPDCA();
+  };
+
+  document.getElementById('btn-submit-pdca-check').onclick = async () => {
+    const score = parseInt(scoreInput.value);
+    const keep = document.getElementById('check-keep').value.trim();
+    const problem = document.getElementById('check-problem').value.trim();
+    const tryText = document.getElementById('action-try').value.trim();
+    const tagsArr = Array.from(selectedTags);
+
+    if (!tryText) {
+      alert('次週への具体的な改善アクション (Try) を入力してください');
+      return;
+    }
+
+    const subjectAchievementMap = {};
+    subjectAchievement.forEach(sa => {
+      subjectAchievementMap[sa.subject] = {
+        target: sa.target,
+        actual: sa.actual,
+        rate: sa.rate
+      };
+    });
+
+    const updatedCycle = {
+      ...cycle,
+      check_score: score,
+      check_keep: keep,
+      check_problem: problem,
+      problem_tags: tagsArr,
+      action_try: tryText,
+      achievement_rate: progressPct,
+      subject_achievement: subjectAchievementMap,
+      status: 'completed',
+      end_date: toLocalDateKey(getLogicalDate(new Date()))
+    };
+
+    const success = await savePDCACycle(updatedCycle);
+    if (success) {
+      showToast(IC.check + ' 振り返りを完了しました！来週も頑張りましょう！');
+      renderPDCA();
+    }
+  };
+}
+
+function renderPDCAHistory(completedCycles) {
+  const ct = document.getElementById('page-container');
+
+  ct.innerHTML = `
+    <div class="pdca-header">
+      <div class="pdca-title-area">
+        <h1 class="page-title">PDCAサイクル履歴</h1>
+        <p class="page-subtitle">過去の軌跡を振り返り、学習パターンの成長を確かめましょう</p>
+      </div>
+      <button class="btn btn-primary btn-sm" id="btn-back-to-pdca">PDCAに戻る</button>
+    </div>
+
+    <div class="card animate-slide-up" style="margin-bottom:var(--space-lg);">
+      <div class="card-header"><div class="card-title">${IC.chart} 達成率の推移</div></div>
+      <div class="pdca-chart-container">
+        <canvas id="pdcaHistoryChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card animate-slide-up" style="margin-bottom:var(--space-lg); padding:var(--space-md);">
+      <div style="font-weight:700; font-size:0.85rem; margin-bottom:8px;">🔍 課題タグでフィルター</div>
+      <div class="problem-tags-container" id="history-filter-container">
+        <div class="problem-tag-chip selected" data-filter-tag="all">すべて表示</div>
+        ${PROBLEM_TAGS.map(t => `<div class="problem-tag-chip" data-filter-tag="${t}">${t}</div>`).join('')}
+      </div>
+    </div>
+
+    <div style="display:flex; flex-direction:column; gap:var(--space-md);" id="history-cards-container"></div>
+  `;
+
+  document.getElementById('btn-back-to-pdca').onclick = () => {
+    renderPDCA();
+  };
+
+  const populateCards = (selectedTag = 'all') => {
+    const container = document.getElementById('history-cards-container');
+    const filtered = completedCycles.filter(c => {
+      if (selectedTag === 'all') return true;
+      return Array.isArray(c.problem_tags) && c.problem_tags.includes(selectedTag);
+    }).sort((a,b) => b.start_date.localeCompare(a.start_date));
+
+    if (filtered.length === 0) {
+      container.innerHTML = '<p style="text-align:center; color:var(--color-text-tertiary); padding:40px;">条件に合う履歴はありません</p>';
+      return;
+    }
+
+    container.innerHTML = filtered.map(c => {
+      const scoreStars = '★'.repeat(c.check_score || 0) + '☆'.repeat(5 - (c.check_score || 0));
+      const subKeys = c.subject_achievement ? Object.keys(c.subject_achievement) : [];
+      const tagChips = Array.isArray(c.problem_tags) 
+        ? c.problem_tags.map(t => `<span class="problem-tag-chip selected" style="cursor:default; font-size:10px; padding:2px 8px; margin-right:4px;">${t}</span>`).join('') 
+        : '';
+      const totalTodos = Array.isArray(c.todos) ? c.todos.length : 0;
+      const doneTodos = Array.isArray(c.todos) ? c.todos.filter(t => t.done).length : 0;
+
+      return `
+        <div class="card animate-slide-up" style="position:relative;">
+          <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+            <div>
+              <span style="font-weight:bold; font-size:1.1rem; color:var(--color-text-primary)">
+                週の目標: ${formatMinutes(c.plan_time)}
+              </span>
+              <div style="font-size:0.75rem; color:var(--color-text-secondary); margin-top:2px;">
+                ${c.start_date} 〜 ${c.end_date}
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <span style="font-size:1.2rem; font-weight:bold; color:var(--color-accent-teal)">
+                達成率: ${c.achievement_rate || 0}%
+              </span>
+              <div style="color:var(--color-accent-yellow); font-size:0.85rem; margin-top:2px;">
+                自己評価: ${scoreStars}
+              </div>
+            </div>
+          </div>
+
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:var(--space-md); font-size:0.85rem; margin-bottom:12px;">
+            <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:8px;">
+              <div style="font-weight:700; color:var(--color-accent-green); margin-bottom:4px;">Keep (良かった点)</div>
+              <div style="line-height:1.5;">${c.check_keep || '未記述'}</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.02); padding:10px; border-radius:8px;">
+              <div style="font-weight:700; color:var(--color-accent-pink); margin-bottom:4px;">Problem (課題) ${tagChips ? `<div style="margin-top:4px;">${tagChips}</div>` : ''}</div>
+              <div style="line-height:1.5; margin-top:4px;">${c.check_problem || '未記述'}</div>
+            </div>
+          </div>
+
+          <div style="background:rgba(78,205,196,0.05); padding:10px; border-radius:8px; border-left:3px solid var(--color-accent-teal); font-size:0.85rem; margin-bottom:12px;">
+            <div style="font-weight:700; color:var(--color-accent-teal); margin-bottom:4px;">Try (次の改善策)</div>
+            <div style="line-height:1.5;">${c.action_try || '未記述'}</div>
+          </div>
+
+          ${subKeys.length > 0 ? `
+            <details style="font-size:0.8rem; color:var(--color-text-secondary); margin-bottom:8px;">
+              <summary style="cursor:pointer; font-weight:600; padding:4px 0;">科目別およびTo-Do詳細を表示</summary>
+              <div style="padding:var(--space-sm) 0 0 0; display:flex; flex-direction:column; gap:4px;">
+                <div style="font-weight:700; margin-bottom:2px;">科目別実績:</div>
+                ${subKeys.map(k => {
+                  const sa = c.subject_achievement[k];
+                  const saRate = sa.rate !== null ? `${sa.rate}%` : '未設定';
+                  return `
+                    <div style="display:flex; justify-content:space-between; margin-bottom:2px; font-size:0.75rem;">
+                      <span>• ${k}</span>
+                      <span>${formatMinutes(sa.actual)} / ${sa.target ? formatMinutes(sa.target) : '---'} (${saRate})</span>
+                    </div>
+                  `;
+                }).join('')}
+                
+                <div style="font-weight:700; margin-top:8px; margin-bottom:2px;">To-Do実績: (${doneTodos}/${totalTodos}個完了)</div>
+                ${Array.isArray(c.todos) ? c.todos.map(t => `
+                  <div style="font-size:0.75rem; display:flex; gap:6px; color:${t.done ? 'var(--color-text-tertiary)' : 'var(--color-text-secondary)'}">
+                    <span>${t.done ? '✓' : '•'}</span>
+                    <span style="${t.done ? 'text-decoration:line-through' : ''}">${t.text}</span>
+                  </div>
+                `).join('') : ''}
+              </div>
+            </details>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+  };
+
+  const renderHistoryChart = () => {
+    if (typeof Chart === 'undefined') return;
+    const canvas = document.getElementById('pdcaHistoryChart');
+    if (!canvas) return;
+
+    destroyChart('pdcaHistoryChart');
+
+    if (completedCycles.length === 0) {
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = isDark ? '#94a3b8' : '#3d6380';
+      ctx.font = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('履歴データが不足しています（完了したPDCAが必要です）', canvas.width / 2, canvas.height / 2);
+      return;
+    }
+
+    const labels = completedCycles.map(c => c.start_date.substring(5));
+    const rates = completedCycles.map(c => Number(c.achievement_rate || 0));
+
+    chartInstances['pdcaHistoryChart'] = new Chart(canvas, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [{
+          label: '学習達成率 (%)',
+          data: rates,
+          borderColor: '#4ECDC4',
+          backgroundColor: 'rgba(78, 205, 196, 0.1)',
+          borderWidth: 3,
+          pointRadius: 4,
+          pointBackgroundColor: '#3b82f6',
+          pointBorderColor: '#fff',
+          pointHoverRadius: 6,
+          tension: 0.2,
+          fill: true
+        }]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            min: 0,
+            max: 100,
+            ticks: { callback: (v) => v + '%' }
+          },
+          x: {
+            grid: { display: false }
+          }
+        },
+        plugins: {
+          legend: { display: false }
+        }
+      }
+    });
+  };
+
+  document.querySelectorAll('[data-filter-tag]').forEach(chip => {
+    chip.addEventListener('click', (e) => {
+      const selected = e.target.dataset.filterTag;
+      document.querySelectorAll('[data-filter-tag]').forEach(c => c.classList.remove('selected'));
+      e.target.classList.add('selected');
+      populateCards(selected);
+    });
+  });
+
+  setTimeout(() => {
+    renderHistoryChart();
+    populateCards('all');
+  }, 100);
+}
+
 async function renderDashboard(){
+
   const ct=document.getElementById('page-container');
   const logs = await fetchStudyLogs();
   const checks = await fetchChecklists();
+  await fetchSleepLogs(); // Supabaseから睡眠ログを取得・キャッシュ更新
+  const pdcaCycles = await fetchPDCACycles(); // PDCAサイクル取得
+
+  const logicalToday = getLogicalDate(new Date());
+  const dayIdx = logicalToday.getDay();
+  const diffSinceMon = (dayIdx === 0 ? 6 : dayIdx - 1);
+  const monDate = new Date(logicalToday); monDate.setDate(logicalToday.getDate() - diffSinceMon);
+  const monKey = toLocalDateKey(monDate);
+
+  const activeCycle = pdcaCycles.find(c => c.start_date === monKey && c.status === 'active');
+  const lastCycle = pdcaCycles.filter(c => c.status === 'completed').sort((a,b) => b.end_date.localeCompare(a.end_date))[0];
+
+  let pdcaWidgetHtml = '';
+  if (activeCycle) {
+    const ds = new Date(monDate); ds.setHours(5, 0, 0, 0);
+    const de = new Date(logicalToday); de.setHours(28, 59, 59, 999);
+    const thisWeekMinutes = logs.filter(l => {
+      const t = new Date(l.started_at);
+      return t >= ds && t <= de;
+    }).reduce((s, l) => s + l.duration_minutes, 0);
+
+    const progressPct = activeCycle.plan_time > 0 ? Math.min(150, Math.round((thisWeekMinutes / activeCycle.plan_time) * 100)) : 0;
+    
+    let deltaHtml = '';
+    if (lastCycle && lastCycle.achievement_rate != null) {
+      const delta = computeDelta(progressPct, lastCycle.achievement_rate);
+      const deltaClass = delta >= 0 ? 'delta-plus' : 'delta-minus';
+      const deltaSign = delta >= 0 ? '+' : '';
+      deltaHtml = `<span class="pdca-widget-delta ${deltaClass}">前週比 ${deltaSign}${delta}pt</span>`;
+    }
+
+    const completedTodos = activeCycle.todos.filter(t => t.done).length;
+    const totalTodos = activeCycle.todos.length;
+    const todoProgressText = totalTodos > 0 ? `(${completedTodos}/${totalTodos}個完了)` : '(To-Do未設定)';
+
+    pdcaWidgetHtml = `
+      <div class="card animate-slide-up" style="margin-bottom:var(--space-md); cursor:pointer;" data-route="/pdca">
+        <div class="card-header" style="margin-bottom: var(--space-sm);">
+          <div class="card-title">${IC.pdca}今週のPDCA進捗</div>
+          <span style="font-size:0.75rem; color:var(--color-text-secondary);">目標: ${formatMinutes(activeCycle.plan_time)}</span>
+        </div>
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <span style="font-size:1.1rem; font-weight:bold; color:var(--color-accent-teal)">
+            達成率: ${progressPct}% ${deltaHtml}
+          </span>
+          <span style="font-size:0.8rem; color:var(--color-text-tertiary)">
+            学習時間: ${formatMinutes(thisWeekMinutes)}
+          </span>
+        </div>
+        <div class="progress-bar" style="margin-bottom:12px;">
+          <div class="progress-bar-fill" style="width:${Math.min(100, progressPct)}%;"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; font-size:0.8rem; color:var(--color-text-secondary);">
+          <span>To-Do進捗: ${todoProgressText}</span>
+          <span style="color:var(--color-accent-teal)">詳細を見る &rarr;</span>
+        </div>
+      </div>
+    `;
+  } else {
+    pdcaWidgetHtml = `
+      <div class="card animate-slide-up" style="margin-bottom:var(--space-md); border-left: 4px solid var(--color-accent-purple); cursor:pointer;" data-route="/pdca">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap: var(--space-md);">
+          <div>
+            <div style="font-weight:bold; font-size:0.95rem; margin-bottom:4px;">🎯 今週の学習PDCAサイクルを設定しましょう</div>
+            <div style="font-size:0.8rem; color:var(--color-text-secondary);">目標学習時間と重点科目の計画を立てて、学習の無駄をなくします。</div>
+          </div>
+          <button class="btn btn-primary btn-sm" style="flex-shrink:0;">計画を立てる</button>
+        </div>
+      </div>
+    `;
+  }
+
+
   
   const totalCBT = CBT_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
   const totalKoku = KOKUSHI_CHECKLIST.reduce((s,c)=>s+c.topics.length,0);
@@ -2164,9 +3600,8 @@ async function renderDashboard(){
   const compT=checks.filter(c=>c.completed).length;
   const overall=totalT>0?Math.round((compT/totalT)*100):0;
 
-  const logicalToday = getLogicalDate(new Date());
-  const todayStart = new Date(logicalToday); todayStart.setHours(5,0,0,0);
-  const todayEnd = new Date(logicalToday); todayEnd.setHours(28,59,59,999); // Until 5am tomorrow
+  const todayStart = new Date(logicalToday); todayStart.setHours(3,0,0,0);
+  const todayEnd = new Date(logicalToday); todayEnd.setHours(26,59,59,999); // Until 5am tomorrow
   
   const totalMinutes = logs.reduce((s,l)=>s+l.duration_minutes,0);
   
@@ -2340,8 +3775,8 @@ async function renderDashboard(){
          heatmapHTML += `<div style="width:14px;height:14px"></div>`;
          continue;
       }
-      const ds = new Date(d); ds.setHours(5,0,0,0);
-      const de = new Date(d); de.setHours(28,59,59,999);
+      const ds = new Date(d); ds.setHours(3,0,0,0);
+      const de = new Date(d); de.setHours(26,59,59,999);
       const dMin = logs.filter(l => {
         const t = new Date(l.started_at);
         return t >= ds && t <= de;
@@ -2370,10 +3805,10 @@ async function renderDashboard(){
     return IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>');
   }
   function getTODName(bucket) {
-    if(bucket === 'morning') return '朝 (5-11)';
+    if(bucket === 'morning') return '朝 (3-11)';
     if(bucket === 'lunch') return '昼 (11-17)';
     if(bucket === 'night') return '夜 (17-23)';
-    return '深夜 (23-5)';
+    return '深夜 (23-3)';
   }
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">ダッシュボード</h1><p class="page-subtitle">学習進捗の全体像を把握しよう</p></div>
 
@@ -2385,11 +3820,33 @@ async function renderDashboard(){
           : IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</span>
         <span class="sleep-toggle-label">${getSleepToggleState() === 'wake_up' ? '起床' : '就寝'}</span>
       </button>
+      ${(() => {
+        // 起床済みかつ就寝未記録の場合のみ「徹夜」ボタンを表示
+        const todayEntry = getSleepLogForDate(toLocalDateKey(logicalToday));
+        const showAllNighter = todayEntry && todayEntry.wake_up && !todayEntry.bedtime;
+        return showAllNighter
+          ? `<button class="sleep-toggle-btn" id="sleep-allnighter-btn" style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;font-size:0.8rem;padding:8px 14px;">
+              <span style="font-size:1.1rem;">🌙</span>
+              <span style="font-size:0.8rem;">徹夜</span>
+            </button>`
+          : '';
+      })()}
       <span class="sleep-toggle-info" id="sleep-info-container">
         ${(() => {
           const todayEntry = getSleepLogForDate(toLocalDateKey(logicalToday));
+          
+          const prevDate = new Date(logicalToday);
+          prevDate.setDate(prevDate.getDate() - 1);
+          const prevEntry = getSleepLogForDate(toLocalDateKey(prevDate));
+
+          if (todayEntry && isAllNighter(todayEntry)) {
+            return `${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 起床 ${todayEntry.wake_up || '--:--'} <span style="color:#a5b4fc;font-size:0.75rem;">（徹夜 0h）</span>`;
+          }
           if (todayEntry && todayEntry.wake_up) {
             return `起床 ${todayEntry.wake_up}${todayEntry.bedtime ? ' / 就寝 ' + todayEntry.bedtime : ''}`;
+          }
+          if (isAllNighter(prevEntry)) {
+            return `前日徹夜（${todayEntry && todayEntry.bedtime ? '就寝 ' + todayEntry.bedtime : '就寝待ち'}）`;
           }
           return '睡眠未記録';
         })()}
@@ -2422,6 +3879,9 @@ async function renderDashboard(){
         <button class="goal-adjuster-btn" id="goal-inc">＋</button>
       </div>
     </div>
+
+    <!-- PDCA Widget -->
+    ${pdcaWidgetHtml}
 
     <!-- Mini Stats -->
     <div class="mini-stats-row animate-slide-up" style="animation-delay:.1s">
@@ -2666,10 +4126,9 @@ async function renderDashboard(){
     } else { // monthly
       // Past 6 months
       for (let m = 5; m >= 0; m--) {
-        const mDate = new Date(logicalToday); mDate.setMonth(logicalToday.getMonth() - m);
-        const mStart = new Date(mDate.getFullYear(), mDate.getMonth(), 1);
+        const mStart = new Date(logicalToday.getFullYear(), logicalToday.getMonth() - m, 1);
         mStart.setHours(5, 0, 0, 0);
-        const lastDay = new Date(mDate.getFullYear(), mDate.getMonth() + 1, 0);
+        const lastDay = new Date(mStart.getFullYear(), mStart.getMonth() + 1, 0);
         const mEnd = new Date(lastDay); mEnd.setHours(28, 59, 59, 999);
         
         const mins = logs.filter(l => {
@@ -2835,14 +4294,22 @@ async function renderDashboard(){
     renderDashboard();
   });
 
-  document.getElementById('sleep-toggle-btn')?.addEventListener('click', () => {
+  document.getElementById('sleep-toggle-btn')?.addEventListener('click', async () => {
     const state = getSleepToggleState();
-    const time = recordSleepEvent(state);
+    const time = await recordSleepEvent(state);
     if (state === 'wake_up') {
       showToast(IC._s('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/>') + ` 起床を記録しました（${time}）`);
     } else {
       showToast(IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>') + ` 就寝を記録しました（${time}）`);
     }
+    renderDashboard();
+  });
+
+  document.getElementById('sleep-allnighter-btn')?.addEventListener('click', async () => {
+    const logicalDate = getLogicalDate(new Date());
+    const dateKey = toLocalDateKey(logicalDate);
+    await upsertSleepLog(dateKey, 'bedtime', 'ALLNIGHTER');
+    showToast('🌙 徹夜として記録しました（睡眠0時間）');
     renderDashboard();
   });
 
@@ -2883,10 +4350,15 @@ async function renderDashboard(){
               <input type="time" id="sleep-edit-bedtime" />
             </div>
           </div>
-          
-          <button class="btn btn-primary" id="btn-save-sleep-edit" style="width:100%; margin-bottom:16px;">
-            記録を保存する
-          </button>
+
+          <div style="display:flex; gap:8px; margin-bottom:16px;">
+            <button class="btn btn-primary" id="btn-save-sleep-edit" style="flex:1;">
+              記録を保存する
+            </button>
+            <button class="btn" id="btn-allnighter-sleep-edit" style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;padding:8px 16px;border-radius:8px;font-size:0.85rem;white-space:nowrap;">
+              🌙 徹夜
+            </button>
+          </div>
 
           <hr style="border:none; border-top:1px solid var(--color-border); margin:16px 0;" />
 
@@ -2909,7 +4381,15 @@ async function renderDashboard(){
       const selectedDate = dateInput.value;
       const entry = getSleepLogForDate(selectedDate);
       wakeupInput.value = entry && entry.wake_up ? entry.wake_up : '';
-      bedtimeInput.value = entry && entry.bedtime ? entry.bedtime : '';
+      // ALLNIGHTERの場合、就寝欄には表示しない
+      bedtimeInput.value = entry && entry.bedtime && entry.bedtime !== 'ALLNIGHTER' ? entry.bedtime : '';
+      // 徹夜ボタンのラベル変更
+      const allNighterBtn = modal.querySelector('#btn-allnighter-sleep-edit');
+      if (allNighterBtn) {
+        const isAN = isAllNighter(entry);
+        allNighterBtn.style.background = isAN ? 'rgba(99,102,241,0.4)' : 'rgba(99,102,241,0.15)';
+        allNighterBtn.textContent = isAN ? '🌙 徹夜記録済み' : '🌙 徹夜';
+      }
     };
 
     const renderSleepHistory = () => {
@@ -2925,7 +4405,10 @@ async function renderDashboard(){
           <div>
             <span class="sleep-history-date">${log.date}</span>
             <span class="sleep-history-times" style="margin-left:8px;">
-              起床: ${log.wake_up || '--:--'} / 就寝: ${log.bedtime || '--:--'}
+              ${isAllNighter(log)
+                ? `起床: ${log.wake_up || '--:--'} / <span style="color:#a5b4fc;">🌙 徹夜(0h)</span>`
+                : `起床: ${log.wake_up || '--:--'} / 就寝: ${log.bedtime || '--:--'}`
+              }
             </span>
           </div>
           <button class="sleep-history-delete" data-date="${log.date}">削除</button>
@@ -2933,12 +4416,10 @@ async function renderDashboard(){
       `).join('');
 
       historyContainer.querySelectorAll('.sleep-history-delete').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+        btn.addEventListener('click', async (e) => {
           const targetDate = e.target.dataset.date;
           if (confirm(`${targetDate} の睡眠記録を削除しますか？`)) {
-            const currentLogs = getSleepLogs();
-            const filtered = currentLogs.filter(l => l.date !== targetDate);
-            saveSleepLogs(filtered);
+            await deleteSleepLog(targetDate);
             renderSleepHistory();
             updateInputsForSelectedDate();
             showToast('睡眠記録を削除しました');
@@ -2949,7 +4430,8 @@ async function renderDashboard(){
 
     dateInput.addEventListener('change', updateInputsForSelectedDate);
 
-    modal.querySelector('#btn-save-sleep-edit').onclick = () => {
+
+    modal.querySelector('#btn-save-sleep-edit').onclick = async () => {
       const dateVal = dateInput.value;
       const wakeVal = wakeupInput.value;
       const bedVal = bedtimeInput.value;
@@ -2959,27 +4441,31 @@ async function renderDashboard(){
         return;
       }
 
-      const currentLogs = getSleepLogs();
-      let entry = currentLogs.find(l => l.date === dateVal);
-      if (!entry) {
-        entry = { date: dateVal };
-        currentLogs.push(entry);
+      if (wakeVal) await upsertSleepLog(dateVal, 'wake_up', wakeVal);
+      if (bedVal) await upsertSleepLog(dateVal, 'bedtime', bedVal);
+
+      // 両方空の場合は削除
+      if (!wakeVal && !bedVal) {
+        await deleteSleepLog(dateVal);
       }
 
-      if (wakeVal) entry.wake_up = wakeVal; else delete entry.wake_up;
-      if (bedVal) entry.bedtime = bedVal; else delete entry.bedtime;
-
-      // If both empty, clean up entry
-      if (!entry.wake_up && !entry.bedtime) {
-        const idx = currentLogs.indexOf(entry);
-        if (idx > -1) currentLogs.splice(idx, 1);
-      }
-
-      saveSleepLogs(currentLogs);
-      showToast('睡眠記録を保存しました');
+      showToast(IC.check + ' 睡眠記録を保存しました');
       modal.remove();
       renderDashboard();
     };
+
+    modal.querySelector('#btn-allnighter-sleep-edit').onclick = async () => {
+      const dateVal = dateInput.value;
+      if (!dateVal) { alert('日付を選択してください'); return; }
+      const wakeVal = wakeupInput.value;
+      // 起床時刻が入力されている場合は先に保存
+      if (wakeVal) await upsertSleepLog(dateVal, 'wake_up', wakeVal);
+      await upsertSleepLog(dateVal, 'bedtime', 'ALLNIGHTER');
+      showToast('🌙 ' + dateVal + ' を徹夜として記録しました');
+      modal.remove();
+      renderDashboard();
+    };
+
 
     // Initialize
     updateInputsForSelectedDate();
@@ -3020,7 +4506,7 @@ async function renderStudy(){
   for(let i=0;i<7;i++){
     const d=new Date(logicalToday); d.setDate(logicalToday.getDate()-i);
     const key=d.toLocaleDateString('ja-JP',{month:'short',day:'numeric',weekday:'short'});
-    const ds=new Date(d);ds.setHours(5,0,0,0);const de=new Date(d);de.setHours(28,59,59,999);
+    const ds=new Date(d);ds.setHours(3,0,0,0);const de=new Date(d);de.setHours(26,59,59,999);
     logsByDay[key]=logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;});}
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
@@ -3130,6 +4616,15 @@ async function renderStudy(){
                       <option value="custom" ${selectedSubjectId==='custom'?'selected':''}>自由入力</option>
                     </select>
                     <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${selectedSubjectCustom}" style="width:100%; margin-top:8px; display:${selectedSubjectId==='custom'?'block':'none'};" />
+                  </div>
+                </div>
+                <div class="field">
+                  <label>学習の目的</label>
+                  <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
+                    <button type="button" class="btn ${selectedPurpose==='cbt'?'btn-primary':'btn-secondary'} purpose-btn" data-val="cbt" style="flex:1; padding:6px 0; font-size:0.85rem;">CBT</button>
+                    <button type="button" class="btn ${selectedPurpose==='regular_exam'?'btn-primary':'btn-secondary'} purpose-btn" data-val="regular_exam" style="flex:1; padding:6px 0; font-size:0.85rem;">定期試験</button>
+                    <button type="button" class="btn ${selectedPurpose==='assignment'?'btn-primary':'btn-secondary'} purpose-btn" data-val="assignment" style="flex:1; padding:6px 0; font-size:0.85rem;">課題・実習</button>
+                    <button type="button" class="btn ${selectedPurpose==='other'?'btn-primary':'btn-secondary'} purpose-btn" data-val="other" style="flex:1; padding:6px 0; font-size:0.85rem;">その他</button>
                   </div>
                 </div>
                 <div class="field">
@@ -3366,9 +4861,12 @@ async function renderStudy(){
     isPomodoro = true;
     isSimulation = false;
     pomodoroPhase = 'study';
-    countdownSeconds = 25 * 60;
-    baseCountdown = 25 * 60;
-    initialCountdownSeconds = 25 * 60;
+    // pomodoroStudySec は既存設定を引き継ぐ（未設定なら25分）
+    if (pomodoroStudySec <= 0) pomodoroStudySec = 25 * 60;
+    if (pomodoroBreakSec <= 0) pomodoroBreakSec = 5 * 60;
+    countdownSeconds = pomodoroStudySec;
+    baseCountdown = pomodoroStudySec;
+    initialCountdownSeconds = pomodoroStudySec;
     renderStudy();
   });
   document.getElementById('mode-simulation')?.addEventListener('click', () => {
@@ -3394,6 +4892,11 @@ async function renderStudy(){
       countdownSeconds = parseInt(btn.dataset.min) * 60;
       initialCountdownSeconds = countdownSeconds;
       elapsedSeconds = 0;
+      // ポモドーロモードのとき、設定した時間を記憶する
+      if (isPomodoro && pomodoroPhase === 'study') {
+        pomodoroStudySec = countdownSeconds;
+        baseCountdown = countdownSeconds;
+      }
       renderStudy();
     });
   });
@@ -3423,6 +4926,11 @@ async function renderStudy(){
       countdownSeconds = min * 60;
       initialCountdownSeconds = countdownSeconds;
       elapsedSeconds = 0;
+      // ポモドーロモードのとき、設定した時間を記憶する
+      if (isPomodoro && pomodoroPhase === 'study') {
+        pomodoroStudySec = countdownSeconds;
+        baseCountdown = countdownSeconds;
+      }
       if(display) display.innerHTML = fmtSW(countdownSeconds);
     }
   });
@@ -3440,6 +4948,14 @@ async function renderStudy(){
   document.getElementById('confirm-subject-custom')?.addEventListener('input', (e) => {
     selectedSubjectCustom = e.target.value;
     saveTimerState();
+  });
+
+  document.querySelectorAll('.purpose-btn').forEach(b => {
+    b.addEventListener('click', (ev) => {
+      document.querySelectorAll('.purpose-btn').forEach(btn => btn.classList.replace('btn-primary', 'btn-secondary'));
+      ev.target.classList.replace('btn-secondary', 'btn-primary');
+      selectedPurpose = ev.target.dataset.val;
+    });
   });
 
   document.getElementById('btn-confirm-save')?.addEventListener('click', async (e) => {
@@ -3473,7 +4989,7 @@ async function renderStudy(){
 
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose);
       if (success) {
         resetSW();
         renderStudy();
@@ -4051,7 +5567,8 @@ const insightFilters = {
   location: '',
   timeSlot: '',
   focusLevel: '',
-  sessionLength: ''
+  sessionLength: '',
+  purpose: ''
 };
 
 function applyInsightFilters(logs) {
@@ -4059,28 +5576,28 @@ function applyInsightFilters(logs) {
   const logicalToday = getLogicalDate(new Date());
   // Preset period
   if (insightFilters.preset === 'today') {
-    const ds = new Date(logicalToday); ds.setHours(5,0,0,0);
-    const de = new Date(logicalToday); de.setHours(28,59,59,999);
+    const ds = new Date(logicalToday); ds.setHours(3,0,0,0);
+    const de = new Date(logicalToday); de.setHours(26,59,59,999);
     filtered = filtered.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
   } else if (insightFilters.preset === 'week') {
     const day = logicalToday.getDay();
     const diff = (day === 0 ? 6 : day - 1);
-    const mon = new Date(logicalToday); mon.setDate(logicalToday.getDate() - diff); mon.setHours(5,0,0,0);
+    const mon = new Date(logicalToday); mon.setDate(logicalToday.getDate() - diff); mon.setHours(3,0,0,0);
     filtered = filtered.filter(l => new Date(l.started_at) >= mon);
   } else if (insightFilters.preset === 'month') {
-    const ms = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 1); ms.setHours(5,0,0,0);
+    const ms = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 1); ms.setHours(3,0,0,0);
     filtered = filtered.filter(l => new Date(l.started_at) >= ms);
   } else if (insightFilters.preset === 'lastmonth') {
-    const ms = new Date(logicalToday.getFullYear(), logicalToday.getMonth()-1, 1); ms.setHours(5,0,0,0);
-    const me = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 0); me.setHours(28,59,59,999);
+    const ms = new Date(logicalToday.getFullYear(), logicalToday.getMonth()-1, 1); ms.setHours(3,0,0,0);
+    const me = new Date(logicalToday.getFullYear(), logicalToday.getMonth(), 0); me.setHours(26,59,59,999);
     filtered = filtered.filter(l => { const t = new Date(l.started_at); return t >= ms && t <= me; });
   } else if (insightFilters.preset === 'custom') {
     if (insightFilters.dateFrom) {
-      const df = new Date(insightFilters.dateFrom); df.setHours(5,0,0,0);
+      const df = new Date(insightFilters.dateFrom); df.setHours(3,0,0,0);
       filtered = filtered.filter(l => new Date(l.started_at) >= df);
     }
     if (insightFilters.dateTo) {
-      const dt = new Date(insightFilters.dateTo); dt.setHours(28,59,59,999);
+      const dt = new Date(insightFilters.dateTo); dt.setHours(26,59,59,999);
       filtered = filtered.filter(l => new Date(l.started_at) <= dt);
     }
   }
@@ -4109,6 +5626,9 @@ function applyInsightFilters(logs) {
     filtered = filtered.filter(l => l.focus_level && Number(l.focus_level) >= fl);
   }
   // Session length filter
+  if (insightFilters.purpose) {
+    filtered = filtered.filter(l => (l.study_purpose || 'other') === insightFilters.purpose);
+  }
   if (insightFilters.sessionLength) {
     filtered = filtered.filter(l => {
       if (insightFilters.sessionLength === 'short') return l.duration_minutes <= 30;
@@ -4129,6 +5649,7 @@ function resetInsightFilters() {
   insightFilters.timeSlot = '';
   insightFilters.focusLevel = '';
   insightFilters.sessionLength = '';
+  insightFilters.purpose = '';
 }
 
 // SVG icons for section headers (no emoji)
@@ -4273,12 +5794,18 @@ async function renderInsights(){
   }
 
   const trendLabels = [], trendData = [];
+  const trendDataCBT = [], trendDataExam = [], trendDataAssig = [], trendDataOther = [];
   for (let i = 0; i < diffDays; i++) {
     const d = new Date(loopStart); d.setDate(d.getDate() + i);
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
-    const mins = logs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s,l) => s + l.duration_minutes, 0);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
+    const dayLogs = logs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
+    const mins = dayLogs.reduce((s,l) => s + l.duration_minutes, 0);
     trendData.push(mins);
+    trendDataCBT.push(dayLogs.filter(l => l.study_purpose==='cbt').reduce((s,l)=>s+l.duration_minutes, 0));
+    trendDataExam.push(dayLogs.filter(l => l.study_purpose==='regular_exam').reduce((s,l)=>s+l.duration_minutes, 0));
+    trendDataAssig.push(dayLogs.filter(l => l.study_purpose==='assignment').reduce((s,l)=>s+l.duration_minutes, 0));
+    trendDataOther.push(dayLogs.filter(l => (l.study_purpose||'other')==='other').reduce((s,l)=>s+l.duration_minutes, 0));
     trendLabels.push(`${d.getMonth()+1}/${d.getDate()}`);
   }
 
@@ -4326,15 +5853,15 @@ async function renderInsights(){
   const lastWeekLogs = [];
   for (let i = 0; i < 7; i++) {
     const d = new Date(logicalToday); d.setDate(d.getDate() - i);
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     const dayLogs = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
     thisWeekLogs.push(...dayLogs);
   }
   for (let i = 7; i < 14; i++) {
     const d = new Date(logicalToday); d.setDate(d.getDate() - i);
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     const dayLogs = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
     lastWeekLogs.push(...dayLogs);
   }
@@ -4344,12 +5871,12 @@ async function renderInsights(){
     const startTimes = [];
     for (let i = 0; i < 7; i++) {
       const d = new Date(logicalToday); d.setDate(d.getDate() - startOffset - i);
-      const ds = new Date(d); ds.setHours(5,0,0,0);
-      const de = new Date(d); de.setHours(28,59,59,999);
+      const ds = new Date(d); ds.setHours(3,0,0,0);
+      const de = new Date(d); de.setHours(26,59,59,999);
       const dayL = weekLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
       if (dayL.length > 0) {
         const earliest = dayL.reduce((min, l) => { const t = new Date(l.started_at); return t < min ? t : min; }, new Date(dayL[0].started_at));
-        startTimes.push(getMinutesFromBase5AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0')));
+        startTimes.push(getMinutesFromBase3AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0')));
       }
     }
     if (startTimes.length === 0) return null;
@@ -4397,8 +5924,8 @@ async function renderInsights(){
   const last30Logs = [];
   for (let i = 0; i < 30; i++) {
     const d = new Date(logicalToday); d.setDate(d.getDate() - i);
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
     last30Logs.push(...dayL);
   }
@@ -4426,8 +5953,8 @@ async function renderInsights(){
   const dailyMinutes30 = [];
   for (let i = 0; i < 30; i++) {
     const d = new Date(logicalToday); d.setDate(d.getDate() - i);
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     const dayMin = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
     dailyMinutes30.push(dayMin);
   }
@@ -4437,19 +5964,21 @@ async function renderInsights(){
   const paceIconSvg = isConsistent ? IC._s('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>') : IC._s('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/>');
   const paceColor = isConsistent ? '#22c55e' : '#f59e0b';
 
-  // B-3: Best focus environment (location x timeSlot)
+  // B-3: Best focus environment (location x timeSlot x purpose)
   const envMap = {};
   last30Logs.forEach(l => {
     if (!l.focus_level) return;
     const loc = l.location || '未設定';
     const h = new Date(l.started_at).getHours();
     const slot = getTimeSlotLabel(getTimeSlotForHour(h));
-    const key = `${loc} × ${slot}`;
+    const purpose = l.study_purpose || 'other';
+    const purposeLabel = purpose === 'cbt' ? 'CBT' : purpose === 'regular_exam' ? '定期試験' : purpose === 'assignment' ? '課題' : 'その他';
+    const key = `${purposeLabel}の${loc} (${slot})`;
     if (!envMap[key]) envMap[key] = { sum: 0, count: 0 };
     envMap[key].sum += Number(l.focus_level);
     envMap[key].count++;
   });
-  const bestEnvs = Object.entries(envMap).filter(([, v]) => v.count >= 3).map(([k, v]) => ({ name: k, avg: (v.sum / v.count).toFixed(1), count: v.count })).sort((a, b) => b.avg - a.avg);
+  const bestEnvs = Object.entries(envMap).filter(([, v]) => v.count >= 2).map(([k, v]) => ({ name: k, avg: (v.sum / v.count).toFixed(1), count: v.count })).sort((a, b) => b.avg - a.avg);
   const bestEnv = bestEnvs.length > 0 ? bestEnvs[0] : null;
 
   // --- Section C: Sleep Correlation ---
@@ -4465,7 +5994,7 @@ async function renderInsights(){
   // C-1: Wake-up time stability
   let wakeStabilityStatus = null, wakeStabilitySD = null;
   if (recentSleep.length >= 3) {
-    const wakeMins = recentSleep.filter(s => s.wake_up).map(s => getMinutesFromBase5AM(s.wake_up));
+    const wakeMins = recentSleep.filter(s => s.wake_up).map(s => getMinutesFromBase3AM(s.wake_up));
     if (wakeMins.length >= 3) {
       const wMean = wakeMins.reduce((a, b) => a + b, 0) / wakeMins.length;
       const wVariance = wakeMins.reduce((a, v) => a + Math.pow(v - wMean, 2), 0) / wakeMins.length;
@@ -4484,13 +6013,13 @@ async function renderInsights(){
       const dk = toLocalDateKey(d);
       const sl = sleepLogs.find(s => s.date === dk);
       if (!sl || !sl.wake_up) continue;
-      const ds = new Date(d); ds.setHours(5,0,0,0);
-      const de = new Date(d); de.setHours(28,59,59,999);
+      const ds = new Date(d); ds.setHours(3,0,0,0);
+      const de = new Date(d); de.setHours(26,59,59,999);
       const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
       if (dayL.length === 0) continue;
       const earliest = dayL.reduce((min, l) => { const t = new Date(l.started_at); return t < min ? t : min; }, new Date(dayL[0].started_at));
-      const wakeMn = getMinutesFromBase5AM(sl.wake_up);
-      const studyMn = getMinutesFromBase5AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0'));
+      const wakeMn = getMinutesFromBase3AM(sl.wake_up);
+      const studyMn = getMinutesFromBase3AM(String(earliest.getHours()).padStart(2,'0') + ':' + String(earliest.getMinutes()).padStart(2,'0'));
       let lag = studyMn - wakeMn;
       if (lag < 0) lag += 1440;
       if (lag < 720) lags.push(lag);
@@ -4510,14 +6039,21 @@ async function renderInsights(){
     const prevDk = toLocalDateKey(prevD);
     const todaySl = sleepLogs.find(s => s.date === dk);
     const prevSl = sleepLogs.find(s => s.date === prevDk);
+    // 徹夜日（ALLNIGHTER）: 睡眠0時間として <6h 扱い
+    if (prevSl && isAllNighter(prevSl)) {
+      const ds2 = new Date(d); ds2.setHours(3,0,0,0);
+      const de2 = new Date(d); de2.setHours(26,59,59,999);
+      allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds2 && t <= de2 && l.focus_level; }).forEach(l => { sleepSlotFocus['<6h'].sum += Number(l.focus_level); sleepSlotFocus['<6h'].count++; });
+      continue;
+    }
     if (!todaySl || !todaySl.wake_up || !prevSl || !prevSl.bedtime) continue;
-    const wakeMin = getMinutesFromBase5AM(todaySl.wake_up);
-    const bedMin = getMinutesFromBase5AM(prevSl.bedtime);
+    const wakeMin = getMinutesFromBase3AM(todaySl.wake_up);
+    const bedMin = getMinutesFromBase3AM(prevSl.bedtime);
     let sleepMin = wakeMin - bedMin; if (sleepMin < 0) sleepMin += 1440;
     const sleepHours = sleepMin / 60;
     let slotKey; if (sleepHours < 6) slotKey = '<6h'; else if (sleepHours < 7) slotKey = '6-7h'; else if (sleepHours < 8) slotKey = '7-8h'; else slotKey = '8h+';
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de && l.focus_level; }).forEach(l => { sleepSlotFocus[slotKey].sum += Number(l.focus_level); sleepSlotFocus[slotKey].count++; });
   }
   const sleepSlotResults = Object.entries(sleepSlotFocus).filter(([, v]) => v.count >= 2).map(([k, v]) => ({ slot: k, avg: v.sum / v.count, count: v.count })).sort((a, b) => b.avg - a.avg);
@@ -4530,13 +6066,13 @@ async function renderInsights(){
     const dk = toLocalDateKey(d);
     const sl = sleepLogs.find(s => s.date === dk);
     if (!sl || !sl.bedtime) continue;
-    const ds = new Date(d); ds.setHours(5,0,0,0);
-    const de = new Date(d); de.setHours(28,59,59,999);
+    const ds = new Date(d); ds.setHours(3,0,0,0);
+    const de = new Date(d); de.setHours(26,59,59,999);
     const dayL = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; });
     if (dayL.length === 0) continue;
     const latest = dayL.reduce((max, l) => { const end = new Date(new Date(l.started_at).getTime() + l.duration_minutes * 60000); return end > max ? end : max; }, new Date(0));
-    const latestEndMin = getMinutesFromBase5AM(String(latest.getHours()).padStart(2,'0') + ':' + String(latest.getMinutes()).padStart(2,'0'));
-    const bedMn = getMinutesFromBase5AM(sl.bedtime);
+    const latestEndMin = getMinutesFromBase3AM(String(latest.getHours()).padStart(2,'0') + ':' + String(latest.getMinutes()).padStart(2,'0'));
+    const bedMn = getMinutesFromBase3AM(sl.bedtime);
     let gap = bedMn - latestEndMin; if (gap < 0) gap += 1440;
     if (gap < 30) shortCooldownDays++;
   }
@@ -4544,7 +6080,7 @@ async function renderInsights(){
 
   // C-5: Late night buffer exceeded
   let lateNightAlert = false;
-  const allBedMins = sleepLogs.filter(s => s.bedtime).map(s => getMinutesFromBase5AM(s.bedtime));
+  const allBedMins = sleepLogs.filter(s => s.bedtime).map(s => getMinutesFromBase3AM(s.bedtime));
   if (allBedMins.length >= 10) {
     const avgBedMin = Math.round(allBedMins.reduce((a, b) => a + b, 0) / allBedMins.length);
     let consecutive = 0;
@@ -4553,7 +6089,7 @@ async function renderInsights(){
       const dk = toLocalDateKey(d);
       const sl = sleepLogs.find(s => s.date === dk);
       if (sl && sl.bedtime) {
-        const bm = getMinutesFromBase5AM(sl.bedtime);
+        const bm = getMinutesFromBase3AM(sl.bedtime);
         let diff = bm - avgBedMin; if (diff < -720) diff += 1440;
         if (diff >= 90) consecutive++;
       }
@@ -4561,6 +6097,90 @@ async function renderInsights(){
     lateNightAlert = consecutive >= 3;
   }
   const hasSleepData = recentSleep.length >= 3;
+
+  // C-6: Sleep Statistics (data from 2026-06-03 onwards only)
+  const SLEEP_STATS_START = '2026-05-29';
+  const IDEAL_SLEEP_HOURS = 7;
+  const sleepDailyData = []; // {date, hours} for chart
+  const sleepHoursArr = []; // just hours for stats
+  let allNighterCount = 0;
+  
+  for (let i = 0; i < 30; i++) {
+    const d = new Date(logicalToday); d.setDate(d.getDate() - i);
+    const dk = toLocalDateKey(d);
+    if (dk < SLEEP_STATS_START) continue;
+    const prevD = new Date(d); prevD.setDate(prevD.getDate() - 1);
+    const prevDk = toLocalDateKey(prevD);
+    const todaySl = sleepLogs.find(s => s.date === dk);
+    const prevSl = sleepLogs.find(s => s.date === prevDk);
+    
+    if (prevSl && isAllNighter(prevSl)) {
+      sleepDailyData.push({ date: dk, hours: 0 });
+      sleepHoursArr.push(0);
+      allNighterCount++;
+      continue;
+    }
+    if (!todaySl || !todaySl.wake_up || !prevSl || !prevSl.bedtime) continue;
+    const wakeM = getMinutesFromBase3AM(todaySl.wake_up);
+    const bedM = getMinutesFromBase3AM(prevSl.bedtime);
+    let slM = wakeM - bedM; if (slM < 0) slM += 1440;
+    const h = slM / 60;
+    sleepDailyData.push({ date: dk, hours: Math.round(h * 10) / 10 });
+    sleepHoursArr.push(h);
+  }
+  
+  sleepDailyData.reverse(); // chronological order
+  
+  const hasSleepStats = sleepHoursArr.length >= 1;
+  const sleepAvgHours = hasSleepStats ? (sleepHoursArr.reduce((a, b) => a + b, 0) / sleepHoursArr.length) : 0;
+  const sleepMinHours = hasSleepStats ? Math.min(...sleepHoursArr) : 0;
+  const sleepMaxHours = hasSleepStats ? Math.max(...sleepHoursArr) : 0;
+  
+  // Sleep debt: (ideal - actual) summed over the period
+  const sleepDebtHours = hasSleepStats ? sleepHoursArr.reduce((debt, h) => debt + (IDEAL_SLEEP_HOURS - h), 0) : 0;
+  
+  // This week (last 7 days) vs last week avg sleep
+  const thisWeekSleepArr = sleepHoursArr.slice(0, Math.min(7, sleepHoursArr.length));
+  const lastWeekSleepArr = sleepHoursArr.slice(7, Math.min(14, sleepHoursArr.length));
+  const thisWeekSleepAvg = thisWeekSleepArr.length > 0 ? thisWeekSleepArr.reduce((a, b) => a + b, 0) / thisWeekSleepArr.length : null;
+  const lastWeekSleepAvg = lastWeekSleepArr.length > 0 ? lastWeekSleepArr.reduce((a, b) => a + b, 0) / lastWeekSleepArr.length : null;
+  
+  // Sleep slot focus comparison (for display)
+  const sleepSlotCompare = Object.entries(sleepSlotFocus)
+    .filter(([, v]) => v.count >= 1)
+    .map(([k, v]) => ({ slot: k, avg: v.count > 0 ? (v.sum / v.count).toFixed(1) : '-', count: v.count }));
+
+  // Phase 3: Performance & Balance (6/3以降のデータのみ)
+  const BALANCE_START = '2026-06-03';
+  const purposeStats = {};
+  logs.filter(l => l.started_at && l.started_at >= BALANCE_START).forEach(l => {
+    const p = l.study_purpose || 'other';
+    if (!purposeStats[p]) purposeStats[p] = { dur: 0, focSum: 0, count: 0 };
+    purposeStats[p].dur += l.duration_minutes;
+    purposeStats[p].focSum += Number(l.focus_level || 0);
+    purposeStats[p].count++;
+  });
+  const purposeLabels = { cbt: 'CBT', regular_exam: '定期試験', assignment: '課題', other: 'その他' };
+  
+  let balanceAlertHtml = '';
+  const totalBalanceDur = Object.values(purposeStats).reduce((s, v) => s + v.dur, 0);
+  if (totalBalanceDur > 0) {
+    const cbtDur = purposeStats['cbt'] ? purposeStats['cbt'].dur : 0;
+    const cbtRatio = cbtDur / totalBalanceDur;
+    if (cbtRatio < 0.1 && (insightFilters.preset === 'all' || insightFilters.preset === 'month')) {
+      balanceAlertHtml = `<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:#fcd34d; padding:12px; border-radius:8px; margin-top:12px; font-size:0.85rem; display:flex; align-items:center; gap:8px;">${IC.warn} CBTの学習比率が10%未満です。計画を見直してみましょう。</div>`;
+    }
+  }
+
+  const performanceHtml = Object.entries(purposeStats).map(([p, stat]) => {
+    if(stat.count === 0) return '';
+    const avgFoc = (stat.focSum / stat.count).toFixed(1);
+    const avgDur = Math.round(stat.dur / stat.count);
+    return `<div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:0.9rem;">
+      <span style="color:var(--color-text-secondary)">${purposeLabels[p] || p}</span>
+      <span>平均 ${avgDur}分 / ${avgFoc}★</span>
+    </div>`;
+  }).join('');
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -4588,6 +6208,14 @@ async function renderInsights(){
         <input type="date" class="filter-date-input" id="filter-date-to" value="${insightFilters.dateTo}">
       </div>
       <div class="filter-row">
+        <div class="filter-group">
+          <span class="filter-label">目的</span>
+          <div class="filter-chips" id="filter-purpose-chips">
+            ${[{v:'',l:'全て'},{v:'cbt',l:'CBT'},{v:'regular_exam',l:'定期試験'},{v:'assignment',l:'課題・実習'},{v:'other',l:'その他'}].map(p =>
+              `<button class="filter-chip ${insightFilters.purpose===p.v?'active':''}" data-purpose="${p.v}">${p.l}</button>`
+            ).join('')}
+          </div>
+        </div>
         <div class="filter-group">
           <span class="filter-label">場所</span>
           <select class="filter-select" id="filter-location">
@@ -4746,6 +6374,70 @@ async function renderInsights(){
       ` : '<div class="data-collecting-msg">ダッシュボードの起床/就寝ボタンでデータを蓄積しましょう（3日分以上必要）</div>'}
     </div>
 
+    <!-- Section C2: Sleep Statistics -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.17s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
+        <div><div class="section-title">睡眠統計</div><div class="section-subtitle">睡眠パターンと負債の分析</div></div>
+      </div>
+      ${hasSleepStats ? `
+      <div class="sleep-insight-grid">
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.clock} 平均睡眠時間</div>
+          <div class="sleep-insight-value" style="font-size:1.3rem;">${sleepAvgHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
+          ${thisWeekSleepAvg !== null && lastWeekSleepAvg !== null ? `<div class="sleep-insight-note"><span class="${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? 'change-positive' : 'change-negative'}">${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? '+' : ''}${(thisWeekSleepAvg - lastWeekSleepAvg).toFixed(1)}h vs 先週</span></div>` : `<div class="sleep-insight-note">${sleepHoursArr.length}日分のデータ</div>`}
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.target} 睡眠負債</div>
+          <div class="sleep-insight-value" style="font-size:1.3rem;color:${sleepDebtHours > 7 ? '#ef4444' : sleepDebtHours > 3 ? '#f59e0b' : '#4ade80'}">${sleepDebtHours > 0 ? '+' : ''}${sleepDebtHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
+          <div class="sleep-insight-note">${sleepDebtHours > 7 ? '⚠ 深刻な睡眠不足です' : sleepDebtHours > 3 ? '注意：睡眠が不足気味です' : sleepDebtHours > 0 ? 'ほぼ良好です' : '十分に眠れています'}（基準: ${IDEAL_SLEEP_HOURS}h/日）</div>
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">${IC.star} 最長 / 最短</div>
+          <div class="sleep-insight-value" style="font-size:1.1rem;">${sleepMaxHours.toFixed(1)}h <span style="font-size:0.7rem;color:var(--color-text-tertiary)">/</span> ${sleepMinHours.toFixed(1)}h</div>
+          <div class="sleep-insight-note">振れ幅 ${(sleepMaxHours - sleepMinHours).toFixed(1)}h</div>
+        </div>
+        <div class="sleep-insight-item">
+          <div class="sleep-insight-label">🌙 徹夜</div>
+          <div class="sleep-insight-value" style="font-size:1.3rem;color:${allNighterCount > 0 ? '#f59e0b' : '#4ade80'}">${allNighterCount}<span style="font-size:0.7rem;color:var(--color-text-secondary)">回</span></div>
+          <div class="sleep-insight-note">${allNighterCount > 2 ? '⚠ 徹夜は集中度を大幅に低下させます' : allNighterCount > 0 ? '控えめに' : '良い睡眠習慣です'}</div>
+        </div>
+      </div>
+
+      <!-- Sleep Duration Chart -->
+      <div style="margin-top:20px;">
+        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間の推移</div>
+        <div class="chart-container" style="height:200px;"><canvas id="insightSleepChart"></canvas></div>
+      </div>
+
+      <!-- Sleep-Focus Correlation -->
+      ${sleepSlotCompare.length > 0 ? `
+      <div style="margin-top:20px;">
+        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間別の平均集中度</div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          ${sleepSlotCompare.map(s => `
+            <div style="flex:1;min-width:70px;background:var(--color-bg-elevated);border-radius:8px;padding:10px;text-align:center;">
+              <div style="font-size:0.75rem;color:var(--color-text-tertiary);margin-bottom:4px;">${s.slot}</div>
+              <div style="font-size:1.1rem;font-weight:700;color:${s.slot === '<6h' ? '#ef4444' : s.slot === '8h+' ? '#4ade80' : 'var(--color-text-primary)'}">${s.avg}★</div>
+              <div style="font-size:0.65rem;color:var(--color-text-tertiary)">${s.count}件</div>
+            </div>
+          `).join('')}
+        </div>
+        ${(() => {
+          const best = sleepSlotCompare.sort((a, b) => parseFloat(b.avg) - parseFloat(a.avg))[0];
+          const worst = sleepSlotCompare.sort((a, b) => parseFloat(a.avg) - parseFloat(b.avg))[0];
+          if (best && worst && best.slot !== worst.slot && parseFloat(best.avg) - parseFloat(worst.avg) >= 0.3) {
+            return `<div style="background:rgba(78,205,196,0.1);border:1px solid rgba(78,205,196,0.3);color:var(--color-accent-teal);padding:10px;border-radius:8px;margin-top:10px;font-size:0.8rem;">
+              💡 ${best.slot}の睡眠時は平均★${best.avg}、${worst.slot}では★${worst.avg}。差は${(parseFloat(best.avg) - parseFloat(worst.avg)).toFixed(1)}ポイントです。
+            </div>`;
+          }
+          return '';
+        })()}
+      </div>
+      ` : ''}
+      ` : '<div class="data-collecting-msg">睡眠データが蓄積されると統計が表示されます</div>'}
+    </div>
+
     <!-- Trend Chart + Subject Donut -->
     <div class="insights-grid animate-slide-up" style="animation-delay:.15s">
       <div class="card" style="overflow:hidden">
@@ -4833,6 +6525,19 @@ async function renderInsights(){
           `).join('')}
         </div>
       </div>
+      <div class="card">
+        <div class="section-header">
+          <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.chart}</div>
+          <div><div class="section-title">学習バランスとパフォーマンス</div><div class="section-subtitle">目的別の内訳</div></div>
+        </div>
+        <div style="margin-top:16px;">
+          ${performanceHtml || '<div style="color:var(--color-text-tertiary); font-size:0.9rem;">データがありません</div>'}
+          ${balanceAlertHtml}
+        </div>
+        <div style="margin-top:24px; position:relative; height:200px;">
+          <canvas id="insightBalanceChart"></canvas>
+        </div>
+      </div>
       <div class="card" style="overflow:hidden">
         <div class="section-header">
           <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${insightIcons.list}</div>
@@ -4867,6 +6572,35 @@ async function renderInsights(){
       destroyChart('insightTrendChart');
       const ctx = document.getElementById('insightTrendChart');
       if (ctx) {
+        destroyChart('insightBalanceChart');
+        const balCtx = document.getElementById('insightBalanceChart');
+        if (balCtx) {
+          chartInstances['insightBalanceChart'] = new Chart(balCtx, {
+            type: 'bar',
+            data: { 
+              labels: trendLabels, 
+              datasets: [
+                { label: 'CBT', data: trendDataCBT, backgroundColor: '#4ECDC4' },
+                { label: '定期試験', data: trendDataExam, backgroundColor: '#F1948A' },
+                { label: '課題', data: trendDataAssig, backgroundColor: '#45B7D1' },
+                { label: 'その他', data: trendDataOther, backgroundColor: '#94a3b8' }
+              ]
+            },
+            options: {
+              responsive: true, maintainAspectRatio: false,
+              scales: {
+                x: { stacked: true, grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+                y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' }, ticks: { font: { size: 9 } } }
+              },
+              plugins: { 
+                legend: { display: true, labels: { color: '#94a3b8', font: { size: 10 } } }, 
+                tooltip: { backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8' } 
+              },
+              animation: { duration: 800, easing: 'easeOutQuart' }
+            }
+          });
+        }
+
         chartInstances['insightTrendChart'] = new Chart(ctx, {
           type: 'bar',
           data: { labels: trendLabels, datasets: [{
@@ -4893,6 +6627,68 @@ async function renderInsights(){
       }
     }
   }, 200);
+
+  // Sleep chart
+  setTimeout(() => {
+    if (typeof Chart !== 'undefined' && hasSleepStats && sleepDailyData.length > 0) {
+      destroyChart('insightSleepChart');
+      const sleepCanvas = document.getElementById('insightSleepChart');
+      if (sleepCanvas) {
+        chartInstances['insightSleepChart'] = new Chart(sleepCanvas, {
+          type: 'bar',
+          data: {
+            labels: sleepDailyData.map(d => d.date.slice(5)), // MM-DD
+            datasets: [{
+              label: '睡眠時間(h)',
+              data: sleepDailyData.map(d => d.hours),
+              backgroundColor: (context) => {
+                const v = context.raw;
+                if (v === 0) return 'rgba(239,68,68,0.7)'; // 徹夜: red
+                if (v < 6) return 'rgba(245,158,11,0.7)';   // <6h: amber
+                if (v >= 7) return 'rgba(74,222,128,0.7)';   // 7h+: green
+                return 'rgba(99,102,241,0.6)';               // 6-7h: indigo
+              },
+              borderRadius: 4,
+              borderSkipped: false,
+              maxBarThickness: 24
+            }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            scales: {
+              x: { grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+              y: {
+                beginAtZero: true,
+                max: Math.max(10, sleepMaxHours + 1),
+                grid: { color: 'rgba(148,163,184,0.06)' },
+                ticks: { font: { size: 9 }, callback: v => v + 'h' }
+              }
+            },
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8',
+                borderColor: 'rgba(99,102,241,0.3)', borderWidth: 1, cornerRadius: 8,
+                callbacks: {
+                  label: (ctx) => ctx.raw === 0 ? '徹夜' : ctx.raw + '時間'
+                }
+              },
+              annotation: {
+                annotations: {
+                  idealLine: {
+                    type: 'line', yMin: IDEAL_SLEEP_HOURS, yMax: IDEAL_SLEEP_HOURS,
+                    borderColor: 'rgba(74,222,128,0.5)', borderWidth: 2, borderDash: [5, 5],
+                    label: { display: true, content: '理想 ' + IDEAL_SLEEP_HOURS + 'h', position: 'end', backgroundColor: 'rgba(74,222,128,0.15)', color: '#4ade80', font: { size: 9 } }
+                  }
+                }
+              }
+            },
+            animation: { duration: 800, easing: 'easeOutQuart' }
+          }
+        });
+      }
+    }
+  }, 250);
 
   // --- Event: Filter preset chips ---
   document.getElementById('filter-preset-chips')?.addEventListener('click', e => {
@@ -4929,6 +6725,13 @@ async function renderInsights(){
     const chip = e.target.closest('.filter-chip');
     if (!chip) return;
     insightFilters.focusLevel = chip.dataset.focus;
+    renderInsights();
+  });
+  // --- Event: Purpose chips ---
+  document.getElementById('filter-purpose-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    insightFilters.purpose = chip.dataset.purpose;
     renderInsights();
   });
   // --- Event: Session length chips ---
@@ -5413,12 +7216,14 @@ function ensureAppLayout() {
 
 registerRoute('/',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderDashboard();});
 registerRoute('/study',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderStudy();});
+registerRoute('/pdca',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderPDCA();});
 registerRoute('/insights',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderInsights();});
 registerRoute('/qb',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderQBProgress();});
 registerRoute('/community',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCommunity();});
 registerRoute('/countdown',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCountdown();});
 registerRoute('/ranking',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderRanking();});
 registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
+
 
 async function initApp(){
   console.log('DEBUG: initApp started');
