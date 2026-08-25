@@ -1883,15 +1883,7 @@ const navItems = [
   }
 ];
 
-let sidebarAccordionState = {
-  study: true,
-  community: false,
-  others: false
-};
-try {
-  const saved = localStorage.getItem('medfocus_sidebar_groups');
-  if (saved) sidebarAccordionState = JSON.parse(saved);
-} catch (e) {}
+
 
 function renderSidebar(){
   const sb=document.getElementById('sidebar');const path=currentRoute;
@@ -1908,25 +1900,17 @@ function renderSidebar(){
     if (i.route) {
       return `<div class="nav-item ${path===i.route?'active':''}" data-route="${i.route}"><div class="nav-item-icon">${i.icon}</div><span>${i.label}</span></div>`;
     } else if (i.group) {
-      const isExpanded = sidebarAccordionState[i.group] || i.items.some(child => path === child.route);
-      if (i.items.some(child => path === child.route)) {
-        sidebarAccordionState[i.group] = true;
-      }
       const childItemsHtml = i.items.map(child => {
         return `<div class="nav-item ${path===child.route?'active':''}" data-route="${child.route}"><div class="nav-item-icon">${child.icon}</div><span>${child.label}</span></div>`;
       }).join('');
       
-      const chevronIcon = `<svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>`;
-
       return `<div class="nav-group">
-        <div class="nav-group-header ${isExpanded?'expanded':''} ${i.items.some(child => path === child.route)?'active-parent':''}" data-group-toggle="${i.group}">
+        <div class="nav-group-header">
           <div class="nav-group-header-left">
-            <div class="nav-item-icon">${i.icon}</div>
             <span>${i.label}</span>
           </div>
-          ${chevronIcon}
         </div>
-        <div class="nav-group-items ${isExpanded?'':'collapsed'}" id="group-items-${i.group}">
+        <div class="nav-group-items">
           ${childItemsHtml}
         </div>
       </div>`;
@@ -1948,25 +1932,6 @@ function renderSidebar(){
 
   document.getElementById('theme-btn').addEventListener('click', toggleTheme);
   document.getElementById('logout-btn').addEventListener('click', () => { if(confirm('ログアウトしますか？')) handleLogout(); });
-
-  document.querySelectorAll('[data-group-toggle]').forEach(el => {
-    el.addEventListener('click', (e) => {
-      const group = el.dataset.groupToggle;
-      const itemsContainer = document.getElementById(`group-items-${group}`);
-      const isCollapsed = itemsContainer.classList.contains('collapsed');
-      
-      if (isCollapsed) {
-        itemsContainer.classList.remove('collapsed');
-        el.classList.add('expanded');
-        sidebarAccordionState[group] = true;
-      } else {
-        itemsContainer.classList.add('collapsed');
-        el.classList.remove('expanded');
-        sidebarAccordionState[group] = false;
-      }
-      localStorage.setItem('medfocus_sidebar_groups', JSON.stringify(sidebarAccordionState));
-    });
-  });
 }
 
 // ==================== ROUTER ====================
@@ -1979,24 +1944,6 @@ function renderRoute(p){
   if(h)h();
   
   document.querySelectorAll('.nav-item').forEach(i=>i.classList.toggle('active',i.dataset.route===p));
-  
-  navItems.forEach(group => {
-    if (group.items) {
-      const hasActiveChild = group.items.some(child => child.route === p);
-      const header = document.querySelector(`[data-group-toggle="${group.group}"]`);
-      const itemsContainer = document.getElementById(`group-items-${group.group}`);
-      
-      if (header) {
-        header.classList.toggle('active-parent', hasActiveChild);
-        if (hasActiveChild && itemsContainer && itemsContainer.classList.contains('collapsed')) {
-          itemsContainer.classList.remove('collapsed');
-          header.classList.add('expanded');
-          sidebarAccordionState[group.group] = true;
-          localStorage.setItem('medfocus_sidebar_groups', JSON.stringify(sidebarAccordionState));
-        }
-      }
-    }
-  });
 }
 function initRouter(){
   window.addEventListener('popstate',()=>renderRoute(window.location.pathname));
@@ -3623,6 +3570,149 @@ async function renderStudy(){
 }
 
 
+
+// ==================== COUNTDOWN ====================
+async function renderCountdown() {
+  const ct = document.getElementById('page-container');
+  await fetchCountdowns();
+
+  function buildCountdownList() {
+    return examCountdowns.length === 0
+      ? '<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">登録されているカウントダウンはありません。下から追加しましょう！</div>'
+      : examCountdowns.map(e => {
+          const d = daysUntil(e.exam_date);
+          const dt = new Date(e.exam_date).toLocaleDateString('ja-JP', {year:'numeric',month:'long',day:'numeric'});
+          const isPast = d === 0 && new Date(e.exam_date) < new Date();
+          return `<div class="countdown-card animate-slide-up" style="position:relative">
+            <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${isPast ? 'var(--color-text-tertiary)' : (e.color||'#4ECDC4')}"></div>
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+              <div>
+                <div class="countdown-name">${e.name}</div>
+                <div class="countdown-date">${dt}</div>
+              </div>
+              <button class="btn-log-action delete btn-delete-cd" data-id="${e.id}" title="削除">✕</button>
+            </div>
+            <div class="countdown-days">
+              <span class="countdown-number" style="color:${isPast ? 'var(--color-text-tertiary)' : (e.color||'#4ECDC4')}">${isPast ? '終了' : d}</span>
+              ${isPast ? '' : '<span class="countdown-label">日</span>'}
+            </div>
+          </div>`;
+        }).join('');
+  }
+
+  ct.innerHTML = `<div class="page-header"><h1 class="page-title">${IC.calendar}試験カウントダウン</h1><p class="page-subtitle">目標の試験日までの残り日数を管理しよう</p></div>
+    <div id="cd-list-container" style="display:flex;flex-direction:column;gap:var(--space-md);margin-bottom:var(--space-xl)">
+      ${buildCountdownList()}
+    </div>
+    <div class="card" style="padding:var(--space-lg)">
+      <div style="font-size:1rem;font-weight:600;margin-bottom:var(--space-md);color:var(--color-accent-teal)">＋ 新しいカウントダウンを追加</div>
+      <div style="display:flex;flex-direction:column;gap:var(--space-sm)">
+        <input type="text" id="cd-title-input" placeholder="イベント名（例: 国家試験、CBT）" style="width:100%" />
+        <input type="date" id="cd-date-input" style="width:100%;font-family:inherit" />
+        <button class="btn btn-primary" id="btn-submit-cd" style="width:100%;justify-content:center">追加する</button>
+      </div>
+    </div>
+  `;
+
+  // Add handler
+  document.getElementById('btn-submit-cd')?.addEventListener('click', async function() {
+    const btn = this;
+    const nameInput = document.getElementById('cd-title-input');
+    const dateInput = document.getElementById('cd-date-input');
+    const name = nameInput?.value.trim();
+    const dateStr = dateInput?.value;
+    if (!name) { showToast(IC.warn+' イベント名を入力してください'); return; }
+    if (!dateStr) { showToast(IC.warn+' 日付を選択してください'); return; }
+
+    btn.textContent = '保存中...'; btn.disabled = true;
+    try {
+      if (supabase) {
+        const payload = { name, exam_date: dateStr };
+        if (session?.user) payload.user_id = session.user.id;
+        const { error } = await supabase.from('exam_countdowns').insert([payload]);
+        if (error) throw error;
+        showToast(IC.check+' カウントダウンを追加しました！');
+        invalidateCache('countdowns');
+        await fetchCountdowns();
+        const listContainer = document.getElementById('cd-list-container');
+        if (listContainer) listContainer.innerHTML = buildCountdownList();
+        if (nameInput) nameInput.value = '';
+        if (dateInput) dateInput.value = '';
+        attachDeleteHandlers();
+      }
+    } catch (err) {
+      showToast(IC.x+' 追加失敗: ' + (err.message || 'Error'));
+      console.error('Countdown add error:', err);
+    } finally {
+      btn.textContent = '追加する'; btn.disabled = false;
+    }
+  });
+
+  function attachDeleteHandlers() {
+    document.querySelectorAll('.btn-delete-cd').forEach(btn => {
+      btn.addEventListener('click', async function() {
+        const id = this.dataset.id;
+        if (!confirm('このカウントダウンを削除しますか？')) return;
+        try {
+          if (supabase) {
+            const { error } = await supabase.from('exam_countdowns').delete().eq('id', id);
+            if (error) throw error;
+            showToast(IC.check+' 削除しました');
+            invalidateCache('countdowns');
+            await fetchCountdowns();
+            const listContainer = document.getElementById('cd-list-container');
+            if (listContainer) listContainer.innerHTML = buildCountdownList();
+            attachDeleteHandlers();
+          }
+        } catch (err) {
+          showToast(IC.x+' 削除失敗: ' + (err.message || 'Error'));
+        }
+      });
+    });
+  }
+  attachDeleteHandlers();
+}
+
+// ==================== QB PROGRESS HELPER FUNCTIONS ====================
+let qbProgressLoaded=false;
+function getQBProgress(){try{return JSON.parse(localStorage.getItem('medfocus_qb_progress')||'{}');}catch(e){return {};}}
+async function loadQBFromSupabase(){
+  if(!supabase||!session||qbProgressLoaded)return;
+  try{
+    const{data,error}=await supabase.from('profiles').select('qb_progress').eq('id',session.user.id).single();
+    if(error){
+      console.warn('qb load error:',error.message);
+    } else if(data?.qb_progress){
+      const remote=typeof data.qb_progress==='string'?JSON.parse(data.qb_progress):data.qb_progress;
+      const local=getQBProgress();
+      const merged={...remote};
+      Object.entries(local).forEach(([sub,rounds])=>{
+        if(!merged[sub])merged[sub]=rounds;
+        else Object.entries(rounds).forEach(([rk,r])=>{
+          if(!merged[sub][rk]||(r.done||0)>(merged[sub][rk].done||0))merged[sub][rk]=r;
+        });
+      });
+      localStorage.setItem('medfocus_qb_progress',JSON.stringify(merged));
+    } else {
+      const local=getQBProgress();
+      if(Object.keys(local).length>0){
+        await supabase.from('profiles').update({qb_progress:JSON.stringify(local)}).eq('id',session.user.id);
+      }
+    }
+    qbProgressLoaded=true;
+  }catch(e){console.warn('qb load error:',e);}
+}
+function saveQBProgress(data){
+  localStorage.setItem('medfocus_qb_progress',JSON.stringify(data));
+  if(supabase&&session){
+    supabase.from('profiles').update({qb_progress:JSON.stringify(data)}).eq('id',session.user.id)
+      .then(({error})=>{
+        if(error){
+          console.warn('qb sync error:',error.message);
+        }
+      });
+  }
+}
 
 async function renderQBProgress(){
   await loadQBFromSupabase();
