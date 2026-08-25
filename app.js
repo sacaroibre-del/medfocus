@@ -3955,6 +3955,21 @@ async function renderInsights(){
   const avgFocus = focusLogs.length > 0 ? (focusLogs.reduce((s,l) => s + Number(l.focus_level), 0) / focusLogs.length).toFixed(1) : '-';
   const avgSessionMin = sessionCount > 0 ? Math.round(totalMin / sessionCount) : 0;
 
+  // --- Study streak (from allLogs, filter-independent) ---
+  const allStudyDateSet = new Set(allLogs.map(l => toLocalDateKey(getLogicalDate(new Date(l.started_at)))));
+  let studyStreak = 0;
+  {
+    const todayKey = toLocalDateKey(logicalToday);
+    const yesterdayKey = toLocalDateKey(new Date(logicalToday.getTime() - 86400000));
+    let checkDate = allStudyDateSet.has(todayKey) ? new Date(logicalToday) :
+                    allStudyDateSet.has(yesterdayKey) ? new Date(logicalToday.getTime() - 86400000) : null;
+    while (checkDate && allStudyDateSet.has(toLocalDateKey(checkDate))) {
+      studyStreak++;
+      checkDate.setDate(checkDate.getDate() - 1);
+    }
+  }
+  const streakActive = allStudyDateSet.has(toLocalDateKey(logicalToday));
+
   // --- Subject distribution ---
   const subjectTimeMap = {};
   logs.forEach(l => {
@@ -3962,6 +3977,20 @@ async function renderInsights(){
     subjectTimeMap[k] = (subjectTimeMap[k] || 0) + l.duration_minutes;
   });
   const sortedSubjects = Object.entries(subjectTimeMap).sort((a,b) => b[1] - a[1]);
+
+  // --- Subject focus map ---
+  const subjectFocusMap = {};
+  logs.forEach(l => {
+    if (!l.focus_level) return;
+    const k = normalizeSubjectName(l.subject_name);
+    if (!subjectFocusMap[k]) subjectFocusMap[k] = { sum: 0, count: 0 };
+    subjectFocusMap[k].sum += Number(l.focus_level);
+    subjectFocusMap[k].count++;
+  });
+  const sortedSubjectFocus = Object.entries(subjectFocusMap)
+    .map(([name, v]) => [name, v.sum / v.count, v.count])
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8);
 
   // --- DOW (day of week) stats ---
   const dowNames = ['日','月','火','水','木','金','土'];
@@ -4547,6 +4576,11 @@ async function renderInsights(){
         <div class="insight-summary-label">平均セッション</div>
         <div class="insight-summary-sub">${sortedSubjects.length}科目</div>
       </div>
+      <div class="insight-summary-card">
+        <div class="insight-summary-value" style="color:${streakActive ? '#f97316' : 'var(--color-text-secondary)'}">${studyStreak}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
+        <div class="insight-summary-label">連続学習</div>
+        <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
+      </div>
     </div>
     <!-- Section A: Recent Rhythm & Trends -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
@@ -4776,6 +4810,36 @@ async function renderInsights(){
           </div>`;
         }).join('') : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">データなし</p>'}
       </div>
+    </div>
+
+    <!-- Subject Focus Chart -->
+    <div class="card animate-slide-up" style="animation-delay:.22s; overflow:hidden">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
+        <div><div class="section-title">科目別 平均集中度</div><div class="section-subtitle">集中しやすい科目・難しい科目を把握しよう</div></div>
+      </div>
+      ${sortedSubjectFocus.length > 0 ? `
+        <div style="display:flex;flex-direction:column;gap:10px;margin-top:var(--space-sm)">
+          ${sortedSubjectFocus.map(([name, avg, cnt]) => {
+            const pct = Math.round(avg / 5 * 100);
+            const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#f7dc6f' : '#ff6b6b';
+            return `<div style="display:flex;align-items:center;gap:10px">
+              <div style="width:110px;font-size:0.75rem;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${name}</div>
+              <div style="flex:1;background:var(--color-bg-elevated);border-radius:4px;height:10px;overflow:hidden">
+                <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width 0.6s ease"></div>
+              </div>
+              <div style="width:40px;text-align:right;font-size:0.78rem;font-weight:700;color:${color};flex-shrink:0">★${avg.toFixed(1)}</div>
+              <div style="width:28px;text-align:right;font-size:0.68rem;color:var(--color-text-tertiary);flex-shrink:0">${cnt}件</div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div style="display:flex;gap:16px;margin-top:var(--space-md);font-size:0.72rem;color:var(--color-text-tertiary)">
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#4ecdc4;display:inline-block"></span>★4.5+</span>
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#45b7d1;display:inline-block"></span>★3.5+</span>
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#f7dc6f;display:inline-block"></span>★2.5+</span>
+          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#ff6b6b;display:inline-block"></span>★2.5未満</span>
+        </div>
+      ` : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">集中度データなし（セッション記録時に★を評価してください）</p>'}
     </div>
 
     <!-- DOW Chart + Session List -->

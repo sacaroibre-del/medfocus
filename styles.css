@@ -587,6 +587,16 @@ svg { width: 24px; height: 24px; flex-shrink: 0; }
   .podium-item .podium-bar { width: 100%; height: 32px !important; margin-top: 8px; border-radius: var(--radius-md); }
   .podium-item:nth-child(2) { order: -1; }
   .auth-card { padding: var(--space-xl) var(--space-lg); }
+
+  /* ---- モバイル底部ナビ: グループを横並びに平坦化 ---- */
+  .nav-group { display: flex; flex-direction: row; margin-bottom: 0; }
+  .nav-group-header { display: none; }
+  .nav-group-items { display: flex; flex-direction: row; gap: 0; }
+
+  /* ---- タイマーモードタブ: 折り返し防止 ---- */
+  .stopwatch-card { padding-left: var(--space-sm) !important; padding-right: var(--space-sm) !important; }
+  .mode-tab { font-size: 0.58rem; padding: 5px 2px; white-space: nowrap; }
+  .timer-mode-switcher { flex-wrap: nowrap; }
 }
 
 /* Zen Mode (Focus Mode) */
@@ -899,7 +909,7 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 /* Insight Summary Grid */
 .insight-summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: var(--space-md);
   margin-bottom: var(--space-xl);
 }
@@ -1095,7 +1105,7 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 /* Responsive Insights */
 @media (max-width: 1200px) {
   .insights-grid { grid-template-columns: 1fr; }
-  .insight-summary-grid { grid-template-columns: repeat(2, 1fr); }
+  .insight-summary-grid { grid-template-columns: repeat(3, 1fr); }
 }
 @media (max-width: 768px) {
   .insight-summary-grid { grid-template-columns: 1fr 1fr; gap: var(--space-sm); }
@@ -1462,6 +1472,13 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* モバイル: nav-group を横並びに平坦化（元定義の後で上書き） */
+@media (max-width: 768px) {
+  .nav-group { display: flex; flex-direction: row; margin-bottom: 0; }
+  .nav-group-header { display: none !important; }
+  .nav-group-items { flex-direction: row; gap: 0; }
 }
 
 /* ===== PDCA CYCLE STYLES ===== */
