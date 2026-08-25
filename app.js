@@ -655,7 +655,19 @@ async function toggleChecklistItem(category, topic, checked) {
   }, { onConflict: 'user_id, category, topic' });
 }
 
-
+async function uploadImage(file, bucket = 'avatars') {
+  if (!supabase || !session) return null;
+  const ext = file.name.split('.').pop();
+  const filePath = `${session.user.id}/${Date.now()}.${ext}`;
+  const { error } = await supabase.storage.from(bucket).upload(filePath, file);
+  if (error) {
+    console.error('Upload error:', error);
+    showToast(IC.x+' アップロードに失敗しました: ' + error.message);
+    return null;
+  }
+  const { data: { publicUrl } } = supabase.storage.from(bucket).getPublicUrl(filePath);
+  return publicUrl;
+}
 
 // ==================== SUPABASE DATA HELPERS ====================
 // Data cache with TTL to avoid redundant network requests on navigation
