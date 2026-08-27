@@ -6,6 +6,28 @@ console.log('DEBUG: app.js loaded');
 let supabase = null;
 let SUPABASE_URL = '', SUPABASE_KEY = '';
 
+// デモモードは実在しないユーザー(user-001)で動くため、Supabase へは一切書き込まない。
+// これが無いと、実 Supabase を設定した状態でデモログインしたときに
+// user_id が UUID でないまま INSERT され、毎回エラーになる。
+let isDemoMode = false;
+// Supabase の読み書きをして良いかの唯一の判定。以降 supabase && session の直接判定は使わない。
+function hasDB() { return !!(supabase && session && !isDemoMode); }
+
+// IDログインは <ログインID>@medfocus.app という合成アドレスで認証する。
+// 実メールアドレスで登録されたアカウントはこの形式ではないため、
+// login_id を持っていてもIDログインでは絶対に認証が通らない。
+// （@medfocus.local は以前の世代の合成ドメイン）
+const SYNTHETIC_EMAIL_DOMAINS = ['@medfocus.app', '@medfocus.local'];
+function isSyntheticEmail(email) {
+  if (!email) return false;
+  const e = String(email).toLowerCase();
+  return SYNTHETIC_EMAIL_DOMAINS.some(d => e.endsWith(d));
+}
+// このアカウントがIDでログインできるか（＝合成アドレスで作られたか）
+function canLoginWithId() {
+  return isSyntheticEmail(session && session.user && session.user.email);
+}
+
 // Initialize Supabase with storage fallback
 function initSupabase() {
   const savedUrl = localStorage.getItem('medfocus-supabase-url');
@@ -183,7 +205,7 @@ function getWeeklyGoals() {
 function saveWeeklyGoals(goals) {
   localStorage.setItem('medfocus_weekly_goals', JSON.stringify(goals));
   // Also sync to Supabase if logged in
-  if (supabase && session) {
+  if (hasDB()) {
     supabase.from('profiles').update({ weekly_goals: JSON.stringify(goals) }).eq('id', session.user.id)
       .then(({ error }) => { if (error) console.warn('weekly_goals sync error:', error.message); });
   }
@@ -221,7 +243,7 @@ function getSleepLogForDate(dateKey) {
 
 // Supabaseから全睡眠ログを取得してキャッシュに保存
 async function fetchSleepLogs() {
-  if (!supabase || !session) {
+  if (!hasDB()) {
     // オフライン時はlocalStorageから読む
     cachedSleepLogs = null;
     return getSleepLogs();
@@ -292,7 +314,7 @@ async function upsertSleepLog(dateKey, type, timeStr) {
   entry[type] = timeStr;
   saveSleepLogs(cachedSleepLogs);
 
-  if (!supabase || !session) return; // オフラインは終了
+  if (!hasDB()) return; // オフラインは終了
   try {
     const payload = {
       user_id: session.user.id,
@@ -318,7 +340,7 @@ async function deleteSleepLog(dateKey) {
     const local = getSleepLogs().filter(l => l.date !== dateKey);
     saveSleepLogs(local);
   }
-  if (!supabase || !session) return;
+  if (!hasDB()) return;
   try {
     await supabase.from('sleep_logs').delete().match({ user_id: session.user.id, date: dateKey });
   } catch(e) { console.warn('deleteSleepLog error:', e); }
@@ -404,7 +426,7 @@ function setTodayGoalOverride(minutes) {
     } catch(e) {}
   }
   // Sync override to Supabase
-  if (supabase && session) {
+  if (hasDB()) {
     const overrides = JSON.parse(localStorage.getItem('medfocus_daily_overrides_map') || '{}');
     overrides[dateKey] = minutes;
     // Keep only last 30 days
@@ -493,6 +515,100 @@ subjectCategories.forEach(c=>c.subjects.forEach(s=>{subjectNameMap[s.name.toLowe
 function normalizeSubjectName(name){
   if(!name)return '未設定';
   return subjectNameMap[name.toLowerCase()]||name;
+}
+
+// ==================== ACTIVITY（活動種別） ====================
+// study_purpose が「何のために」の軸なのに対し、activity は「何をしたか」の軸。
+// 講義動画(インプット)と問題演習(アウトプット)を分離しないと、
+// 消化ラグ・問/時間の効率・未回収の在庫といった分析が成立しない。
+const ACTIVITIES = [
+  { v:'video',  l:'講義動画', short:'動画', color:'#8b5cf6' },
+  { v:'qb',     l:'問題演習', short:'QB',   color:'#4ECDC4' },
+  { v:'anki',   l:'暗記',     short:'暗記', color:'#f59e0b' },
+  { v:'review', l:'復習',     short:'復習', color:'#45B7D1' },
+  { v:'other',  l:'その他',   short:'他',   color:'#94a3b8' },
+];
+const ACTIVITY_MAP = {};
+ACTIVITIES.forEach(a => { ACTIVITY_MAP[a.v] = a; });
+// 「20問中14問正解 (70%)」の表示。問題数が記録されているログにだけ付く。
+function qbCountChip(log){
+  const s = log && log.questions_solved;
+  if (!Number.isFinite(Number(s)) || Number(s) <= 0) return '';
+  const solved = Number(s);
+  const correct = Number(log.questions_correct);
+  if (!Number.isFinite(correct)) return `<span class="qb-count-chip">${solved}問</span>`;
+  const pct = (correct / solved) * 100;
+  return `<span class="qb-count-chip" style="--chip-color:${accColor(pct)}">${correct}/${solved}問 ${pct.toFixed(0)}%</span>`;
+}
+
+function activityChip(v){
+  const a = ACTIVITY_MAP[v];
+  if(!a) return '';
+  return `<span class="activity-chip" style="--chip-color:${a.color}">${a.short}</span>`;
+}
+// 問題演習のときだけ出す「何問中何問正解」の入力欄。
+// 記録フォームは静的版と finishSession の動的版が同時に DOM に載りうるので、
+// id が衝突しないよう suffix で分ける。
+function qbCountFieldsHtml(suffix){
+  const show = selectedActivity === 'qb';
+  return `<div class="field qb-count-field" id="qb-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
+    <label>解いた問題（任意）</label>
+    <div class="qb-count-row">
+      <input type="number" id="qb-solved${suffix}" min="0" step="1" placeholder="0" inputmode="numeric" />
+      <span class="qb-count-sep">問中</span>
+      <input type="number" id="qb-correct${suffix}" min="0" step="1" placeholder="0" inputmode="numeric" />
+      <span class="qb-count-sep">問正解</span>
+      <span class="qb-count-acc" id="qb-acc${suffix}">—</span>
+    </div>
+  </div>`;
+}
+
+// 入力欄の表示切替と正答率の即時表示。activity ボタンからも呼ぶ。
+function syncQbCountFields(suffix){
+  const wrap = document.getElementById('qb-count-wrap' + suffix);
+  if (!wrap) return;
+  wrap.style.display = (selectedActivity === 'qb') ? 'block' : 'none';
+  const sEl = document.getElementById('qb-solved' + suffix);
+  const cEl = document.getElementById('qb-correct' + suffix);
+  const aEl = document.getElementById('qb-acc' + suffix);
+  if (!sEl || !cEl || !aEl) return;
+  const s = parseInt(sEl.value, 10);
+  const c = parseInt(cEl.value, 10);
+  if (!Number.isFinite(s) || s <= 0 || !Number.isFinite(c)) { aEl.textContent = '—'; aEl.style.color = ''; return; }
+  // 正解数が問題数を超えていたら黙って直さず、その場で赤く知らせる
+  if (c > s) { aEl.textContent = '正解数が多すぎます'; aEl.style.color = '#ef4444'; return; }
+  const pct = (c / s) * 100;
+  aEl.textContent = pct.toFixed(0) + '%';
+  aEl.style.color = accColor(pct);
+}
+
+function wireQbCountFields(root, suffix){
+  ['qb-solved', 'qb-correct'].forEach(base => {
+    const el = (root || document).querySelector('#' + base + suffix);
+    if (el) el.addEventListener('input', () => syncQbCountFields(suffix));
+  });
+  syncQbCountFields(suffix);
+}
+
+// 保存前に取り出す。未入力なら null（＝記録しない）。
+function readQbCounts(suffix){
+  const sEl = document.getElementById('qb-solved' + suffix);
+  const cEl = document.getElementById('qb-correct' + suffix);
+  if (selectedActivity !== 'qb' || !sEl || !cEl) return { solved: null, correct: null, error: null };
+  const sRaw = sEl.value.trim(), cRaw = cEl.value.trim();
+  if (!sRaw && !cRaw) return { solved: null, correct: null, error: null };
+  const s = parseInt(sRaw, 10);
+  const c = cRaw === '' ? 0 : parseInt(cRaw, 10);
+  if (!Number.isFinite(s) || s < 0) return { solved: null, correct: null, error: '問題数が正しくありません' };
+  if (!Number.isFinite(c) || c < 0) return { solved: null, correct: null, error: '正解数が正しくありません' };
+  if (c > s) return { solved: null, correct: null, error: '正解数が問題数を超えています' };
+  return { solved: s, correct: c, error: null };
+}
+
+function activitySegmentHtml(selected){
+  return `<div class="activity-segment-control">${ACTIVITIES.map(a =>
+    `<button type="button" class="btn ${selected===a.v?'btn-primary':'btn-secondary'} activity-btn" data-val="${a.v}">${a.l}</button>`
+  ).join('')}</div>`;
 }
 
 const subjectProgress = [];
@@ -635,7 +751,7 @@ const KOKUSHI_CHECKLIST = [
 let checklistProgressCache = [];
 
 async function fetchChecklists() {
-  if (!supabase || !session) return [];
+  if (!hasDB()) return [];
   const cached = getCached('checklists');
   if (cached) { checklistProgressCache = cached; return cached; }
   const { data, error } = await supabase.from('user_checklist_progress').select('category, topic, completed').eq('user_id', session.user.id);
@@ -644,7 +760,7 @@ async function fetchChecklists() {
 }
 
 async function toggleChecklistItem(category, topic, checked) {
-  if (!supabase || !session) return;
+  if (!hasDB()) return;
   const ex = checklistProgressCache.find(c => c.category === category && c.topic === topic);
   if (ex) ex.completed = checked;
   else checklistProgressCache.push({ category, topic, completed: checked });
@@ -656,7 +772,7 @@ async function toggleChecklistItem(category, topic, checked) {
 }
 
 async function uploadImage(file, bucket = 'avatars') {
-  if (!supabase || !session) return null;
+  if (!hasDB()) return null;
   const ext = file.name.split('.').pop();
   const filePath = `${session.user.id}/${Date.now()}.${ext}`;
   const { error } = await supabase.storage.from(bucket).upload(filePath, file);
@@ -688,7 +804,7 @@ function invalidateCache(key) {
 }
 
 async function fetchStudyLogs() {
-  if (!supabase || !session) return [];
+  if (!hasDB()) return [];
   const cached = getCached('study_logs');
   if (cached) return cached;
   const { data, error } = await supabase.from('study_logs').select('*').eq('user_id', session.user.id).order('started_at', { ascending: false });
@@ -697,8 +813,86 @@ async function fetchStudyLogs() {
   return result;
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other') {
-  if (!supabase || !session) return true; // Pretend success in offline demo mode
+// 1セッションの演習実績を教材進捗トラッカーへ反映する。
+// 科目ごとの総問題数は登録済みなので「加算」ではなく「進捗の更新」として扱い、
+// その周の残りを埋めきったら、あふれた分を次の周へ繰り越す。
+// 反映は保存時の1回だけ。あとからログを編集・削除しても進捗は戻さない
+// （戻すと手で直した値まで巻き戻してしまい、かえって危険なため）。
+function applyQbSessionToProgress(subjectId, solved, correct) {
+  if (!subjectId) return null;
+  const s = Number(solved);
+  if (!Number.isFinite(s) || s <= 0) return null;
+  // 自由入力の科目はトラッカー上の対応先が無いので触らない
+  const known = subjectCategories.some(c => c.subjects.some(sub => sub.id === subjectId));
+  if (!known) return null;
+
+  const qb = getQBProgress();
+  const rounds = { ...(qb[subjectId] || {}) };
+  const keys = Object.keys(rounds).map(k => parseInt(k, 10))
+                     .filter(Number.isFinite).sort((a, b) => a - b);
+  // 繰り越し先の総数は1周目の登録値を使う。未登録なら何もしない
+  const baseTotal = keys.length ? (rounds[String(keys[0])].total || 0) : 0;
+  if (!baseTotal) return null;
+
+  let remaining = s;
+  let remainingCorrect = Number.isFinite(Number(correct)) ? Number(correct) : 0;
+  const changes = [];
+  let r = keys.length ? keys[0] : 1;
+  let guard = 0;
+
+  while (remaining > 0 && guard++ < 100) {
+    const key = String(r);
+    if (!rounds[key]) rounds[key] = { done: 0, total: baseTotal, correct: 0 };
+    const cur = { ...rounds[key] };
+    const total = cur.total || baseTotal;
+    const before = cur.done || 0;
+    const capacity = Math.max(0, total - before);
+    if (capacity === 0) { r++; continue; }        // すでに埋まっている周は飛ばす
+    const take = Math.min(remaining, capacity);
+    // 正解数は投入数に比例配分。最後のまとまりで端数を吸収し、合計を入力値と一致させる
+    const takeCorrect = (take === remaining)
+      ? remainingCorrect
+      : Math.min(take, Math.round(remainingCorrect * (take / remaining)));
+    cur.done = before + take;
+    cur.correct = (cur.correct || 0) + takeCorrect;
+    cur.total = total;
+    rounds[key] = cur;
+    changes.push({ round: key, from: before, to: cur.done, total, added: take });
+    remaining -= take;
+    remainingCorrect -= takeCorrect;
+    r++;
+  }
+
+  if (!changes.length) return null;
+  qb[subjectId] = rounds;
+  saveQBProgress(qb);   // ここで進捗スナップショットも更新される
+  return { subjectId, changes, leftover: remaining };
+}
+
+// 何がどう動いたかをトーストで具体的に見せる（黙って書き換えない）
+function describeQbChanges(result) {
+  if (!result) return '';
+  const name = normalizeSubjectName(result.subjectId);
+  const parts = result.changes.map(c =>
+    `${c.round}周目 ${c.from}→${c.to}/${c.total}問${c.to >= c.total ? '(完了)' : ''}`);
+  return `${name} ${parts.join(' / ')}`;
+}
+
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null) {
+  // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
+  // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
+  const applyQb = () => (activity === 'qb')
+    ? applyQbSessionToProgress(subjectId, questionsSolved, questionsCorrect)
+    : null;
+
+  if (!hasDB()) {
+    // オフライン／デモモード: 学習ログは保存しないが、教材進捗はローカルで更新する
+    const applied = applyQb();
+    showToast(applied
+      ? IC.check + ' 記録しました（' + describeQbChanges(applied) + '）'
+      : IC.check + ' 勉強記録を保存しました！（デモ）');
+    return true;
+  }
   try {
     const now = new Date().toISOString();
     const payload = { 
@@ -709,6 +903,9 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       focus_level: focusLevel,
       location: location,
       study_purpose: studyPurpose,
+      activity: activity,
+      questions_solved: questionsSolved,
+      questions_correct: questionsCorrect,
       started_at: startedAt || now,
       ended_at: endedAt || now
     };
@@ -720,6 +917,8 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       return false;
     } else { 
       invalidateCache('study_logs');
+      // 問題演習で問題数を記録したときは、教材進捗トラッカーも同時に進める
+      const qbApplied = applyQb();
       // Save daily snapshot with current goal
       const logicalDate = getLogicalDate(new Date());
       const dateKey = toLocalDateKey(logicalDate);
@@ -729,7 +928,9 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       const de = new Date(logicalDate); de.setHours(28, 59, 59, 999);
       const todayTotal = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
       saveDailySnapshot(dateKey, goalForToday, todayTotal);
-      showToast(IC.check+' 勉強記録を保存しました！'); 
+      showToast(qbApplied
+        ? IC.check + ' 記録しました（' + describeQbChanges(qbApplied) + '）'
+        : IC.check + ' 勉強記録を保存しました！');
       return true;
     }
   } catch (err) {
@@ -739,8 +940,8 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
   }
 }
 
-async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null) {
-  if (!supabase || !session) return;
+async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined) {
+  if (!hasDB()) return;
   // If endedAt not provided, compute from startedAt + duration
   if (!endedAt && startedAt) {
     const d = new Date(startedAt);
@@ -755,6 +956,9 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
     focus_level: focusLevel,
     location: location
   };
+  if (activity !== undefined) payload.activity = activity;
+  if (questionsSolved !== undefined) payload.questions_solved = questionsSolved;
+  if (questionsCorrect !== undefined) payload.questions_correct = questionsCorrect;
   if (endedAt) payload.ended_at = endedAt;
   const { error } = await supabase.from('study_logs').update(payload).eq('id', id);
   if (error) showToast(IC.x+' 更新に失敗しました');
@@ -762,7 +966,7 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
 }
 
 async function deleteStudyLog(id) {
-  if (!supabase || !session) return;
+  if (!hasDB()) return;
   const { error } = await supabase.from('study_logs').delete().eq('id', id);
   if (error) showToast(IC.x+' 削除に失敗しました');
   else { invalidateCache('study_logs'); showToast(IC.check+' 記録を削除しました！'); }
@@ -771,7 +975,7 @@ async function deleteStudyLog(id) {
 
 
 async function saveFeedback(title, body, category, isAnonymous) {
-  if (!supabase || !session) {
+  if (!hasDB()) {
     console.log('DEBUG: saveFeedback (local/demo mode)', { title, body, category, isAnonymous });
     showToast(' 貴重なご意見ありがとうございます！（デモ）');
     return true;
@@ -848,7 +1052,7 @@ let isSimulation=false, simulationPhase='study';
 let simulationBlockCurrent=1, simulationBlockTotal=6, simulationStudyMin=60, simulationBreakMin=10;
 let pendingLogDuration=0, timerStartTime=0, baseElapsed=0, baseCountdown=0;
 let selectedSubjectId='', selectedSubjectCustom='';
-let selectedLocation='自宅', selectedFocusLevel=2, selectedPurpose='other';
+let selectedLocation='自宅', selectedFocusLevel=2, selectedPurpose='other', selectedActivity='qb';
 let cumulativeStudySeconds=0; // New: actual study seconds accumulated in session
 let sessionStartedAt=null; // ISO string: when user first started the session
 let sessionBreaks=[]; // Array of {start: ISO, end: ISO} for pause periods
@@ -859,7 +1063,7 @@ function saveTimerState() {
     isSimulation, simulationPhase, simulationBlockCurrent, simulationBlockTotal, simulationStudyMin, simulationBreakMin,
     isConfirmingLog, pendingLogDuration,
     selectedSubjectId, selectedSubjectCustom,
-    selectedLocation, selectedFocusLevel, selectedPurpose,
+    selectedLocation, selectedFocusLevel, selectedPurpose, selectedActivity,
     cumulativeStudySeconds,
     sessionStartedAt, sessionBreaks,
     lastUpdate: Date.now()
@@ -889,6 +1093,7 @@ function loadTimerState() {
   selectedLocation = state.selectedLocation || '自宅';
   selectedFocusLevel = state.selectedFocusLevel || 2;
   selectedPurpose = state.selectedPurpose || 'other';
+  selectedActivity = state.selectedActivity || 'qb';
   cumulativeStudySeconds = state.cumulativeStudySeconds || 0;
   sessionStartedAt = state.sessionStartedAt || null;
   sessionBreaks = state.sessionBreaks || [];
@@ -1312,7 +1517,7 @@ function finishSession(manualStop = false) {
       overlay = document.createElement('div');
       overlay.id = 'session-finish-overlay';
       overlay.className = 'timer-overlay animate-fade-in';
-      overlay.style = 'position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-md); text-align:center; background:var(--color-bg-primary);';
+      overlay.style = 'position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-y:auto; text-align:center; background:var(--color-bg-primary);';
       timerCard.appendChild(overlay);
     }
     const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s})));
@@ -1338,6 +1543,11 @@ function finishSession(manualStop = false) {
               <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${selectedSubjectCustom}" style="width:100%; margin-top:8px; display:${selectedSubjectId==='custom'?'block':'none'};" />
             </div>
           </div>
+          <div class="field">
+            <label>活動の種類</label>
+            ${activitySegmentHtml(selectedActivity)}
+          </div>
+          ${qbCountFieldsHtml('-sync')}
           <div class="field">
             <label>学習の目的</label>
             <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
@@ -1370,7 +1580,7 @@ function finishSession(manualStop = false) {
               </select>
             </div>
           </div>
-          <div style="display:flex; gap:12px; margin-top:8px;">
+          <div class="confirm-actions">
             <button class="btn btn-secondary" id="btn-discard-log-sync" style="flex:1; justify-content:center;">破棄</button>
             <button class="btn btn-primary" id="btn-confirm-save-sync" style="flex:2; justify-content:center;">記録を保存</button>
           </div>
@@ -1392,6 +1602,16 @@ function finishSession(manualStop = false) {
         selectedPurpose = ev.target.dataset.val;
       };
     });
+    overlay.querySelectorAll('.activity-btn').forEach(b => {
+      b.onclick = (ev) => {
+        overlay.querySelectorAll('.activity-btn').forEach(btn => btn.classList.replace('btn-primary', 'btn-secondary'));
+        ev.currentTarget.classList.replace('btn-secondary', 'btn-primary');
+        selectedActivity = ev.currentTarget.dataset.val;
+        saveTimerState();
+        syncQbCountFields('-sync');
+      };
+    });
+    wireQbCountFields(overlay, '-sync');
     overlay.querySelector('#btn-discard-log-sync').onclick = () => { 
       overlay.remove();
       resetSW(); 
@@ -1410,9 +1630,11 @@ function finishSession(manualStop = false) {
       const memo = overlay.querySelector('#confirm-memo').value.trim();
       const loc = overlay.querySelector('#confirm-location').value;
       const foc = parseFloat(overlay.querySelector('#confirm-focus').value);
-      
+      const qb = readQbCounts('-sync');
+
       if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
       if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
+      if(qb.error) { showToast(IC.x + ' ' + qb.error); return; }
 
       // Disable button to show processing state and prevent double clicks
       btn.disabled = true;
@@ -1427,7 +1649,7 @@ function finishSession(manualStop = false) {
         const endedAt = new Date().toISOString();
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
         
         if (success) {
           // Remove overlay completely to prevent duplicate ID issues in DOM
@@ -1550,6 +1772,9 @@ function renderLogin(){
           <button type="submit" id="btn-auth-submit" class="btn btn-primary" style="width:100%; justify-content:center; padding:12px; font-size:1.1rem; border-radius:12px;">
             はじめる
           </button>
+          <div id="field-legacy-reset" class="auth-field" style="display:none; text-align:center; margin-top:-4px;">
+            <button type="button" id="btn-reset-password" style="background:none; border:none; color:var(--color-accent-teal); font-size:0.78rem; text-decoration:underline; cursor:pointer; padding:4px;">パスワードを忘れた場合（再設定メールを送る）</button>
+          </div>
         </form>
         
         <div id="id-announcement" style="display:none; margin-top:20px; padding:16px; background:rgba(78,205,196,0.1); border:1px dashed var(--color-accent-teal); border-radius:12px; text-align:center;">
@@ -1598,10 +1823,39 @@ function renderLogin(){
     fieldLegacyPass.style.display = t==='legacy' ? 'block' : 'none';
     btnSubmit.textContent = t==='join' ? 'はじめる' : 'ログイン';
     document.getElementById('btn-forgot-id').style.display = (t==='login') ? 'block' : 'none';
+    document.getElementById('field-legacy-reset').style.display = (t==='legacy') ? 'block' : 'none';
   }
   tabJoin.onclick = () => setTab('join');
   tabLogin.onclick = () => setTab('login');
   tabLegacy.onclick = () => setTab('legacy');
+
+  // パスワード再設定メール。メールのリンクを開くと Supabase が復帰用セッションを張るので、
+  // そのまま同じアプリに戻ってきてログイン済みの状態になる。
+  document.getElementById('btn-reset-password').onclick = async () => {
+    const emailInput = document.getElementById('auth-legacy-email');
+    const email = emailInput.value.trim();
+    if (!email) { showToast(' 先にメールアドレスを入力してください'); emailInput.focus(); return; }
+    if (!supabase || SUPABASE_KEY === 'your-anon-key') { showToast(' デモモードでは利用できません'); return; }
+    const rb = document.getElementById('btn-reset-password');
+    const orig = rb.textContent;
+    rb.textContent = '送信中...'; rb.disabled = true;
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin
+      });
+      if (error) {
+        showToast(IC.x + ' 送信に失敗しました: ' + (error.message || '不明なエラー'));
+        console.error('resetPasswordForEmail:', error);
+      } else {
+        showToast(IC.check + ' ' + email + ' に再設定メールを送りました。メール内のリンクを開いてください。');
+      }
+    } catch (e) {
+      showToast(IC.x + ' 送信に失敗しました');
+      console.error('resetPasswordForEmail exception:', e);
+    } finally {
+      rb.textContent = orig; rb.disabled = false;
+    }
+  };
 
   document.getElementById('btn-forgot-id').onclick = () => {
     const sec = document.getElementById('rescue-section');
@@ -1788,39 +2042,42 @@ function renderLogin(){
           initApp();
         };
       } else {
+        // 過去に使っていたパスワードの互換リスト。先頭が現行。
         const passwordCandidates = [
           'medfocus-fixed-pass-v2',
           'medfocus-fixed-pass',
           'medfocus-fixed-password',
           'medfocus-pass'
         ];
-        
-        // Try multiple email variants and passwords
-        const emailVariants = [
+
+        // finalId は上で toLowerCase 済みなので、大文字小文字の派生を作っても同じ文字列にしかならない。
+        // 重複したまま試すと同じリクエストを2倍投げることになり、
+        // 認証のレート制限をいたずらに消費するので一意化する。
+        const emailVariants = [...new Set([
           finalId + '@medfocus.app',
           finalId.toLowerCase() + '@medfocus.app'
-        ];
+        ])];
 
         let lastErr = null;
         let success = false;
+        let aborted = false;   // 資格情報以外の理由（回数制限・通信断）で打ち切ったか
 
         for (const variant of emailVariants) {
-          if (success) break;
+          if (success || aborted) break;
           for (const pass of passwordCandidates) {
-            console.log(`DEBUG: Trying login for ${variant} with candidate password...`);
             const { error: loginErr } = await supabase.auth.signInWithPassword({
               email: variant,
               password: pass
             });
-            
-            if (!loginErr) {
-              success = true;
-              break;
-            } else {
-              lastErr = loginErr;
-              // If error is NOT "Invalid credentials" (e.g. rate limit), don't spam
-              if (loginErr.status === 429) break;
-            }
+
+            if (!loginErr) { success = true; break; }
+
+            lastErr = loginErr;
+            // 「資格情報が違う」以外のエラーで総当たりを続けても意味がない。
+            // 特に 429 は、続けるほど解除が遠のく。
+            const code = loginErr.code || loginErr.error_code || '';
+            const isBadCredentials = loginErr.status === 400 && code.indexOf('invalid_credentials') >= 0;
+            if (!isBadCredentials) { aborted = true; break; }
           }
         }
 
@@ -1829,10 +2086,20 @@ function renderLogin(){
           if (authOverlay) authOverlay.style.display = 'none';
           initApp();
         } else {
-          // Provide VERBOSE error for debugging
-          const errorDetail = lastErr ? (lastErr.message || lastErr.error_description || '原因不明') : 'ログイン情報が正しくありません';
-          showToast(`❌ ログイン失敗: ${errorDetail}`);
-          console.error('Login verbose error:', lastErr);
+          const status = lastErr ? lastErr.status : null;
+          const raw = lastErr ? (lastErr.message || lastErr.error_description || '原因不明') : 'ログイン情報が正しくありません';
+          let msg;
+          if (status === 429) {
+            msg = 'ログイン試行が多すぎます。しばらく（数分〜1時間）待ってからもう一度お試しください。';
+          } else if (aborted) {
+            msg = `通信または設定のエラーです: ${raw}`;
+          } else {
+            // profiles に login_id があってもここに来る場合がある。
+            // 実メールアドレスで登録されたアカウントは合成アドレスを持たないため。
+            msg = 'このログインIDでは認証できません。メールアドレスで登録した方は「旧アカウント」タブからログインしてください。';
+          }
+          showToast(`❌ ${msg}`);
+          console.error('Login failed:', { status, code: lastErr && (lastErr.code || lastErr.error_code), raw, aborted });
           if(btn){ btn.disabled = false; btn.textContent = origText; }
         }
       }
@@ -1845,11 +2112,13 @@ function renderLogin(){
 }
 
 function handleLogout() {
+  isDemoMode = false;
   if(supabase && SUPABASE_KEY !== 'your-anon-key') supabase.auth.signOut();
   else { session = null; location.reload(); }
 }
 
 function mockLogin(email) {
+  isDemoMode = true;
   session = { user: { email, id: 'user-001' } };
   currentUser.id = 'user-001';
   currentUser.name = email.split('@')[0];
@@ -1869,7 +2138,7 @@ const navItems = [
     items: [
       { route: '/study', label: '学習記録', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>' },
       { route: '/insights', label: 'インサイト', icon: '<svg viewBox="0 0 24 24"><path d="M21 12c0 1.2-4 6-9 6s-9-4.8-9-6c0-1.2 4-6 9-6s9 4.8 9 6z"/><circle cx="12" cy="12" r="3"/></svg>' },
-      { route: '/qb', label: 'QB進捗', icon: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>' }
+      { route: '/qb', label: '教材進捗', icon: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>' }
     ]
   },
   {
@@ -3020,7 +3289,7 @@ async function renderStudy(){
 
         <!-- Confirmation Overlay -->
         ${isConfirmingLog ? `
-          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:var(--space-md); text-align:center;">
+          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-y:auto; text-align:center;">
             <div class="confirm-card animate-slide-up">
               <div class="celebration-icon" style="margin-bottom:var(--space-md);"><span style="font-size:2rem;color:var(--color-accent-teal)">${IC.check}</span></div>
               <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
@@ -3042,6 +3311,11 @@ async function renderStudy(){
                     <input type="text" id="confirm-subject-custom" placeholder="具体的な学習内容..." value="${selectedSubjectCustom}" style="width:100%; margin-top:8px; display:${selectedSubjectId==='custom'?'block':'none'};" />
                   </div>
                 </div>
+                <div class="field">
+                  <label>活動の種類</label>
+                  ${activitySegmentHtml(selectedActivity)}
+                </div>
+                ${qbCountFieldsHtml('')}
                 <div class="field">
                   <label>学習の目的</label>
                   <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
@@ -3074,7 +3348,7 @@ async function renderStudy(){
                     </select>
                   </div>
                 </div>
-                <div style="display:flex; gap:12px; margin-top:8px;">
+                <div class="confirm-actions">
                   <button class="btn btn-secondary" id="btn-discard-log" style="flex:1; justify-content:center;">破棄</button>
                   <button class="btn btn-primary" id="btn-confirm-save" style="flex:2; justify-content:center;">記録を保存</button>
                 </div>
@@ -3101,7 +3375,7 @@ async function renderStudy(){
             return`<div class="study-log-entry" data-id="${l.id}">
               <div style="flex:1;min-width:0;">
                 <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap;">
-                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>
+                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>${activityChip(l.activity)}${qbCountChip(l)}
                   <span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span>
                   <span class="study-log-time">${tmStart}〜${tmEnd}</span>
                   ${l.location && l.location !== '未設定' ? `<span class="study-log-location" style="font-size:0.75rem; margin-left:4px; color:var(--color-text-tertiary)" title="${l.location}">${locIcon(l.location)} ${l.location}</span>` : ''}
@@ -3110,7 +3384,7 @@ async function renderStudy(){
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}</div></div>
@@ -3382,6 +3656,18 @@ async function renderStudy(){
     });
   });
 
+  document.querySelectorAll('.activity-btn').forEach(b => {
+    b.addEventListener('click', (ev) => {
+      document.querySelectorAll('.activity-btn').forEach(btn => btn.classList.replace('btn-primary', 'btn-secondary'));
+      ev.currentTarget.classList.replace('btn-secondary', 'btn-primary');
+      selectedActivity = ev.currentTarget.dataset.val;
+      saveTimerState();
+      syncQbCountFields('');
+      syncQbCountFields('-sync');
+    });
+  });
+  wireQbCountFields(document, '');
+
   document.getElementById('btn-confirm-save')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const durEle = document.getElementById('confirm-duration');
@@ -3398,9 +3684,12 @@ async function renderStudy(){
     const locVal = locEle ? locEle.value : selectedLocation;
     const focVal = focEle ? parseFloat(focEle.value) : selectedFocusLevel;
     
+    const qb = readQbCounts('');
+
     if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
     if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
-    
+    if(qb.error) { showToast(IC.x + ' ' + qb.error); return; }
+
     btn.disabled = true;
     btn.textContent = '保存中...';
     btn.style.opacity = '0.7';
@@ -3413,7 +3702,7 @@ async function renderStudy(){
 
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
       if (success) {
         resetSW();
         renderStudy();
@@ -3505,6 +3794,25 @@ async function renderStudy(){
               </select>
             </div>
           </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>活動の種類</label>
+            <select id="edit-log-activity" style="width:100%;">
+              <option value="" ${!ds.activity?'selected':''}>未分類</option>
+              ${ACTIVITIES.map(a=>`<option value="${a.v}" ${ds.activity===a.v?'selected':''}>${a.l}</option>`).join('')}
+            </select>
+          </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>解いた問題（任意）</label>
+            <div class="qb-count-row">
+              <input type="number" id="edit-log-solved" min="0" step="1" inputmode="numeric" value="${ds.solved || ''}" placeholder="0" />
+              <span class="qb-count-sep">問中</span>
+              <input type="number" id="edit-log-correct" min="0" step="1" inputmode="numeric" value="${ds.correct || ''}" placeholder="0" />
+              <span class="qb-count-sep">問正解</span>
+            </div>
+            <div style="font-size:0.68rem; color:var(--color-text-tertiary); margin-top:6px; line-height:1.5;">
+              ※ ここを直しても教材進捗トラッカーの値は変わりません（進捗は保存時に一度だけ反映されます）
+            </div>
+          </div>
           <div class="settings-field">
             <label>メモ</label>
             <textarea id="edit-log-memo" style="width:100%; min-height:60px;">${ds.memo}</textarea>
@@ -3535,6 +3843,14 @@ async function renderStudy(){
       const newMemo = document.getElementById('edit-log-memo').value;
       const newLoc = document.getElementById('edit-log-location').value;
       const newFoc = parseFloat(document.getElementById('edit-log-focus').value);
+      const newAct = document.getElementById('edit-log-activity').value || null;
+      const solvedRaw = document.getElementById('edit-log-solved').value.trim();
+      const correctRaw = document.getElementById('edit-log-correct').value.trim();
+      const newSolved = solvedRaw === '' ? null : parseInt(solvedRaw, 10);
+      const newCorrect = correctRaw === '' ? null : parseInt(correctRaw, 10);
+      if (newSolved !== null && (!Number.isFinite(newSolved) || newSolved < 0)) { showToast(IC.x + ' 問題数が正しくありません'); return; }
+      if (newCorrect !== null && (!Number.isFinite(newCorrect) || newCorrect < 0)) { showToast(IC.x + ' 正解数が正しくありません'); return; }
+      if (newSolved !== null && newCorrect !== null && newCorrect > newSolved) { showToast(IC.x + ' 正解数が問題数を超えています'); return; }
 
       if (!newDate || !newTime || isNaN(newDur) || newDur <= 0 || !subVal) {
         showToast(' 全ての項目を正しく入力してください');
@@ -3543,7 +3859,7 @@ async function renderStudy(){
 
       const newStartedAt = new Date(`${newDate}T${newTime}`).toISOString();
       const newEndedAt = newEndTime ? new Date(`${newDate}T${newEndTime}`).toISOString() : null;
-      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt);
+      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect);
       close();
       renderStudy();
     };
@@ -3675,6 +3991,167 @@ async function renderCountdown() {
 
 // ==================== QB PROGRESS HELPER FUNCTIONS ====================
 let qbProgressLoaded=false;
+// ==================== 進捗スナップショット（日次） ====================
+// qb_progress / video_progress は「現在値」しか保持しないため、
+// 日次で断面を残して初めて「その日に何問進んだか」「正答率がどう動いたか」を
+// 差分として計算できる。連続する2日のスナップショットの差＝その日の実績。
+// 注意: アプリを開かなかった日はスナップショットが無く、その間の進捗は
+// 次に開いた日にまとめて計上される（getDailyProgressDeltas が日数を返すので按分可能）。
+const SNAPSHOT_PREFIX = 'medfocus_progress_snapshot_';
+const SNAPSHOT_INDEX_KEY = 'medfocus_progress_snapshot_index';
+const SNAPSHOT_MAX_DAYS = 400;
+
+function summarizeProgress(qb, video) {
+  const bySubject = {};
+  const totals = { qbDone:0, qbTotal:0, qbCorrect:0, videoDone:0, videoTotal:0 };
+  Object.entries(qb || {}).forEach(([sid, rounds]) => {
+    let d = 0, t = 0, c = 0;
+    Object.values(rounds || {}).forEach(r => { d += r.done||0; t += r.total||0; c += r.correct||0; });
+    if (d === 0 && t === 0) return;
+    if (!bySubject[sid]) bySubject[sid] = {};
+    bySubject[sid].qb = { done:d, total:t, correct:c };
+    totals.qbDone += d; totals.qbTotal += t; totals.qbCorrect += c;
+  });
+  Object.entries(video || {}).forEach(([sid, v]) => {
+    const d = v.done||0, t = v.total||0;
+    if (d === 0 && t === 0) return;
+    if (!bySubject[sid]) bySubject[sid] = {};
+    bySubject[sid].video = { done:d, total:t };
+    totals.videoDone += d; totals.videoTotal += t;
+  });
+  return { totals, bySubject };
+}
+
+function getSnapshotIndex() {
+  try { return JSON.parse(localStorage.getItem(SNAPSHOT_INDEX_KEY) || '[]'); } catch(e) { return []; }
+}
+
+function getProgressSnapshot(dateKey) {
+  try { return JSON.parse(localStorage.getItem(SNAPSHOT_PREFIX + dateKey) || 'null'); } catch(e) { return null; }
+}
+
+// 日付昇順のスナップショット配列を返す
+function getProgressSnapshots() {
+  return getSnapshotIndex().sort().map(getProgressSnapshot).filter(Boolean);
+}
+
+function saveProgressSnapshot() {
+  const dateKey = toLocalDateKey(getLogicalDate(new Date()));
+  const snap = summarizeProgress(getQBProgress(), getVideoProgress());
+  const prev = getProgressSnapshot(dateKey);
+  // 中身が変わっていなければ書き込まない（Supabase への無駄な往復を避ける）
+  if (prev && JSON.stringify(prev.totals) === JSON.stringify(snap.totals)
+           && JSON.stringify(prev.bySubject) === JSON.stringify(snap.bySubject)) return;
+
+  const payload = { date: dateKey, totals: snap.totals, bySubject: snap.bySubject, saved_at: new Date().toISOString() };
+  try {
+    localStorage.setItem(SNAPSHOT_PREFIX + dateKey, JSON.stringify(payload));
+    let idx = getSnapshotIndex();
+    if (!idx.includes(dateKey)) idx.push(dateKey);
+    idx.sort();
+    while (idx.length > SNAPSHOT_MAX_DAYS) {
+      localStorage.removeItem(SNAPSHOT_PREFIX + idx.shift());
+    }
+    localStorage.setItem(SNAPSHOT_INDEX_KEY, JSON.stringify(idx));
+  } catch(e) { console.warn('snapshot save error:', e); }
+
+  if (hasDB()) {
+    supabase.from('progress_snapshots').upsert({
+      user_id: session.user.id,
+      snapshot_date: dateKey,
+      qb_done: snap.totals.qbDone,
+      qb_total: snap.totals.qbTotal,
+      qb_correct: snap.totals.qbCorrect,
+      video_done: snap.totals.videoDone,
+      video_total: snap.totals.videoTotal,
+      detail: snap.bySubject,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'user_id,snapshot_date' })
+      .then(({ error }) => { if (error) console.warn('snapshot sync error:', error.message); });
+  }
+}
+
+// 過去分をまとめて入力し終えたあとに呼ぶ。今日より前の断面を捨てて、
+// 現在値を新しい基準にする。これをしないと「過去分の一括入力」が
+// そのまま「今日1日の実績」として日次差分に現れてしまう。
+async function resetProgressBaseline() {
+  const todayKey = toLocalDateKey(getLogicalDate(new Date()));
+  const idx = getSnapshotIndex();
+  const removed = idx.filter(d => d < todayKey);
+  removed.forEach(d => { try { localStorage.removeItem(SNAPSHOT_PREFIX + d); } catch(e) {} });
+  try {
+    localStorage.setItem(SNAPSHOT_INDEX_KEY, JSON.stringify(idx.filter(d => d >= todayKey)));
+    localStorage.removeItem(SNAPSHOT_PREFIX + todayKey);
+  } catch(e) {}
+  if (hasDB()) {
+    const { error } = await supabase.from('progress_snapshots')
+      .delete().eq('user_id', session.user.id).lt('snapshot_date', todayKey);
+    if (error) console.warn('baseline reset error:', error.message);
+  }
+  saveProgressSnapshot();
+  return removed.length;
+}
+
+async function fetchProgressSnapshots() {
+  if (!hasDB()) return getProgressSnapshots();
+  try {
+    const { data, error } = await supabase.from('progress_snapshots')
+      .select('*').eq('user_id', session.user.id).order('snapshot_date', { ascending: true });
+    if (error || !data) return getProgressSnapshots();
+    // リモートをローカルへ反映（別端末で記録した分を取り込む）
+    const idx = getSnapshotIndex();
+    data.forEach(row => {
+      const payload = {
+        date: row.snapshot_date,
+        totals: { qbDone:row.qb_done||0, qbTotal:row.qb_total||0, qbCorrect:row.qb_correct||0,
+                  videoDone:row.video_done||0, videoTotal:row.video_total||0 },
+        bySubject: row.detail || {},
+        saved_at: row.updated_at
+      };
+      try {
+        localStorage.setItem(SNAPSHOT_PREFIX + row.snapshot_date, JSON.stringify(payload));
+        if (!idx.includes(row.snapshot_date)) idx.push(row.snapshot_date);
+      } catch(e) {}
+    });
+    try { localStorage.setItem(SNAPSHOT_INDEX_KEY, JSON.stringify(idx.sort())); } catch(e) {}
+    return getProgressSnapshots();
+  } catch(e) {
+    console.warn('snapshot fetch error:', e);
+    return getProgressSnapshots();
+  }
+}
+
+// スナップショット層の読み出しAPI。連続する断面の差分＝その期間に進んだ量。
+// spanDays は前回スナップショットからの経過日数（アプリを開かなかった日を検出できる）。
+// 現時点では画面から呼んでいない。Phase 3（動画→QBのラグ分析）で使う。
+function getDailyProgressDeltas() {
+  const snaps = getProgressSnapshots();
+  const out = [];
+  for (let i = 1; i < snaps.length; i++) {
+    const a = snaps[i-1], b = snaps[i];
+    const spanDays = Math.max(1, Math.round(
+      (new Date(b.date + 'T00:00:00') - new Date(a.date + 'T00:00:00')) / 86400000));
+    const bySubject = {};
+    const keys = new Set([...Object.keys(a.bySubject||{}), ...Object.keys(b.bySubject||{})]);
+    keys.forEach(sid => {
+      const pa = a.bySubject[sid] || {}, pb = b.bySubject[sid] || {};
+      const qbDone   = ((pb.qb&&pb.qb.done)||0)    - ((pa.qb&&pa.qb.done)||0);
+      const qbCorrect= ((pb.qb&&pb.qb.correct)||0) - ((pa.qb&&pa.qb.correct)||0);
+      const videoDone= ((pb.video&&pb.video.done)||0) - ((pa.video&&pa.video.done)||0);
+      if (qbDone || qbCorrect || videoDone) bySubject[sid] = { qbDone, qbCorrect, videoDone };
+    });
+    out.push({
+      date: b.date,
+      spanDays,
+      qbDone:    b.totals.qbDone    - a.totals.qbDone,
+      qbCorrect: b.totals.qbCorrect - a.totals.qbCorrect,
+      videoDone: b.totals.videoDone - a.totals.videoDone,
+      bySubject
+    });
+  }
+  return out;
+}
+
 function getQBProgress(){try{return JSON.parse(localStorage.getItem('medfocus_qb_progress')||'{}');}catch(e){return {};}}
 async function loadQBFromSupabase(){
   if(!supabase||!session||qbProgressLoaded)return;
@@ -3704,7 +4181,8 @@ async function loadQBFromSupabase(){
 }
 function saveQBProgress(data){
   localStorage.setItem('medfocus_qb_progress',JSON.stringify(data));
-  if(supabase&&session){
+  saveProgressSnapshot();
+  if(hasDB()){
     supabase.from('profiles').update({qb_progress:JSON.stringify(data)}).eq('id',session.user.id)
       .then(({error})=>{
         if(error){
@@ -3714,39 +4192,102 @@ function saveQBProgress(data){
   }
 }
 
+// 教材進捗トラッカーで開いている vol を覚えておく。
+// 入力のたびに renderQBProgress() で全再描画されるため、
+// これが無いと1項目入力するたびにアコーディオンが閉じて入力位置を見失う。
+const qbOpenCats = new Set();
+
+// ==================== 動画進捗（QAssist 等の講義動画） ====================
+// QB と同じ科目ID（1A〜3D）を単位に「視聴済み本数 / 全本数」を持つ。
+// これがあって初めて「動画は進んでいるが QB が追いついていない」ズレが数値になる。
+let videoProgressLoaded = false;
+function getVideoProgress(){try{return JSON.parse(localStorage.getItem('medfocus_video_progress')||'{}');}catch(e){return {};}}
+async function loadVideoFromSupabase(){
+  if(!supabase||!session||videoProgressLoaded)return;
+  try{
+    const{data,error}=await supabase.from('profiles').select('video_progress').eq('id',session.user.id).single();
+    if(error){
+      console.warn('video load error:',error.message);
+    } else if(data?.video_progress){
+      const remote=typeof data.video_progress==='string'?JSON.parse(data.video_progress):data.video_progress;
+      const local=getVideoProgress();
+      const merged={...remote};
+      Object.entries(local).forEach(([sub,v])=>{
+        if(!merged[sub])merged[sub]=v;
+        else if((v.done||0)>(merged[sub].done||0))merged[sub]=v;
+      });
+      localStorage.setItem('medfocus_video_progress',JSON.stringify(merged));
+    } else {
+      const local=getVideoProgress();
+      if(Object.keys(local).length>0){
+        await supabase.from('profiles').update({video_progress:JSON.stringify(local)}).eq('id',session.user.id);
+      }
+    }
+    videoProgressLoaded=true;
+  }catch(e){console.warn('video load error:',e);}
+}
+function saveVideoProgress(data){
+  localStorage.setItem('medfocus_video_progress',JSON.stringify(data));
+  if(hasDB()){
+    supabase.from('profiles').update({video_progress:JSON.stringify(data)}).eq('id',session.user.id)
+      .then(({error})=>{ if(error){ console.warn('video sync error:',error.message); } });
+  }
+  saveProgressSnapshot();
+}
+
 async function renderQBProgress(){
   await loadQBFromSupabase();
+  await loadVideoFromSupabase();
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
+  const video=getVideoProgress();
 
   // Vol summaries
   const volSummary={};
   subjectCategories.filter(c=>c.id.startsWith('cat-vol')).forEach(cat=>{
-    let done=0,total=0;
+    let done=0,total=0,vDone=0,vTotal=0;
     cat.subjects.forEach(s=>{
       const rounds=qb[s.id]||{};
       Object.values(rounds).forEach(r=>{done+=r.done||0;total+=r.total||0;});
+      const v=video[s.id]||{};
+      vDone+=v.done||0; vTotal+=v.total||0;
     });
-    volSummary[cat.name]={done,total,pct:total>0?Math.round(done/total*100):0};
+    volSummary[cat.name]={
+      done,total,pct:total>0?Math.round(done/total*100):0,
+      vDone,vTotal,vPct:vTotal>0?Math.round(vDone/vTotal*100):0
+    };
   });
 
   ct.innerHTML=`<div style="max-width:900px;margin:0 auto;">
-    <div class="page-header"><h1 class="page-title">${IC.book}QB進捗トラッカー</h1><p class="page-subtitle">各科目の問題集進捗を管理</p></div>
+    <div class="page-header"><h1 class="page-title">${IC.book}教材進捗トラッカー</h1><p class="page-subtitle">科目ごとの講義動画とQBの進捗を管理</p></div>
+    <div class="baseline-bar">
+      <div class="baseline-text">
+        <strong>過去分をまとめて入力したときは</strong>
+        <span>そのままだと「今日1日で進んだ分」として集計されます。入力し終えたら基準を取り直してください。</span>
+      </div>
+      <button class="baseline-btn" id="btn-reset-baseline">現在の値を初期値にする</button>
+    </div>
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
-      ${Object.entries(volSummary).map(([name,v])=>`<div class="card" style="padding:14px;text-align:center;">
-        <div style="font-size:0.75rem;color:var(--color-text-tertiary);">${name}</div>
-        <div style="font-size:1.8rem;font-weight:800;color:${v.pct>=80?'#10b981':v.pct>=50?'#f59e0b':'var(--color-text-primary)'};">${v.pct}%</div>
-        <div style="font-size:0.7rem;color:var(--color-text-tertiary);">${v.done}/${v.total}問</div>
-        <div style="margin-top:6px;height:5px;background:var(--color-bg-elevated);border-radius:3px;overflow:hidden;">
-          <div style="height:100%;width:${v.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div>
+      ${Object.entries(volSummary).map(([name,v])=>`<div class="card" style="padding:14px;">
+        <div style="font-size:0.75rem;color:var(--color-text-tertiary);text-align:center;margin-bottom:8px;">${name}</div>
+        <div class="prog-dual-row">
+          <span class="prog-dual-tag" style="--chip-color:#8b5cf6">動画</span>
+          <div class="prog-dual-bar"><div style="height:100%;width:${v.vPct}%;background:#8b5cf6;border-radius:3px;"></div></div>
+          <span class="prog-dual-pct">${v.vTotal>0?v.vPct+'%':'--'}</span>
         </div>
+        <div class="prog-dual-row">
+          <span class="prog-dual-tag" style="--chip-color:#4ECDC4">QB</span>
+          <div class="prog-dual-bar"><div style="height:100%;width:${v.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div></div>
+          <span class="prog-dual-pct">${v.total>0?v.pct+'%':'--'}</span>
+        </div>
+        <div style="font-size:0.68rem;color:var(--color-text-tertiary);text-align:center;margin-top:6px;">動画 ${v.vDone}/${v.vTotal}本 ・ QB ${v.done}/${v.total}問</div>
       </div>`).join('')}
     </div>
     ${subjectCategories.filter(c=>c.id.startsWith('cat-vol')).map(cat=>{
       const volPct=volSummary[cat.name]?.pct||0;
       return`
       <div class="card" style="margin-bottom:16px;overflow:hidden;">
-        <details>
+        <details data-cat="${cat.id}" ${qbOpenCats.has(cat.id)?'open':''}>
           <summary style="padding:10px 14px;font-weight:700;font-size:0.9rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between;list-style:none;">
             <span>${cat.name}</span>
             <span style="font-size:0.8rem;font-weight:600;color:${volPct>=80?'#10b981':volPct>=50?'#f59e0b':'var(--color-text-tertiary)'};">${volPct}%</span>
@@ -3756,10 +4297,35 @@ async function renderQBProgress(){
             const rounds=qb[s.id]||{};
             const roundKeys=Object.keys(rounds).sort();
             const nextRound=roundKeys.length>0?parseInt(roundKeys[roundKeys.length-1])+1:1;
+            const vp=video[s.id]||{done:0,total:0};
+            const vPct=vp.total>0?Math.round(vp.done/vp.total*100):0;
+            // 「回収率」= 視聴済みの範囲を QB1周目でどれだけ回収できているか
+            const r1=rounds['1'];
+            const q1Pct=(r1&&r1.total>0)?Math.round(r1.done/r1.total*100):0;
+            const gap=vPct-q1Pct;
+            // 動画・QBの両方に母数があり、動画が20pt以上先行しているときだけ警告する
+            const showGap=vp.total>0&&r1&&r1.total>0&&gap>=20;
+            const gapColor=gap>=40?'#ef4444':'#f59e0b';
             return`<div style="padding:8px 6px;border-bottom:1px solid var(--color-border);">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;flex-wrap:wrap;">
                 <span style="font-weight:600;font-size:0.85rem;">${s.name}</span>
-                <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
+                <span style="display:flex;align-items:center;gap:6px;">
+                  ${showGap?`<span class="gap-badge" style="--chip-color:${gapColor}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`:''}
+                  <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
+                </span>
+              </div>
+              <div style="margin:0 0 8px 0;padding:8px;background:var(--color-bg-elevated);border-radius:8px;font-size:0.8rem;border-left:3px solid #8b5cf6;">
+                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                  <span style="font-size:0.7rem;color:#a78bfa;font-weight:700;min-width:28px;">動画</span>
+                  <input type="number" class="vid-done" data-sub="${s.id}" value="${vp.done||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
+                  <span>/</span>
+                  <input type="number" class="vid-total" data-sub="${s.id}" value="${vp.total||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
+                  <span style="font-size:0.7rem;color:var(--color-text-tertiary);">本</span>
+                  <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
+                    <div style="height:100%;width:${vPct}%;background:#8b5cf6;border-radius:3px;"></div>
+                  </div>
+                  <span style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:#a78bfa;">${vp.total>0?vPct+'%':'---'}</span>
+                </div>
               </div>
               ${roundKeys.length>0?roundKeys.map(rk=>{
                 const r=rounds[rk];const pct=r.total>0?Math.round(r.done/r.total*100):0;
@@ -3799,6 +4365,17 @@ async function renderQBProgress(){
   </div>`;
 
   // Event listeners
+  document.getElementById('btn-reset-baseline')?.addEventListener('click', async () => {
+    if(!confirm('今日より前の進捗スナップショットを削除し、現在の値を新しい初期値にします。\n\n学習記録・QB進捗・動画進捗そのものは削除されません。よろしいですか？')) return;
+    const n = await resetProgressBaseline();
+    showToast(IC.check + ` 初期値を更新しました（${n}件の古い断面を削除）`);
+  });
+  ct.querySelectorAll('details[data-cat]').forEach(d=>{
+    d.addEventListener('toggle',()=>{
+      if(d.open)qbOpenCats.add(d.dataset.cat);
+      else qbOpenCats.delete(d.dataset.cat);
+    });
+  });
   ct.querySelectorAll('.qb-add-round').forEach(btn=>{
     btn.addEventListener('click',()=>{
       const sub=btn.dataset.sub,round=btn.dataset.round;
@@ -3813,6 +4390,16 @@ async function renderQBProgress(){
       const d=getQBProgress();
       if(d[btn.dataset.sub])delete d[btn.dataset.sub][btn.dataset.round];
       saveQBProgress(d);renderQBProgress();
+    });
+  });
+  ct.querySelectorAll('.vid-done,.vid-total').forEach(inp=>{
+    inp.addEventListener('change',()=>{
+      const sub=inp.dataset.sub;
+      const d=getVideoProgress();
+      if(!d[sub])d[sub]={done:0,total:0};
+      if(inp.classList.contains('vid-done'))d[sub].done=parseInt(inp.value)||0;
+      else d[sub].total=parseInt(inp.value)||0;
+      saveVideoProgress(d);renderQBProgress();
     });
   });
   ct.querySelectorAll('.qb-done,.qb-total,.qb-correct').forEach(inp=>{
@@ -3838,7 +4425,8 @@ const insightFilters = {
   timeSlot: '',
   focusLevel: '',
   sessionLength: '',
-  purpose: ''
+  purpose: '',
+  activity: ''
 };
 
 function applyInsightFilters(logs) {
@@ -3899,6 +4487,12 @@ function applyInsightFilters(logs) {
   if (insightFilters.purpose) {
     filtered = filtered.filter(l => (l.study_purpose || 'other') === insightFilters.purpose);
   }
+  // Activity filter ('unclassified' は activity 未設定の旧ログ)
+  if (insightFilters.activity) {
+    filtered = insightFilters.activity === 'unclassified'
+      ? filtered.filter(l => !l.activity)
+      : filtered.filter(l => l.activity === insightFilters.activity);
+  }
   if (insightFilters.sessionLength) {
     filtered = filtered.filter(l => {
       if (insightFilters.sessionLength === 'short') return l.duration_minutes <= 30;
@@ -3920,6 +4514,196 @@ function resetInsightFilters() {
   insightFilters.focusLevel = '';
   insightFilters.sessionLength = '';
   insightFilters.purpose = '';
+  insightFilters.activity = '';
+}
+
+// ==================== Phase 1: QB正答率分析 ====================
+// ランキングに載せる最低解答数。少数のサンプルで「弱点科目」と断じないための下限。
+const ACC_MIN_SAMPLE = 20;
+
+function accColor(a) {
+  if (a < 60) return '#ef4444';
+  if (a < 75) return '#f59e0b';
+  if (a < 85) return '#3b82f6';
+  return '#10b981';
+}
+
+// qb_progress（現在値＝過去すべての累積）から正答率の断面を作る。
+// 注意: correct は既定値が 0 のため、done>0 かつ correct===0 の周回は
+// 「正答数が未入力」とみなして集計から外す。本当に正答率0%の周回はまず無く、
+// 混ぜると全科目が0%になって分析が壊れるため。
+function buildQBAccuracyStats(qb) {
+  const idToName = {};
+  subjectCategories.forEach(c => c.subjects.forEach(s => { idToName[s.id] = s.name; }));
+
+  const subjects = [];
+  const roundAgg = {};
+  let totalDone = 0, totalCorrect = 0;
+  let unfilledRounds = 0, unfilledDone = 0;
+  const unfilledSubjects = new Set();
+
+  Object.entries(qb || {}).forEach(([sid, rounds]) => {
+    let done = 0, correct = 0;
+    const byRound = [];
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const d = r.done || 0, c = r.correct || 0;
+      if (d <= 0) return;
+      if (c <= 0) {
+        unfilledRounds++; unfilledDone += d;
+        unfilledSubjects.add(idToName[sid] || sid);
+        return;
+      }
+      done += d; correct += c;
+      byRound.push({ round: rk, done: d, correct: c, acc: (c / d) * 100 });
+      if (!roundAgg[rk]) roundAgg[rk] = { done: 0, correct: 0, subjects: 0 };
+      roundAgg[rk].done += d; roundAgg[rk].correct += c; roundAgg[rk].subjects++;
+    });
+    if (done > 0) {
+      byRound.sort((a, b) => parseInt(a.round) - parseInt(b.round));
+      subjects.push({ id: sid, name: idToName[sid] || sid, done, correct,
+                      acc: (correct / done) * 100, byRound });
+      totalDone += done; totalCorrect += correct;
+    }
+  });
+
+  const rounds = Object.entries(roundAgg)
+    .map(([rk, v]) => ({ round: rk, done: v.done, correct: v.correct,
+                         acc: (v.correct / v.done) * 100, subjects: v.subjects }))
+    .sort((a, b) => parseInt(a.round) - parseInt(b.round));
+
+  return {
+    subjects, rounds, totalDone, totalCorrect,
+    totalAcc: totalDone > 0 ? (totalCorrect / totalDone) * 100 : null,
+    unfilledRounds, unfilledDone, unfilledSubjects: [...unfilledSubjects],
+    ranked: subjects.filter(s => s.done >= ACC_MIN_SAMPLE).sort((a, b) => a.acc - b.acc),
+    thin:   subjects.filter(s => s.done <  ACC_MIN_SAMPLE).sort((a, b) => b.done - a.done)
+  };
+}
+
+// ==================== Phase 2: 学習パイプラインと未回収在庫 ====================
+// 動画の視聴が QB1周目より何pt先行しているか。これ以上開いたら「未回収」とみなす。
+const BACKLOG_MIN_GAP = 20;
+
+// 科目数を単位にした学習パイプライン。
+// 動画は「本」、QBは「問」で単位が違うので合算できない。
+// そこで「その段階に到達した科目がいくつあるか」で串刺しにする。
+function buildPipeline(qb, video) {
+  const idToName = {};
+  subjectCategories.forEach(c => c.subjects.forEach(s => { idToName[s.id] = s.name; }));
+
+  const ids = new Set([...Object.keys(qb || {}), ...Object.keys(video || {})]);
+  const rows = [];
+  ids.forEach(sid => {
+    const v = (video || {})[sid] || { done: 0, total: 0 };
+    const rounds = (qb || {})[sid] || {};
+    const r1 = rounds['1'] || null;
+    const laterDone = Object.entries(rounds)
+      .filter(([rk]) => parseInt(rk) >= 2)
+      .reduce((s, [, r]) => s + (r.done || 0), 0);
+    const hasMaterial = (v.total > 0) || (r1 && r1.total > 0);
+    if (!hasMaterial) return;
+    rows.push({
+      id: sid,
+      name: idToName[sid] || sid,
+      videoDone: v.done || 0, videoTotal: v.total || 0,
+      videoPct: v.total > 0 ? (v.done / v.total) * 100 : null,
+      qb1Done: r1 ? (r1.done || 0) : 0, qb1Total: r1 ? (r1.total || 0) : 0,
+      qb1Pct: (r1 && r1.total > 0) ? (r1.done / r1.total) * 100 : null,
+      laterDone
+    });
+  });
+
+  // 各科目を「到達している最も先の段階」ひとつに割り当てる。
+  // 累積ファネルにしないのは、動画を終える前にQBへ進むことが普通にあり、
+  // 段階が入れ子にならない（＝途中でバーが太くなる）ため。
+  // 排他的に振り分ければ合計＝登録科目数になり、分布として正しく読める。
+  function stageOf(r) {
+    if (r.laterDone > 0) return 'qb2';
+    if (r.qb1Total > 0 && r.qb1Done >= r.qb1Total) return 'qb1done';
+    if (r.qb1Done > 0) return 'qb1';
+    if (r.videoTotal > 0 && r.videoDone >= r.videoTotal) return 'videoDone';
+    if (r.videoDone > 0) return 'videoWip';
+    return 'none';
+  }
+  rows.forEach(r => { r.stage = stageOf(r); });
+
+  const STAGE_DEFS = [
+    { key: 'none',      label: '未着手',              color: '#475569' },
+    { key: 'videoWip',  label: '動画を視聴中',        color: '#7c3aed' },
+    { key: 'videoDone', label: '動画は完了・QB未着手', color: '#a78bfa' },
+    { key: 'qb1',       label: 'QB1周目を進行中',     color: '#4ECDC4' },
+    { key: 'qb1done',   label: 'QB1周目を完了',       color: '#3b82f6' },
+    { key: 'qb2',       label: '2周目以降',           color: '#10b981' },
+  ];
+  const stages = STAGE_DEFS.map(s => ({
+    ...s,
+    count: rows.filter(r => r.stage === s.key).length
+  }));
+
+  // 動画は進んだのに QB に入っていない＝回収待ちの科目数
+  const awaitingQB = rows.filter(r => r.stage === 'videoWip' || r.stage === 'videoDone').length;
+
+  return { rows, stages, total: rows.length, awaitingQB };
+}
+
+// 視聴済みだが QB で回収できていない科目＝「未回収在庫」。
+// lastVideoAt は activity='video' のログから引くので、Phase 0 以降に
+// 記録した分しか日付が付かない（付かないものは null のまま末尾に置く）。
+function buildBacklog(pipelineRows, allLogs, logicalToday) {
+  const lastVideoAt = {};
+  allLogs.forEach(l => {
+    if (l.activity !== 'video') return;
+    const n = normalizeSubjectName(l.subject_name);
+    const t = new Date(l.started_at);
+    if (!lastVideoAt[n] || t > lastVideoAt[n]) lastVideoAt[n] = t;
+  });
+
+  return pipelineRows
+    .filter(r => r.videoTotal > 0 && r.videoDone > 0 && r.videoPct !== null)
+    .map(r => {
+      const q1 = r.qb1Pct === null ? 0 : r.qb1Pct;
+      const gap = r.videoPct - q1;
+      const seen = lastVideoAt[r.name] || null;
+      const days = seen
+        ? Math.max(0, Math.round((getLogicalDate(logicalToday) - getLogicalDate(seen)) / 86400000))
+        : null;
+      return { ...r, gap, lastVideoAt: seen, daysSince: days };
+    })
+    .filter(r => r.gap >= BACKLOG_MIN_GAP)
+    .sort((a, b) => {
+      if (a.daysSince === null && b.daysSince === null) return b.gap - a.gap;
+      if (a.daysSince === null) return 1;   // 日付不明は後ろへ
+      if (b.daysSince === null) return -1;
+      return b.daysSince - a.daysSince || b.gap - a.gap;
+    });
+}
+
+// インプット(講義動画) と アウトプット(問題演習) の時間比。
+// activity 未設定の旧ログは比率から除外し、件数だけ別に伝える。
+function buildIOBalance(logs) {
+  const acc = { video: 0, qb: 0, other: 0, unclassified: 0 };
+  logs.forEach(l => {
+    const m = l.duration_minutes || 0;
+    if (!l.activity) acc.unclassified += m;
+    else if (l.activity === 'video') acc.video += m;
+    else if (l.activity === 'qb') acc.qb += m;
+    else acc.other += m;
+  });
+  const core = acc.video + acc.qb;
+  return {
+    ...acc,
+    core,
+    videoShare: core > 0 ? (acc.video / core) * 100 : null,
+    ratio: acc.video > 0 ? acc.qb / acc.video : null,
+    hasData: core > 0
+  };
+}
+
+function median(arr) {
+  if (!arr.length) return 0;
+  const s = [...arr].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
 // SVG icons for section headers (no emoji)
@@ -3934,10 +4718,13 @@ const insightIcons = {
   list: '<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>',
   ai: '<svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>',
   focus: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
+  target: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
 };
 
 async function renderInsights(){
   const ct=document.getElementById('page-container');
+  await loadQBFromSupabase();
+  await loadVideoFromSupabase();
   const allLogs=await fetchStudyLogs();
   const logs=applyInsightFilters(allLogs);
   const logicalToday=getLogicalDate(new Date());
@@ -4481,6 +5268,47 @@ async function renderInsights(){
     </div>`;
   }).join('');
 
+  // ===== Phase 1: QB正答率分析 =====
+  // 正答率は qb_progress の現在値（＝過去すべての累積）から出すので、
+  // 期間フィルタとは独立に、初日からの全データが対象になる。
+  const acc = buildQBAccuracyStats(getQBProgress());
+
+  // 科目ごとの累積学習時間。散布図の x 軸に使う。
+  // qb は科目ID（"2C"）、study_logs は表示名（"2C 循環器"）なので名前側に寄せて突き合わせる。
+  const subjMinutesAll = {};
+  allLogs.forEach(l => {
+    const n = normalizeSubjectName(l.subject_name);
+    subjMinutesAll[n] = (subjMinutesAll[n] || 0) + l.duration_minutes;
+  });
+
+  const scatterPoints = acc.ranked
+    .map(s => ({ x: (subjMinutesAll[s.name] || 0) / 60, y: s.acc, name: s.name, done: s.done }))
+    .filter(p => p.x > 0);
+  const medHours = median(scatterPoints.map(p => p.x));
+  const medAcc   = median(scatterPoints.map(p => p.y));
+  // 右下＝時間をかけているのに正答率が低い＝やり方を見直すべき科目
+  const reviewMethod = scatterPoints
+    .filter(p => p.x >= medHours && p.y < medAcc)
+    .sort((a, b) => a.y - b.y);
+
+  // 周回別の伸び（同一科目で2周目以降の記録がある分だけ）
+  const roundGains = acc.subjects
+    .filter(s => s.byRound.length >= 2)
+    .map(s => {
+      const first = s.byRound[0], last = s.byRound[s.byRound.length - 1];
+      return { name: s.name, from: first, to: last, gain: last.acc - first.acc };
+    })
+    .sort((a, b) => b.gain - a.gain);
+
+  const hasAccData = acc.ranked.length > 0 || acc.subjects.length > 0;
+
+  // ===== Phase 2: パイプライン / 未回収在庫 / インプット・アウトプット比 =====
+  const pipeline = buildPipeline(getQBProgress(), getVideoProgress());
+  const backlog  = buildBacklog(pipeline.rows, allLogs, new Date());
+  const backlogDated = backlog.filter(b => b.daysSince !== null);
+  const oldestBacklog = backlogDated.length > 0 ? backlogDated[0] : null;
+  const io = buildIOBalance(logs);
+
   // --- Build HTML ---
   ct.innerHTML = `
     <div class="page-header">
@@ -4505,6 +5333,16 @@ async function renderInsights(){
         <input type="date" class="filter-date-input" id="filter-date-from" value="${insightFilters.dateFrom}">
         <span class="filter-sep">〜</span>
         <input type="date" class="filter-date-input" id="filter-date-to" value="${insightFilters.dateTo}">
+      </div>
+      <div class="filter-row">
+        <div class="filter-group">
+          <span class="filter-label">活動</span>
+          <div class="filter-chips" id="filter-activity-chips">
+            ${[{v:'',l:'全て'}].concat(ACTIVITIES.map(a=>({v:a.v,l:a.l}))).concat([{v:'unclassified',l:'未分類'}]).map(a =>
+              `<button class="filter-chip ${insightFilters.activity===a.v?'active':''}" data-activity="${a.v}">${a.l}</button>`
+            ).join('')}
+          </div>
+        </div>
       </div>
       <div class="filter-row">
         <div class="filter-group">
@@ -4582,6 +5420,251 @@ async function renderInsights(){
         <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
       </div>
     </div>
+    <!-- Section D: QB正答率と弱点科目 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target || insightIcons.focus}</div>
+        <div><div class="section-title">QB正答率と弱点科目</div><div class="section-subtitle">全周回の累積から算出（期間フィルタの影響を受けません）</div></div>
+      </div>
+
+      ${!hasAccData ? `
+        <div class="data-collecting-msg">
+          教材進捗トラッカーで各周回の「正答」数を入力すると、ここに弱点科目が表示されます。
+          <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
+        </div>
+      ` : `
+        <div class="acc-summary-grid">
+          <div class="acc-summary-item">
+            <div class="acc-summary-label">総解答数</div>
+            <div class="acc-summary-value">${acc.totalDone.toLocaleString()}<span class="acc-unit">問</span></div>
+          </div>
+          <div class="acc-summary-item">
+            <div class="acc-summary-label">総正答数</div>
+            <div class="acc-summary-value">${acc.totalCorrect.toLocaleString()}<span class="acc-unit">問</span></div>
+          </div>
+          <div class="acc-summary-item">
+            <div class="acc-summary-label">全体正答率</div>
+            <div class="acc-summary-value" style="color:${accColor(acc.totalAcc || 0)}">${acc.totalAcc !== null ? acc.totalAcc.toFixed(1) : '-'}<span class="acc-unit">%</span></div>
+          </div>
+          <div class="acc-summary-item">
+            <div class="acc-summary-label">分析対象</div>
+            <div class="acc-summary-value">${acc.ranked.length}<span class="acc-unit">科目</span></div>
+          </div>
+        </div>
+
+        ${acc.unfilledRounds > 0 ? `
+          <div class="acc-warn-box">
+            ${IC.warn} <strong>正答数が未入力の周回が ${acc.unfilledRounds} 件</strong>（計 ${acc.unfilledDone.toLocaleString()}問）あり、集計から除外しています。
+            <div class="acc-warn-sub">対象: ${acc.unfilledSubjects.slice(0, 6).join('、')}${acc.unfilledSubjects.length > 6 ? ` 他${acc.unfilledSubjects.length - 6}科目` : ''}</div>
+            <div style="margin-top:8px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーで入力する →</a></div>
+          </div>
+        ` : ''}
+
+        ${acc.ranked.length > 0 ? `
+          <div class="acc-rank-head">正答率の低い順（${ACC_MIN_SAMPLE}問以上を解いた科目）</div>
+          <div class="acc-rank-list">
+            ${acc.ranked.map(s => `
+              <div class="acc-rank-row">
+                <div class="acc-rank-name" title="${s.name}">${s.name}</div>
+                <div class="acc-rank-bar"><div style="width:${Math.max(2, s.acc)}%;background:${accColor(s.acc)}"></div></div>
+                <div class="acc-rank-pct" style="color:${accColor(s.acc)}">${s.acc.toFixed(0)}%</div>
+                <div class="acc-rank-n">${s.correct}/${s.done}</div>
+              </div>
+            `).join('')}
+          </div>
+        ` : `<div class="data-collecting-msg">${ACC_MIN_SAMPLE}問以上を解いた科目がまだありません。</div>`}
+
+        ${acc.thin.length > 0 ? `
+          <div class="acc-thin-note">データ不足（${ACC_MIN_SAMPLE}問未満のため順位づけから除外）: ${acc.thin.map(s => `${s.name}(${s.done}問)`).join('、')}</div>
+        ` : ''}
+      `}
+    </div>
+
+    <!-- Section E: 投下時間 × 正答率 -->
+    ${scatterPoints.length >= 3 ? `
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.115s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.trend}</div>
+        <div><div class="section-title">投下時間 × 正答率</div><div class="section-subtitle">時間をかけた分だけ伸びているかを確認する</div></div>
+      </div>
+      <div class="acc-scatter-wrap"><canvas id="insightAccScatter"></canvas></div>
+      <div class="acc-quad-legend">
+        <span><i style="background:#10b981"></i>左上: 短時間で得点源</span>
+        <span><i style="background:#3b82f6"></i>右上: 時間なりに伸びている</span>
+        <span><i style="background:#64748b"></i>左下: これから伸ばす余地</span>
+        <span><i style="background:#ef4444"></i>右下: 時間の割に伸びていない</span>
+      </div>
+      ${reviewMethod.length > 0 ? `
+        <div class="acc-review-box">
+          <div class="acc-review-head">${IC.warn} 学習方法の見直し候補（時間・正答率とも中央値と比較）</div>
+          ${reviewMethod.slice(0, 5).map(p => `
+            <div class="acc-review-row">
+              <span class="acc-review-name">${p.name}</span>
+              <span class="acc-review-stat">${p.x.toFixed(1)}h 投下 / 正答率 <strong style="color:${accColor(p.y)}">${p.y.toFixed(0)}%</strong></span>
+            </div>
+          `).join('')}
+          <div class="acc-review-note">中央値: ${medHours.toFixed(1)}h ・ 正答率 ${medAcc.toFixed(0)}%</div>
+        </div>
+      ` : `<div class="acc-review-note" style="margin-top:12px">時間の割に正答率が低い科目はありません。</div>`}
+    </div>
+    ` : ''}
+
+    <!-- Section F: 周回別の伸び -->
+    ${acc.rounds.length > 0 ? `
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.118s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.summary}</div>
+        <div><div class="section-title">周回別の伸び</div><div class="section-subtitle">解き直すたびにどれだけ上がっているか</div></div>
+      </div>
+      <div class="round-tile-row">
+        ${acc.rounds.map((r, i) => {
+          const prev = i > 0 ? acc.rounds[i-1] : null;
+          const delta = prev ? r.acc - prev.acc : null;
+          return `<div class="round-tile">
+            <div class="round-tile-label">${r.round}周目</div>
+            <div class="round-tile-value" style="color:${accColor(r.acc)}">${r.acc.toFixed(0)}<span class="acc-unit">%</span></div>
+            <div class="round-tile-sub">${r.correct.toLocaleString()}/${r.done.toLocaleString()}問 ・ ${r.subjects}科目</div>
+            ${delta !== null ? `<div class="round-tile-delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)}pt</div>` : '<div class="round-tile-delta neutral">基準</div>'}
+          </div>`;
+        }).join('')}
+      </div>
+      ${roundGains.length > 0 ? `
+        <div class="acc-rank-head" style="margin-top:16px">科目別の伸び（2周目以降の記録がある科目）</div>
+        <div class="gain-list">
+          ${roundGains.map(g => `
+            <div class="gain-row">
+              <span class="gain-name">${g.name}</span>
+              <span class="gain-track">
+                <span style="color:${accColor(g.from.acc)}">${g.from.acc.toFixed(0)}%</span>
+                <span class="gain-arrow">→</span>
+                <span style="color:${accColor(g.to.acc)}">${g.to.acc.toFixed(0)}%</span>
+              </span>
+              <span class="gain-delta ${g.gain >= 0 ? 'up' : 'down'}">${g.gain >= 0 ? '+' : ''}${g.gain.toFixed(1)}pt</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : `<div class="acc-thin-note">同じ科目で2周目以降を記録すると、ここに伸びが表示されます。</div>`}
+    </div>
+    ` : ''}
+
+    <!-- Section G: 学習パイプラインと未回収在庫 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.list}</div>
+        <div><div class="section-title">学習パイプライン</div><div class="section-subtitle">講義動画からQBまで、科目がどこまで進んでいるか</div></div>
+      </div>
+
+      ${pipeline.total === 0 ? `
+        <div class="data-collecting-msg">
+          教材進捗トラッカーで動画の本数とQBの問題数を登録すると、ここにパイプラインが表示されます。
+          <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
+        </div>
+      ` : `
+        <div class="funnel-caption">登録済み ${pipeline.total} 科目が、いまどの段階にあるか</div>
+        <div class="stage-stack">
+          ${pipeline.stages.filter(s => s.count > 0).map(s =>
+            `<div class="stage-seg" style="width:${(s.count / pipeline.total) * 100}%;background:${s.color}"
+                  title="${s.label}: ${s.count}科目"></div>`
+          ).join('')}
+        </div>
+        <div class="funnel-list">
+          ${pipeline.stages.map(s => {
+            const pct = pipeline.total > 0 ? (s.count / pipeline.total) * 100 : 0;
+            return `<div class="funnel-row ${s.count === 0 ? 'is-empty' : ''}">
+              <div class="funnel-label"><i class="stage-dot" style="background:${s.color}"></i>${s.label}</div>
+              <div class="funnel-bar"><div style="width:${s.count > 0 ? Math.max(1.5, pct) : 0}%;background:${s.color}"></div></div>
+              <div class="funnel-count">${s.count}<span class="funnel-of">科目</span></div>
+              <div class="funnel-drop">${pct > 0 ? pct.toFixed(0) + '%' : ''}</div>
+            </div>`;
+          }).join('')}
+        </div>
+        ${pipeline.awaitingQB > 0 ? `
+          <div class="funnel-highlight">
+            動画を進めたのに QB に<strong>まだ一度も</strong>入っていない科目が <strong>${pipeline.awaitingQB}</strong> 科目あります。
+          </div>
+        ` : ''}
+
+        <div class="backlog-block">
+          <div class="backlog-head">
+            <span class="backlog-title">未回収の在庫</span>
+            <span class="backlog-sub">QB1周目が動画より${BACKLOG_MIN_GAP}pt以上遅れている科目（着手済みでも遅れていれば対象）</span>
+          </div>
+          ${backlog.length === 0 ? `
+            <div class="backlog-ok">${IC.check} 未回収の科目はありません。動画とQBのペースが揃っています。</div>
+          ` : `
+            <div class="backlog-summary">
+              <div class="backlog-stat">
+                <div class="backlog-stat-value" style="color:${backlog.length >= 5 ? '#ef4444' : '#f59e0b'}">${backlog.length}</div>
+                <div class="backlog-stat-label">消化待ちの科目</div>
+              </div>
+              <div class="backlog-stat">
+                <div class="backlog-stat-value">${oldestBacklog ? oldestBacklog.daysSince : '--'}<span class="acc-unit">${oldestBacklog ? '日前' : ''}</span></div>
+                <div class="backlog-stat-label">${oldestBacklog ? '最古: ' + oldestBacklog.name : '最終視聴日は記録待ち'}</div>
+              </div>
+              <div class="backlog-stat">
+                <div class="backlog-stat-value">${Math.round(backlog.reduce((s,b)=>s+b.gap,0)/backlog.length)}<span class="acc-unit">pt</span></div>
+                <div class="backlog-stat-label">平均ギャップ</div>
+              </div>
+            </div>
+            <div class="backlog-list">
+              ${backlog.map(b => `
+                <div class="backlog-row">
+                  <span class="backlog-name">${b.name}</span>
+                  <span class="backlog-track">
+                    <span class="backlog-vid">動画 ${b.videoPct.toFixed(0)}%</span>
+                    <span class="gain-arrow">→</span>
+                    <span class="backlog-qb">QB ${b.qb1Pct === null ? '未着手' : b.qb1Pct.toFixed(0) + '%'}</span>
+                  </span>
+                  <span class="backlog-gap" style="color:${b.gap >= 40 ? '#ef4444' : '#f59e0b'}">+${b.gap.toFixed(0)}pt</span>
+                  <span class="backlog-days">${b.daysSince !== null ? b.daysSince + '日前' : '—'}</span>
+                </div>
+              `).join('')}
+            </div>
+            <div class="backlog-note">
+              見た講義は、QBで回収するまでは資産ではなく負債です。古い順に潰していきましょう。
+              ${backlog.length > backlogDated.length ? `<br>※ ${backlog.length - backlogDated.length}科目は「講義動画」として記録した学習ログが無いため、経過日数を表示できません。` : ''}
+            </div>
+          `}
+        </div>
+      `}
+    </div>
+
+    <!-- Section H: インプット / アウトプット比率 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.125s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.summary}</div>
+        <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">講義動画に偏っていないか（${presetLabels[insightFilters.preset]}）</div></div>
+      </div>
+
+      ${!io.hasData ? `
+        <div class="data-collecting-msg">
+          学習を記録するときに「活動の種類」を選ぶと、講義動画と問題演習の時間配分がここに出ます。
+          ${io.unclassified > 0 ? `<div class="acc-thin-note" style="margin-top:8px">この期間には活動が未分類のログが ${formatMinutes(io.unclassified)} 分あります（比率の計算から除外）。</div>` : ''}
+        </div>
+      ` : `
+        <div class="io-ratio-line">
+          <span class="io-ratio-big">${io.ratio === null ? '—' : '1 : ' + io.ratio.toFixed(1)}</span>
+          <span class="io-ratio-cap">講義動画 : 問題演習</span>
+        </div>
+        <div class="io-bar">
+          <div class="io-seg io-video" style="width:${io.core > 0 ? (io.video / io.core) * 100 : 0}%"></div>
+          <div class="io-seg io-qb" style="width:${io.core > 0 ? (io.qb / io.core) * 100 : 0}%"></div>
+        </div>
+        <div class="io-legend">
+          <span><i class="io-video"></i>講義動画 ${formatMinutes(io.video)}</span>
+          <span><i class="io-qb"></i>問題演習 ${formatMinutes(io.qb)}</span>
+          ${io.other > 0 ? `<span><i class="io-other"></i>暗記・復習など ${formatMinutes(io.other)}（比率対象外）</span>` : ''}
+        </div>
+        ${io.videoShare !== null && io.videoShare > 60 ? `
+          <div class="acc-warn-box" style="margin-top:12px;margin-bottom:0">
+            ${IC.warn} 講義動画が ${io.videoShare.toFixed(0)}% を占めています。インプット過多の傾向です。
+            <div class="acc-warn-sub">動画を見ただけで理解した気になるのは、最も起こりやすい失敗です。QBで回収する時間を増やしましょう。</div>
+          </div>
+        ` : ''}
+        ${io.unclassified > 0 ? `<div class="acc-thin-note">活動が未分類のログ ${formatMinutes(io.unclassified)} は比率から除外しています。</div>` : ''}
+      `}
+    </div>
+
     <!-- Section A: Recent Rhythm & Trends -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
       <div class="section-header" style="justify-content:space-between">
@@ -4886,7 +5969,7 @@ async function renderInsights(){
             const dateStr = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
             return `<div class="session-row">
               <div class="session-date">${dateStr}</div>
-              <div class="session-subject">${normalizeSubjectName(l.subject_name)}</div>
+              <div class="session-subject">${normalizeSubjectName(l.subject_name)}${activityChip(l.activity)}</div>
               <div class="session-duration">${formatMinutes(l.duration_minutes)}</div>
               <div class="session-focus">${l.focus_level ? '★'.repeat(Number(l.focus_level)) : '-'}</div>
               <div class="session-location">${l.location || '未設定'}</div>
@@ -4902,6 +5985,57 @@ async function renderInsights(){
 
   // --- Charts ---
   setTimeout(() => {
+    // 投下時間 × 正答率の散布図。中央値で4象限に切り、右下（時間の割に伸びていない）を赤で示す。
+    if (typeof Chart !== 'undefined' && scatterPoints.length >= 3) {
+      destroyChart('insightAccScatter');
+      const scCtx = document.getElementById('insightAccScatter');
+      if (scCtx) {
+        const ptColor = p => (p.x >= medHours && p.y <  medAcc) ? '#ef4444'
+                           : (p.x >= medHours && p.y >= medAcc) ? '#3b82f6'
+                           : (p.x <  medHours && p.y >= medAcc) ? '#10b981'
+                           : '#64748b';
+        chartInstances['insightAccScatter'] = new Chart(scCtx, {
+          type: 'scatter',
+          data: { datasets: [{
+            data: scatterPoints,
+            pointBackgroundColor: scatterPoints.map(ptColor),
+            pointBorderColor: scatterPoints.map(ptColor),
+            pointRadius: 6, pointHoverRadius: 9
+          }] },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: { callbacks: { label: c => {
+                const p = c.raw;
+                return `${p.name}: ${p.x.toFixed(1)}h / 正答率 ${p.y.toFixed(0)}% (${p.done}問)`;
+              } } }
+            },
+            scales: {
+              x: { title: { display: true, text: '累積学習時間 (h)' }, beginAtZero: true },
+              y: { title: { display: true, text: '正答率 (%)' }, min: 0, max: 100 }
+            }
+          },
+          plugins: [{
+            id: 'medianCrosshair',
+            afterDraw(chart) {
+              const { ctx: g, chartArea: a, scales } = chart;
+              if (!a) return;
+              const mx = scales.x.getPixelForValue(medHours);
+              const my = scales.y.getPixelForValue(medAcc);
+              g.save();
+              g.setLineDash([4, 4]);
+              g.strokeStyle = 'rgba(148,163,184,0.45)';
+              g.lineWidth = 1;
+              g.beginPath(); g.moveTo(mx, a.top); g.lineTo(mx, a.bottom); g.stroke();
+              g.beginPath(); g.moveTo(a.left, my); g.lineTo(a.right, my); g.stroke();
+              g.restore();
+            }
+          }]
+        });
+      }
+    }
+
     if (typeof Chart !== 'undefined' && trendData.some(v => v > 0)) {
       destroyChart('insightTrendChart');
       const ctx = document.getElementById('insightTrendChart');
@@ -5061,6 +6195,13 @@ async function renderInsights(){
     insightFilters.focusLevel = chip.dataset.focus;
     renderInsights();
   });
+  // --- Event: Activity chips ---
+  document.getElementById('filter-activity-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    insightFilters.activity = chip.dataset.activity;
+    renderInsights();
+  });
   // --- Event: Purpose chips ---
   document.getElementById('filter-purpose-chips')?.addEventListener('click', e => {
     const chip = e.target.closest('.filter-chip');
@@ -5125,10 +6266,11 @@ function renderSettings(){
         <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${currentUser.name}" placeholder="例: 田中 太郎"/></div>
         <div class="settings-field">
           <label>ログインID (変更不可)</label>
-          <div style="padding:10px; background:var(--color-bg-elevated); border-radius:var(--radius-sm); font-family:monospace; font-weight:700; color:var(--color-accent-teal); display:flex; justify-content:space-between; align-items:center;">
+          <div style="padding:10px; background:var(--color-bg-elevated); border-radius:var(--radius-sm); font-family:monospace; font-weight:700; color:${canLoginWithId() ? 'var(--color-accent-teal)' : 'var(--color-text-tertiary)'}; display:flex; justify-content:space-between; align-items:center; gap:8px;">
             <span>${currentUser.login_id || '---'}</span>
-            <span style="font-size:0.7rem; color:var(--color-text-tertiary); font-weight:normal;">※次回ログイン用</span>
+            <span style="font-size:0.7rem; color:var(--color-text-tertiary); font-weight:normal; text-align:right;">${canLoginWithId() ? '※次回ログイン用' : '※このアカウントでは使えません'}</span>
           </div>
+          ${!canLoginWithId() ? `<div style="margin-top:6px; font-size:0.72rem; color:var(--color-text-tertiary); line-height:1.6;">このアカウントは<strong>メールアドレスで登録</strong>されています。ログイン画面では「旧アカウント」タブから、下のメールアドレスとパスワードでログインしてください。</div>` : ''}
         </div>
         <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="ログイン共通" disabled style="opacity:0.6"/></div>
         <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
@@ -5258,7 +6400,7 @@ function renderSettings(){
       if(!newName){ document.getElementById('input-name').focus(); showToast(' 名前を入力してください'); return; }
       
       e.target.textContent = '保存中...';
-      if (supabase && session) {
+      if (hasDB()) {
         const { error } = await supabase.from('profiles').upsert({
           id: session.user.id,
           full_name: newName,
@@ -5350,8 +6492,26 @@ registerRoute('/countdown',()=>{if(!session){renderLogin();return;}ensureAppLayo
 registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
 
 
+// ログイン確定後に一度だけ走らせる。教材進捗を読み込み、その日の断面を必ず1件残す。
+// （進捗を編集しなかった日でも断面があることで、差分計算が正しく日割りになる）
+async function bootstrapProgressTracking() {
+  try {
+    await loadQBFromSupabase();
+    await loadVideoFromSupabase();
+    await fetchProgressSnapshots();
+    saveProgressSnapshot();
+  } catch(e) { console.warn('progress bootstrap error:', e); }
+}
+
+let authSubscription = null;
+
 async function initApp(){
   console.log('DEBUG: initApp started');
+  // initApp はログイン成功時にも呼ばれる。前回のリスナーを外さないと多重登録になる。
+  if (authSubscription) {
+    try { authSubscription.data.subscription.unsubscribe(); } catch(e) {}
+    authSubscription = null;
+  }
   // Initial Theme Check
   applyTheme();
 
@@ -5375,13 +6535,16 @@ async function initApp(){
           currentUser.avatar_url = profile.avatar_url || '';
           currentUser.daily_goal = profile.daily_goal || 60;
           currentUser.login_id = profile.login_id || '';
+          currentUser.email = (session && session.user && session.user.email) || '';
         }
-
+        // 初回描画をネットワーク待ちで止めないよう、あえて await しない
+        bootstrapProgressTracking();
       }
 
-      supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      authSubscription = supabase.auth.onAuthStateChange(async (_event, newSession) => {
         console.log('DEBUG: Auth state changed:', _event);
         session = newSession;
+        if (session) isDemoMode = false;
         if (session) {
           const profile = await fetchUserProfile(session.user.id).catch(() => null);
           if (profile) {
@@ -5392,6 +6555,7 @@ async function initApp(){
             currentUser.avatar_url = profile.avatar_url || '';
             currentUser.daily_goal = profile.daily_goal || 60;
             currentUser.login_id = profile.login_id || '';
+          currentUser.email = (session && session.user && session.user.email) || '';
             // Sync weekly goals from DB to localStorage
             if (profile.weekly_goals) {
               try {
@@ -5414,9 +6578,11 @@ async function initApp(){
               } catch(e) {}
             }
           }
-
         }
         renderRoute(currentRoute);
+        // 認証コールバックの内側で Supabase を呼ぶとロックを奪い合って固まるため、
+        // 進捗の読み込みはコールバックを抜けてから、待たずに走らせる。
+        if (session) setTimeout(() => { bootstrapProgressTracking(); }, 0);
       });
 
     } catch(e) {

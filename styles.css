@@ -519,7 +519,7 @@ svg { width: 24px; height: 24px; flex-shrink: 0; }
   :root { --sidebar-width: 0px; }
   body { overflow-x: hidden; } /* Fix horizontal scroll overall */
   
-  #main-content { margin-left: 0 !important; margin-bottom: 90px; width: 100%; overflow-x: hidden; }
+  #main-content { margin-left: 0 !important; margin-bottom: var(--bottom-nav-h); width: 100%; overflow-x: hidden; }
   #page-container { padding: var(--space-md); width: 100%; max-width: 100vw; overflow-x: hidden; }
   
   /* Bottom Dock Style */
@@ -711,10 +711,46 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
   max-width: 400px;
   box-shadow: var(--shadow-xl);
   position: relative;
-  overflow: hidden;
+  /* overflow:hidden にすると .confirm-actions の position:sticky が効かなくなるため
+     上端バーの角丸は ::before 側の border-radius で処理する */
+  overflow: visible;
+  /* 余白があるときだけ中央に寄せる。あふれたときは上詰めになりスクロールで全体に届く */
+  margin: auto;
+  flex-shrink: 0;
 }
 .confirm-card::before {
-  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px; background: var(--gradient-primary);
+  content: ''; position: absolute; top: 0; left: 0; right: 0; height: 4px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+}
+
+/* 保存・破棄はフォームが長くても常に押せるように、スクロール領域の下端へ固定する。
+   カードの左右パディングを打ち消して全幅に広げないと、
+   背後のフォーム内容がバーの脇から透けて見えてしまう。 */
+.confirm-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  position: sticky;
+  bottom: 0;
+  /* --color-bg-card は rgba(...,0.7) の半透明。そのまま敷くと
+     スクロールして下を通るフォーム内容が透けてしまうので、
+     不透明な下地の上にカード色を重ねて「カードと同じ見た目の不透明色」を作る。 */
+  background: linear-gradient(var(--color-bg-card), var(--color-bg-card)), var(--color-bg-primary);
+  padding: 12px var(--space-xl) calc(var(--space-xl) - 2px);
+  margin-left: calc(var(--space-xl) * -1);
+  margin-right: calc(var(--space-xl) * -1);
+  margin-bottom: calc(var(--space-xl) * -1);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  z-index: 2;
+}
+.confirm-actions::before {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 100%;
+  height: 20px;
+  background: linear-gradient(to top, var(--color-bg-primary), transparent);
+  pointer-events: none;
 }
 
 .confirm-form input:focus, .confirm-form select:focus, .confirm-form textarea:focus { 
@@ -1482,3 +1518,536 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 }
 
 /* ===== PDCA CYCLE STYLES ===== */
+
+/* ==================== Phase 0: 活動種別 / 教材進捗 ==================== */
+
+/* セッション一覧・学習ログに付く小さな活動バッジ */
+.activity-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+  color: var(--chip-color, #94a3b8);
+  background: color-mix(in srgb, var(--chip-color, #94a3b8) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip-color, #94a3b8) 38%, transparent);
+}
+
+/* 記録フォームの活動セグメントコントロール。
+   5項目を等幅で1行に収める（flex-wrap だと最後の1つが全幅に伸びて不格好になる） */
+.activity-segment-control {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 5px;
+  margin-top: 4px;
+}
+.activity-segment-control .btn {
+  padding: 6px 2px;
+  font-size: 0.72rem;
+  justify-content: center;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* 教材進捗トラッカー: 動画/QB の2本立てバー */
+.prog-dual-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+}
+.prog-dual-tag {
+  min-width: 32px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--chip-color, #94a3b8);
+}
+.prog-dual-bar {
+  flex: 1;
+  min-width: 32px;
+  height: 6px;
+  background: var(--color-bg-elevated);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.prog-dual-pct {
+  min-width: 34px;
+  text-align: right;
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+/* 動画がQBより先行している（＝未回収の在庫がある）ことを示すバッジ */
+.gap-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--chip-color, #f59e0b);
+  background: color-mix(in srgb, var(--chip-color, #f59e0b) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip-color, #f59e0b) 40%, transparent);
+}
+
+@media (max-width: 600px) {
+  .activity-segment-control { gap: 4px; }
+  .activity-segment-control .btn { font-size: 0.63rem; padding: 6px 1px; }
+}
+
+/* ==================== Phase 1: QB正答率分析 ==================== */
+
+.acc-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.acc-summary-item {
+  background: var(--color-bg-elevated);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.acc-summary-label { font-size: 0.7rem; color: var(--color-text-tertiary); margin-bottom: 4px; }
+.acc-summary-value { font-size: 1.5rem; font-weight: 800; line-height: 1.1; }
+.acc-unit { font-size: 0.7rem; font-weight: 500; color: var(--color-text-secondary); margin-left: 2px; }
+
+.acc-link { color: var(--color-accent-teal); font-size: 0.82rem; text-decoration: none; font-weight: 600; }
+.acc-link:hover { text-decoration: underline; }
+
+.acc-warn-box {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+  font-size: 0.83rem;
+  line-height: 1.6;
+}
+.acc-warn-sub { color: var(--color-text-secondary); font-size: 0.76rem; margin-top: 4px; }
+
+.acc-rank-head {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.acc-rank-list { display: flex; flex-direction: column; gap: 6px; }
+.acc-rank-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.4fr) 3fr auto auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+}
+.acc-rank-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-rank-bar {
+  height: 8px;
+  background: var(--color-bg-elevated);
+  border-radius: 4px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.acc-rank-bar > div { height: 100%; border-radius: 4px; }
+.acc-rank-pct { font-weight: 800; min-width: 38px; text-align: right; }
+.acc-rank-n { font-size: 0.7rem; color: var(--color-text-tertiary); min-width: 62px; text-align: right; }
+
+.acc-thin-note {
+  margin-top: 12px;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+
+.acc-scatter-wrap { height: 300px; position: relative; }
+
+.acc-quad-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+}
+.acc-quad-legend i {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.acc-review-box {
+  margin-top: 14px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  border-radius: 8px;
+  padding: 12px;
+}
+.acc-review-head { font-size: 0.8rem; font-weight: 700; color: #fca5a5; margin-bottom: 8px; }
+.acc-review-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.acc-review-row:last-of-type { border-bottom: none; }
+.acc-review-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acc-review-stat { color: var(--color-text-secondary); white-space: nowrap; font-size: 0.78rem; }
+.acc-review-note { font-size: 0.72rem; color: var(--color-text-tertiary); margin-top: 6px; }
+
+.round-tile-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+.round-tile {
+  background: var(--color-bg-elevated);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.round-tile-label { font-size: 0.72rem; color: var(--color-text-tertiary); }
+.round-tile-value { font-size: 1.6rem; font-weight: 800; line-height: 1.2; }
+.round-tile-sub { font-size: 0.66rem; color: var(--color-text-tertiary); }
+.round-tile-delta { font-size: 0.74rem; font-weight: 700; margin-top: 4px; }
+.round-tile-delta.up { color: #10b981; }
+.round-tile-delta.down { color: #ef4444; }
+.round-tile-delta.neutral { color: var(--color-text-tertiary); font-weight: 500; }
+
+.gain-list { display: flex; flex-direction: column; gap: 4px; }
+.gain-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+.gain-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gain-track { font-weight: 700; white-space: nowrap; }
+.gain-arrow { color: var(--color-text-tertiary); margin: 0 4px; font-weight: 400; }
+.gain-delta { font-weight: 800; min-width: 58px; text-align: right; }
+.gain-delta.up { color: #10b981; }
+.gain-delta.down { color: #ef4444; }
+
+@media (max-width: 600px) {
+  .acc-rank-row { grid-template-columns: minmax(70px, 1.2fr) 2fr auto; font-size: 0.76rem; }
+  .acc-rank-n { display: none; }
+  .acc-scatter-wrap { height: 260px; }
+}
+
+/* ==================== Phase 2: パイプライン / 未回収在庫 / I-O比 ==================== */
+
+.funnel-list { display: flex; flex-direction: column; gap: 6px; }
+.funnel-row {
+  display: grid;
+  grid-template-columns: minmax(96px, 1.1fr) 3fr auto 34px;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.82rem;
+}
+.funnel-label { color: var(--color-text-secondary); white-space: nowrap; }
+.funnel-bar {
+  height: 12px;
+  background: var(--color-bg-elevated);
+  border-radius: 6px;
+  overflow: hidden;
+  min-width: 40px;
+}
+.funnel-bar > div {
+  height: 100%;
+  border-radius: 6px;
+  background: linear-gradient(90deg, #8b5cf6, #4ECDC4);
+}
+.funnel-count { font-weight: 800; min-width: 46px; text-align: right; }
+.funnel-of { font-size: 0.68rem; font-weight: 500; color: var(--color-text-tertiary); }
+.funnel-drop {
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
+  text-align: right;
+  font-weight: 600;
+}
+.funnel-row.is-empty { opacity: 0.4; }
+.funnel-caption { font-size: 0.74rem; color: var(--color-text-tertiary); margin-bottom: 8px; }
+.stage-dot {
+  display: inline-block;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.stage-stack {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--color-bg-elevated);
+  margin-bottom: 12px;
+}
+.stage-seg { height: 100%; }
+.funnel-highlight {
+  margin-top: 12px;
+  background: rgba(139, 92, 246, 0.1);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  color: #c4b5fd;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.82rem;
+}
+.funnel-highlight strong { font-size: 1.05rem; }
+
+.backlog-block {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--color-border);
+}
+.backlog-head { margin-bottom: 12px; }
+.backlog-title { font-size: 0.95rem; font-weight: 700; margin-right: 8px; }
+.backlog-sub { font-size: 0.72rem; color: var(--color-text-tertiary); }
+
+.backlog-ok {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.28);
+  color: #6ee7b7;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 0.84rem;
+}
+
+.backlog-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.backlog-stat {
+  background: var(--color-bg-elevated);
+  border-radius: 10px;
+  padding: 12px;
+  text-align: center;
+}
+.backlog-stat-value { font-size: 1.5rem; font-weight: 800; line-height: 1.15; }
+.backlog-stat-label {
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backlog-list { display: flex; flex-direction: column; gap: 2px; }
+.backlog-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 0.82rem;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.08);
+}
+.backlog-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backlog-track { white-space: nowrap; font-size: 0.76rem; }
+.backlog-vid { color: #a78bfa; font-weight: 700; }
+.backlog-qb { color: var(--color-accent-teal); font-weight: 700; }
+.backlog-gap { font-weight: 800; min-width: 52px; text-align: right; }
+.backlog-days {
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  min-width: 50px;
+  text-align: right;
+}
+.backlog-note {
+  margin-top: 10px;
+  font-size: 0.73rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.7;
+}
+
+.io-ratio-line { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.io-ratio-big { font-size: 1.9rem; font-weight: 800; }
+.io-ratio-cap { font-size: 0.74rem; color: var(--color-text-tertiary); }
+.io-bar {
+  display: flex;
+  height: 14px;
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--color-bg-elevated);
+}
+.io-seg { height: 100%; }
+.io-seg.io-video, i.io-video { background: #8b5cf6; }
+.io-seg.io-qb, i.io-qb { background: #4ECDC4; }
+i.io-other { background: #64748b; }
+.io-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 10px;
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+.io-legend i {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
+
+.baseline-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+}
+.baseline-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.baseline-text strong { font-size: 0.8rem; }
+.baseline-text span { font-size: 0.72rem; color: var(--color-text-tertiary); line-height: 1.5; }
+.baseline-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-secondary);
+  padding: 6px 12px;
+  font-size: 0.76rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.baseline-btn:hover { color: var(--color-text-primary); border-color: var(--color-accent-teal); }
+
+@media (max-width: 600px) {
+  .funnel-row { grid-template-columns: minmax(80px, 1fr) 2fr auto; font-size: 0.76rem; }
+  .funnel-drop { display: none; }
+  .backlog-row { grid-template-columns: 1fr auto auto; font-size: 0.76rem; }
+  .backlog-days { display: none; }
+  .io-ratio-big { font-size: 1.5rem; }
+}
+
+
+/* 記録フォームのオーバーレイ:
+   タイマーカードより背が高くなっても中身に届くようスクロールさせる。
+   （justify-content:center のままだと、あふれた分が上下にはみ出して押せなくなる） */
+.timer-overlay {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.timer-overlay::-webkit-scrollbar { width: 6px; }
+.timer-overlay::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.3);
+  border-radius: 3px;
+}
+
+
+/* ==================== モバイル: ボトムナビとの重なり解消 ====================
+   #sidebar は幅768px以下で position:fixed のボトムナビになり z-index:9999 で
+   ページの上に浮く。その真下に入った操作要素はタップが届かないため、
+   ナビの高さぶんを変数にして、重なりうる領域に余白として確保する。 */
+:root { --bottom-nav-h: 0px; }
+@media (max-width: 768px) {
+  :root { --bottom-nav-h: 94px; }
+}
+
+/* 記録フォームのオーバーレイ。下端の保存・破棄ボタンがナビに隠れていた */
+.timer-overlay {
+  padding: var(--space-md);
+  padding-bottom: calc(var(--space-md) + var(--bottom-nav-h));
+}
+/* padding-bottom 側でナビ分を確保しているので、ここでナビ高さを足すと二重に浮く。
+   sticky はスクロール領域の padding box を基準に止まるため bottom:0 で十分。 */
+.confirm-actions {
+  bottom: 0;
+}
+
+@media (max-width: 768px) {
+  /* ボトムナビ自体のタップ目標を広げる（40x32 は小さすぎる） */
+  .sidebar-nav .nav-item {
+    min-height: 46px;
+    min-width: 48px;
+    justify-content: center;
+  }
+  /* タイマーのモード切替タブも 30px と浅かった */
+  .mode-tab { min-height: 38px; display: flex; align-items: center; justify-content: center; }
+  /* 円形の補助ボタン（サウンド・禅モード）を親指で押せる大きさに */
+  .stopwatch-card .stopwatch-btn { min-width: 44px; min-height: 44px; }
+  /* PiP 系の小さなボタン */
+  #btn-pip, #btn-pip-color { min-height: 36px; padding-left: 12px; padding-right: 12px; }
+}
+
+/* ==================== 問題演習の問題数・正解数 ==================== */
+
+.qb-count-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  flex-wrap: nowrap;
+}
+.qb-count-row input[type="number"] {
+  width: 100%;
+  min-width: 0;
+  flex: 1 1 0;
+  text-align: center;
+  padding: 8px 4px;
+  font-size: 0.95rem;
+  font-weight: 700;
+  /* 数値スピナーは幅を食うので隠す */
+  -moz-appearance: textfield;
+}
+.qb-count-row input[type="number"]::-webkit-outer-spin-button,
+.qb-count-row input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.qb-count-sep {
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.qb-count-acc {
+  min-width: 44px;
+  text-align: right;
+  font-size: 0.9rem;
+  font-weight: 800;
+  color: var(--color-text-tertiary);
+  flex: 0 0 auto;
+}
+
+/* 学習ログ一覧に出す「14/20問 70%」バッジ */
+.qb-count-chip {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+  vertical-align: middle;
+  color: var(--chip-color, #94a3b8);
+  background: color-mix(in srgb, var(--chip-color, #94a3b8) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--chip-color, #94a3b8) 38%, transparent);
+}
+
+@media (max-width: 600px) {
+  .qb-count-acc { min-width: 38px; font-size: 0.8rem; }
+  .qb-count-sep { font-size: 0.68rem; }
+}
