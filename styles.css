@@ -2176,3 +2176,34 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   .pacer-stat-value { font-size: 1.4rem; }
   .pacer-days strong { font-size: 1.15rem; }
 }
+
+/* 総問題数のズレを知らせる修復バー */
+.fixtotal-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+.fixtotal-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1 1 240px; }
+.fixtotal-text strong { font-size: 0.82rem; color: #fcd34d; }
+.fixtotal-text span { font-size: 0.72rem; color: var(--color-text-tertiary); line-height: 1.6; }
+.fixtotal-sample { color: var(--color-text-secondary) !important; }
+.fixtotal-btn {
+  flex-shrink: 0;
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  border-radius: 6px;
+  color: #fcd34d;
+  padding: 7px 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fixtotal-btn:hover { background: rgba(245, 158, 11, 0.28); }

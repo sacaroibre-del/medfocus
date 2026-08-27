@@ -4414,6 +4414,47 @@ function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
   };
 }
 
+// その科目の「1周分の総問題数」。各周は同じ範囲を1周するので、
+// 全ての周がこの値を総数として共有するのが正しい。
+function baseTotalForSubject(rounds) {
+  const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10))
+                     .filter(Number.isFinite).sort((a, b) => a - b);
+  if (!keys.length) return 0;
+  const first = rounds[String(keys[0])];
+  if (first && first.total > 0) return first.total;
+  // 1周目が未登録なら、登録済みの中で最大の総数を基準にする
+  return keys.reduce((m, k) => Math.max(m, (rounds[String(k)] || {}).total || 0), 0);
+}
+
+// 総数が1周目と食い違っている周を洗い出す。
+// 「+N周目」ボタンが総数を引き継いでいなかった時期に作られた周が該当する。
+function findRoundTotalMismatches(qb) {
+  const idToName = {};
+  subjectCategories.forEach(c => c.subjects.forEach(s => { idToName[s.id] = s.name; }));
+  const out = [];
+  Object.entries(qb || {}).forEach(([sid, rounds]) => {
+    const base = baseTotalForSubject(rounds);
+    if (!base) return;
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const t = r.total || 0;
+      if (t !== base) {
+        out.push({ subjectId: sid, name: idToName[sid] || sid, round: rk,
+                   from: t, to: base, done: r.done || 0 });
+      }
+    });
+  });
+  return out.sort((a, b) => a.name.localeCompare(b.name) || parseInt(a.round) - parseInt(b.round));
+}
+
+// 総数だけを1周目に揃える。done と correct は触らない。
+function normalizeRoundTotals() {
+  const qb = getQBProgress();
+  const fixes = findRoundTotalMismatches(qb);
+  fixes.forEach(f => { qb[f.subjectId][f.round].total = f.to; });
+  if (fixes.length) saveQBProgress(qb);
+  return fixes;
+}
+
 // vol（カテゴリ）配下の科目を、周回ごとに集計する。
 // 周をまたいで合算すると母数が周の数だけ膨らみ、達成率が意味を失うので合算しない。
 function volRoundAggregate(qb, video, cat) {
@@ -4540,6 +4581,19 @@ async function renderQBProgress(){
 
   ct.innerHTML=`<div style="max-width:900px;margin:0 auto;">
     <div class="page-header"><h1 class="page-title">${IC.book}教材進捗トラッカー</h1><p class="page-subtitle">科目ごとの講義動画とQBの進捗を管理</p></div>
+    ${(() => {
+      const mm = findRoundTotalMismatches(qb);
+      if (!mm.length) return '';
+      const sample = mm.slice(0, 4).map(f => `${f.name} ${f.round}周目 ${f.from}→${f.to}問`).join('、');
+      return `<div class="fixtotal-bar">
+        <div class="fixtotal-text">
+          <strong>${IC.warn} 総問題数が1周目と食い違う周が ${mm.length} 件あります</strong>
+          <span>各周は同じ範囲を1周するので、総数は全周で同じはずです。以前の「+N周目」ボタンが総数を引き継いでいなかったために起きています。</span>
+          <span class="fixtotal-sample">${sample}${mm.length > 4 ? ` 他${mm.length - 4}件` : ''}</span>
+        </div>
+        <button class="fixtotal-btn" id="btn-fix-totals">1周目に揃える</button>
+      </div>`;
+    })()}
     <div class="baseline-bar">
       <div class="baseline-text">
         <strong>過去分をまとめて入力したときは</strong>
@@ -4635,6 +4689,17 @@ async function renderQBProgress(){
   </div>`;
 
   // Event listeners
+  document.getElementById('btn-fix-totals')?.addEventListener('click', () => {
+    const preview = findRoundTotalMismatches(getQBProgress());
+    if (!preview.length) return;
+    const lines = preview.slice(0, 12).map(f => `  ${f.name} ${f.round}周目: ${f.from} → ${f.to}問`).join('\n');
+    const more = preview.length > 12 ? `\n  ...他 ${preview.length - 12} 件` : '';
+    if (!confirm(`次の ${preview.length} 件の「総問題数」を1周目に揃えます。\n\n${lines}${more}\n\n進捗（解いた数）と正答数は変更しません。よろしいですか？`)) return;
+    const fixed = normalizeRoundTotals();
+    showToast(IC.check + ` ${fixed.length}件の総問題数を揃えました`);
+    renderQBProgress();
+  });
+
   document.getElementById('btn-reset-baseline')?.addEventListener('click', async () => {
     if(!confirm('今日より前の進捗スナップショットを削除し、現在の値を新しい初期値にします。\n\n学習記録・QB進捗・動画進捗そのものは削除されません。よろしいですか？')) return;
     const n = await resetProgressBaseline();
@@ -4650,7 +4715,9 @@ async function renderQBProgress(){
     btn.addEventListener('click',()=>{
       const sub=btn.dataset.sub,round=btn.dataset.round;
       const d=getQBProgress();if(!d[sub])d[sub]={};
-      d[sub][round]={done:0,total:0,correct:0};
+      // 各周は同じ範囲を1周するので、総問題数は1周目から引き継ぐ。
+      // 引き継がないと空欄になり、進捗と同じ数を入れてしまって常に100%になる。
+      d[sub][round]={done:0,total:baseTotalForSubject(d[sub]),correct:0};
       saveQBProgress(d);renderQBProgress();
     });
   });
