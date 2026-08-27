@@ -2051,3 +2051,128 @@ i.io-other { background: #64748b; }
   .qb-count-acc { min-width: 38px; font-size: 0.8rem; }
   .qb-count-sep { font-size: 0.68rem; }
 }
+
+/* vol カード内の「周ごとの内訳」テキスト */
+.vol-round-counts {
+  font-size: 0.66rem;
+  color: var(--color-text-tertiary);
+  text-align: center;
+  margin-top: 6px;
+  line-height: 1.6;
+}
+
+/* 教材進捗トラッカーの入力行。折り返すと％が単独行に落ちて読みにくいので1行に保つ */
+.qb-metric-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.qb-metric-label {
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
+  flex: 0 0 auto;
+  min-width: 28px;
+}
+.qb-metric-row input[type="number"] {
+  flex: 0 1 48px;
+  min-width: 34px;
+  -moz-appearance: textfield;
+}
+.qb-metric-row input[type="number"]::-webkit-outer-spin-button,
+.qb-metric-row input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+/* バーは余白がある時だけ出す。狭いと数字が押し出されるため */
+.qb-metric-row > div[style*="flex:1"] { flex: 1 1 0; min-width: 0; }
+@media (max-width: 420px) {
+  .qb-metric-row > div[style*="flex:1"] { display: none; }
+}
+
+/* ==================== 試験逆算ペースメーター ==================== */
+
+.pacer-card { padding: var(--space-lg); margin-bottom: var(--space-lg); }
+
+.pacer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.pacer-head-left { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.pacer-exam-name { font-size: 1rem; font-weight: 700; }
+.pacer-days { font-size: 0.8rem; color: var(--color-text-secondary); }
+.pacer-days strong { font-size: 1.3rem; font-weight: 800; color: var(--color-accent-yellow); margin: 0 2px; }
+.pacer-select {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text-primary);
+  font-size: 0.78rem;
+  padding: 4px 8px;
+  max-width: 46vw;
+}
+
+.pacer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.pacer-stat { background: var(--color-bg-elevated); border-radius: 10px; padding: 12px; text-align: center; }
+.pacer-stat-label { font-size: 0.68rem; color: var(--color-text-tertiary); margin-bottom: 2px; }
+.pacer-stat-value { font-size: 1.7rem; font-weight: 800; line-height: 1.15; }
+.pacer-stat-sub { font-size: 0.66rem; color: var(--color-text-tertiary); margin-top: 3px; line-height: 1.5; }
+
+.pacer-bar {
+  position: relative;
+  height: 12px;
+  background: var(--color-bg-elevated);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.pacer-bar-now {
+  position: absolute; left: 0; top: 0; bottom: 0;
+  background: linear-gradient(90deg, #4ECDC4, #45B7D1);
+  border-radius: 6px;
+}
+.pacer-bar-proj {
+  position: absolute; top: 0; bottom: 0;
+  background: repeating-linear-gradient(45deg,
+    rgba(78,205,196,0.35), rgba(78,205,196,0.35) 4px,
+    transparent 4px, transparent 8px);
+}
+.pacer-bar-legend {
+  display: flex; gap: 14px; flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+}
+.pacer-bar-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+i.pacer-now { background: linear-gradient(90deg, #4ECDC4, #45B7D1); }
+i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6), rgba(78,205,196,0.6) 3px, transparent 3px, transparent 6px); border: 1px solid rgba(78,205,196,0.4); }
+
+.pacer-verdict {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.83rem;
+  line-height: 1.6;
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+}
+.pacer-verdict.good    { background: rgba(16,185,129,0.1);  border: 1px solid rgba(16,185,129,0.3);  color: #6ee7b7; }
+.pacer-verdict.warning { background: rgba(245,158,11,0.1);  border: 1px solid rgba(245,158,11,0.3);  color: #fcd34d; }
+.pacer-verdict.danger  { background: rgba(239,68,68,0.1);   border: 1px solid rgba(239,68,68,0.3);   color: #fca5a5; }
+.pacer-note {
+  margin-top: 8px;
+  font-size: 0.73rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.7;
+}
+
+@media (max-width: 600px) {
+  .pacer-stat-value { font-size: 1.4rem; }
+  .pacer-days strong { font-size: 1.15rem; }
+}

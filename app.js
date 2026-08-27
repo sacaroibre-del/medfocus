@@ -1872,21 +1872,30 @@ function renderLogin(){
 
     try {
       if (!supabase) throw new Error('接続エラー (Supabase未初期化)');
-      // Use wildcard for partial matching
-      const { data, error } = await supabase.from('profiles').select('full_name, login_id').ilike('full_name', `%${name}%`);
+      // profiles に RLS を掛けると未ログインでは直接読めなくなるため、
+      // 氏名の完全一致で最小限だけを返す RPC を使う。
+      // RPC 未作成の環境では従来の直接検索にフォールバックする。
+      let data, error;
+      const rpc = await supabase.rpc('find_login_id_by_name', { p_name: name });
+      if (rpc.error && (rpc.error.code === 'PGRST202' || /function .* does not exist/i.test(rpc.error.message || ''))) {
+        console.warn('find_login_id_by_name が未作成のため直接検索にフォールバックします');
+        const legacy = await supabase.from('profiles').select('full_name, login_id').ilike('full_name', `%${name}%`);
+        data = legacy.data; error = legacy.error;
+      } else {
+        data = rpc.data; error = rpc.error;
+      }
       if (error) throw error;
 
       if (!data || data.length === 0) {
         resultDiv.innerHTML = '<span style="color:var(--color-accent-pink);">⚠️ 一致するアカウントが見つかりません</span>';
       } else {
-        // Fetch more details to help distinguish duplicates
-        const { data: fullData, error: fullErr } = await supabase.from('profiles').select('full_name, login_id, university, grade').ilike('full_name', `%${name}%`);
-        const displayData = fullErr ? data : fullData;
+        // 絞り込み用に大学・学年まで返すのは情報を出しすぎるため、氏名とIDのみ表示する
+        const displayData = data;
 
         const list = displayData.map(u => {
           const isLegacy = !u.login_id;
           const id = u.login_id || encodeURIComponent(u.full_name);
-          const meta = u.university ? `<br><span style="font-size:0.75rem; color:var(--color-text-tertiary);">${u.university} ${u.grade || ''}</span>` : '';
+          const meta = '';  // 大学・学年は返さない（未ログインの検索で出す情報を最小限にする）
           return `<div style="padding:10px; background:var(--color-bg-elevated); border-radius:8px; margin-top:8px; display:flex; justify-content:space-between; align-items:center;">
             <span style="flex:1; margin-right:8px;">
               <b>${u.full_name}</b>さん ${meta}<br>
@@ -2488,6 +2497,10 @@ async function renderDashboard(){
     }
   }
 
+  // 試験逆算ペースメーター（目標リングの直下に出す）
+  const pacer = buildExamPacer(examCountdowns, getQBProgress(), getVideoProgress(),
+                               logs, getDailyProgressDeltas());
+
   // Format hours for ring display
   const todayH = (todayMin / 60).toFixed(1);
   const goalH = (goalMin / 60).toFixed(1);
@@ -2575,6 +2588,63 @@ async function renderDashboard(){
         <button class="goal-adjuster-btn" id="goal-inc">＋</button>
       </div>
     </div>
+
+    <!-- 試験逆算ペースメーター -->
+    ${!pacer ? '' : `
+    <div class="card pacer-card animate-slide-up" style="animation-delay:.07s">
+      <div class="pacer-head">
+        <div class="pacer-head-left">
+          ${pacer.future.length > 1 ? `
+            <select id="pacer-exam" class="pacer-select">
+              ${pacer.future.map(e => `<option value="${e.id}" ${String(e.id)===String(pacer.exam.id)?'selected':''}>${e.name}</option>`).join('')}
+            </select>` : `<span class="pacer-exam-name">${pacer.exam.name}</span>`}
+          <span class="pacer-days">あと <strong>${pacer.daysLeft}</strong> 日</span>
+        </div>
+        <select id="pacer-round" class="pacer-select">
+          ${[1,2,3].map(n => `<option value="${n}" ${n===pacer.targetRound?'selected':''}>${n}周目まで</option>`).join('')}
+        </select>
+      </div>
+
+      ${pacer.noMaterial ? `
+        <div class="data-collecting-msg" style="margin:0">
+          教材進捗トラッカーで問題数を登録すると、必要ペースを計算します。
+          <div style="margin-top:8px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
+        </div>
+      ` : `
+        <div class="pacer-grid">
+          <div class="pacer-stat">
+            <div class="pacer-stat-label">1日あたり必要</div>
+            <div class="pacer-stat-value" style="color:var(--color-accent-teal)">${Math.ceil(pacer.requiredPerDay)}<span class="acc-unit">問/日</span></div>
+            <div class="pacer-stat-sub">残り ${pacer.qb.remaining.toLocaleString()}問</div>
+          </div>
+          <div class="pacer-stat">
+            <div class="pacer-stat-label">直近7日の実績</div>
+            <div class="pacer-stat-value" style="color:${pacer.pace.perDay === null ? 'var(--color-text-tertiary)' : (pacer.pace.perDay >= pacer.requiredPerDay ? '#10b981' : '#ef4444')}">${pacer.pace.perDay === null ? '--' : Math.round(pacer.pace.perDay)}<span class="acc-unit">${pacer.pace.perDay === null ? '' : '問/日'}</span></div>
+            <div class="pacer-stat-sub">${pacer.pace.perDay === null ? '記録が貯まると表示' : (pacer.pace.perDay >= pacer.requiredPerDay ? '必要ペースを満たしています' : `不足 ${Math.ceil(pacer.requiredPerDay - pacer.pace.perDay)}問/日`)}</div>
+          </div>
+          <div class="pacer-stat">
+            <div class="pacer-stat-label">本番までの予測</div>
+            <div class="pacer-stat-value" style="color:${pacer.projectedPct === null ? 'var(--color-text-tertiary)' : accColor(Math.min(100, pacer.projectedPct))}">${pacer.projectedPct === null ? '--' : Math.min(100, Math.round(pacer.projectedPct))}<span class="acc-unit">${pacer.projectedPct === null ? '' : '%'}</span></div>
+            <div class="pacer-stat-sub">現在 ${Math.round(pacer.qb.pct)}% (${pacer.qb.done.toLocaleString()}/${pacer.qb.total.toLocaleString()}問)</div>
+          </div>
+        </div>
+
+        <div class="pacer-bar">
+          <div class="pacer-bar-now" style="width:${Math.min(100, pacer.qb.pct)}%"></div>
+          ${pacer.projectedPct !== null ? `<div class="pacer-bar-proj" style="left:${Math.min(100, pacer.qb.pct)}%;width:${Math.max(0, Math.min(100, pacer.projectedPct) - Math.min(100, pacer.qb.pct))}%"></div>` : ''}
+        </div>
+        <div class="pacer-bar-legend">
+          <span><i class="pacer-now"></i>今の進捗</span>
+          <span><i class="pacer-proj"></i>このペースでの到達見込み</span>
+        </div>
+
+        ${pacer.status === 'good' ? `<div class="pacer-verdict good">${IC.check} このペースなら ${pacer.targetRound}周目まで間に合います。</div>` : ''}
+        ${pacer.status === 'warning' ? `<div class="pacer-verdict warning">${IC.warn} ぎりぎりです。1日 ${Math.ceil(pacer.requiredPerDay)}問 を切らないようにしましょう。</div>` : ''}
+        ${pacer.status === 'danger' ? `<div class="pacer-verdict danger">${IC.warn} このままだと ${Math.round(pacer.projectedPct)}% で本番を迎えます。1日 ${Math.ceil(pacer.requiredPerDay)}問 が必要です。</div>` : ''}
+        ${pacer.status === 'unknown' ? `<div class="pacer-verdict">学習記録で「問題演習」の問題数を入れると、実績ペースと予測が出ます。</div>` : ''}
+        ${pacer.videoBlocking ? `<div class="pacer-note">${IC.warn} 講義動画が ${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
+      `}
+    </div>`}
 
     <!-- Mini Stats -->
     <div class="mini-stats-row animate-slide-up" style="animation-delay:.1s">
@@ -2674,23 +2744,26 @@ async function renderDashboard(){
           <div style="padding:var(--space-md);padding-top:0;">
             ${(()=>{
               const qb=getQBProgress();
+              const vid=getVideoProgress();
+              // 周をまたいで合算すると母数が周の数だけ増えて達成率が意味を失うため、
+              // 周ごとに1本ずつ棒を並べる。
               return subjectCategories.filter(c=>c.id.startsWith('cat-vol')).map(cat=>{
-                let done=0,total=0,correct=0;
-                cat.subjects.forEach(s=>{
-                  const rounds=qb[s.id]||{};
-                  Object.values(rounds).forEach(r=>{done+=r.done||0;total+=r.total||0;correct+=r.correct||0;});
-                });
-                const pct=total>0?Math.round(done/total*100):0;
-                const accPct=done>0?Math.round(correct/done*100):0;
-                return`<div style="margin-bottom:10px;">
-                  <div style="display:flex;justify-content:space-between;font-size:0.85rem;margin-bottom:4px;">
-                    <span style="font-weight:600;">${cat.name}</span>
-                    <span style="font-weight:700;color:${pct>=80?'#10b981':pct>=50?'#f59e0b':'var(--color-text-secondary)'};">${pct}%</span>
-                  </div>
-                  <div style="height:8px;background:var(--color-bg-elevated);border-radius:4px;overflow:hidden;margin-bottom:2px;">
-                    <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:4px;transition:width 0.5s;"></div>
-                  </div>
-                  <div style="font-size:0.7rem;color:var(--color-text-tertiary);">${done}/${total}問  正答率 ${done>0?accPct+'%':'---'}</div>
+                const agg=volRoundAggregate(qb,vid,cat);
+                return`<div style="margin-bottom:14px;">
+                  <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;">${cat.name}</div>
+                  ${agg.rounds.length===0
+                    ? '<div style="font-size:0.72rem;color:var(--color-text-tertiary);">未登録</div>'
+                    : agg.rounds.map(r=>`
+                      <div style="margin-bottom:7px;">
+                        <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:0.75rem;margin-bottom:3px;">
+                          <span style="color:var(--color-text-secondary);font-weight:600;">${r.round}周目</span>
+                          <span style="font-weight:700;font-size:0.82rem;color:${roundBarColor(r.pct)};">${r.total>0?r.pct+'%':'--'}</span>
+                        </div>
+                        <div style="height:8px;background:var(--color-bg-elevated);border-radius:4px;overflow:hidden;margin-bottom:2px;">
+                          <div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:4px;transition:width 0.5s;"></div>
+                        </div>
+                        <div style="font-size:0.68rem;color:var(--color-text-tertiary);">${r.done}/${r.total}問 ・ 正答率 ${r.accPct!==null?r.accPct+'%':'---'}</div>
+                      </div>`).join('')}
                 </div>`;
               }).join('');
             })()}
@@ -2964,6 +3037,9 @@ async function renderDashboard(){
 
   // --- Event Listeners ---
   // Period tabs
+  document.getElementById('pacer-exam')?.addEventListener('change', e => { setPacerExamId(e.target.value); renderDashboard(); });
+  document.getElementById('pacer-round')?.addEventListener('change', e => { setPacerTargetRound(parseInt(e.target.value, 10)); renderDashboard(); });
+
   document.getElementById('period-tabs')?.addEventListener('click', (e) => {
     const btn = e.target.closest('.period-tab');
     if (!btn) return;
@@ -4235,6 +4311,222 @@ function saveVideoProgress(data){
   saveProgressSnapshot();
 }
 
+// ==================== 試験逆算ペースメーター ====================
+// 「間に合うのか」「今日は何問やればいいのか」を、残り日数と実績ペースから出す。
+const PACER_ROUND_KEY = 'medfocus_pacer_target_round';
+const PACER_EXAM_KEY  = 'medfocus_pacer_exam_id';
+
+function getPacerTargetRound(){ const v = parseInt(localStorage.getItem(PACER_ROUND_KEY), 10); return Number.isFinite(v) && v >= 1 ? v : 1; }
+function setPacerTargetRound(n){ try { localStorage.setItem(PACER_ROUND_KEY, String(n)); } catch(e){} }
+function getPacerExamId(){ return localStorage.getItem(PACER_EXAM_KEY) || ''; }
+function setPacerExamId(id){ try { localStorage.setItem(PACER_EXAM_KEY, id || ''); } catch(e){} }
+
+// 「N周目まで終える」に対する進捗。各周は同じ範囲を1周するので、
+// 目標量 = 1周分の総数 × N、消化量 = 1〜N周目の done の合計（各周は総数で頭打ち）。
+function qbTargetProgress(qb, targetRound) {
+  let total = 0, done = 0;
+  Object.values(qb || {}).forEach(rounds => {
+    const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10)).filter(Number.isFinite).sort((a,b)=>a-b);
+    if (!keys.length) return;
+    const base = rounds[String(keys[0])].total || 0;
+    if (!base) return;
+    total += base * targetRound;
+    for (let r = 1; r <= targetRound; r++) {
+      const cur = rounds[String(r)];
+      done += Math.min(cur ? (cur.done || 0) : 0, base);
+    }
+  });
+  return { done, total, remaining: Math.max(0, total - done),
+           pct: total > 0 ? (done / total) * 100 : 0 };
+}
+
+// 直近 days 日の実績ペース（問/日）。
+// セッション記録(questions_solved)があればそれを使う。時刻付きで最も正確なため。
+// 無ければ進捗スナップショットの差分にフォールバックする。
+function recentQuestionPace(allLogs, snapshotDeltas, days) {
+  const today = getLogicalDate(new Date());
+  const since = new Date(today); since.setDate(since.getDate() - (days - 1));
+  const sinceKey = toLocalDateKey(since);
+
+  let logged = 0, hasLogged = false;
+  (allLogs || []).forEach(l => {
+    const n = Number(l.questions_solved);
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) < sinceKey) return;
+    logged += n; hasLogged = true;
+  });
+  if (hasLogged) return { perDay: logged / days, total: logged, source: 'session', days };
+
+  let snap = 0, hasSnap = false;
+  (snapshotDeltas || []).forEach(d => {
+    if (d.date < sinceKey) return;
+    if (d.qbDone > 0) { snap += d.qbDone; hasSnap = true; }
+  });
+  if (hasSnap) return { perDay: snap / days, total: snap, source: 'snapshot', days };
+
+  return { perDay: null, total: 0, source: null, days };
+}
+
+function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
+  const today = getLogicalDate(new Date()); today.setHours(0,0,0,0);
+  const future = (exams || [])
+    .filter(e => e && e.exam_date)
+    .map(e => ({ ...e, _d: new Date(e.exam_date + 'T00:00:00') }))
+    .filter(e => !isNaN(e._d) && e._d >= today)
+    .sort((a, b) => a._d - b._d);
+  if (!future.length) return null;
+
+  const savedId = getPacerExamId();
+  const exam = future.find(e => String(e.id) === savedId) || future[0];
+  const daysLeft = Math.max(0, Math.round((exam._d - today) / 86400000));
+  const targetRound = getPacerTargetRound();
+
+  const qbT = qbTargetProgress(qb, targetRound);
+  if (qbT.total === 0) return { exam, future, daysLeft, targetRound, noMaterial: true };
+
+  const pace = recentQuestionPace(allLogs, snapshotDeltas, 7);
+  const requiredPerDay = daysLeft > 0 ? qbT.remaining / daysLeft : qbT.remaining;
+  const projectedDone = pace.perDay !== null ? qbT.done + pace.perDay * daysLeft : null;
+  const projectedPct = projectedDone !== null && qbT.total > 0
+    ? Math.min(200, (projectedDone / qbT.total) * 100) : null;
+
+  let status = 'unknown';
+  if (projectedPct !== null) {
+    if (projectedPct >= 100) status = 'good';
+    else if (projectedPct >= 90) status = 'warning';
+    else status = 'danger';
+  }
+
+  // 動画は本数で管理しており、セッション側に本数を記録していないので
+  // ペースはスナップショットの差分からしか出せない
+  let vDone = 0, vTotal = 0;
+  Object.values(video || {}).forEach(v => { vDone += v.done || 0; vTotal += v.total || 0; });
+  const videoRemaining = Math.max(0, vTotal - vDone);
+
+  return {
+    exam, future, daysLeft, targetRound, noMaterial: false,
+    qb: qbT, pace, requiredPerDay, projectedDone, projectedPct, status,
+    video: { done: vDone, total: vTotal, remaining: videoRemaining,
+             requiredPerDay: daysLeft > 0 ? videoRemaining / daysLeft : videoRemaining,
+             pct: vTotal > 0 ? (vDone / vTotal) * 100 : null },
+    // 動画を見ていない範囲はQBに進めないため、動画が残っているとQBの必要ペースは実質もっと厳しい
+    videoBlocking: vTotal > 0 && videoRemaining > 0
+  };
+}
+
+// vol（カテゴリ）配下の科目を、周回ごとに集計する。
+// 周をまたいで合算すると母数が周の数だけ膨らみ、達成率が意味を失うので合算しない。
+function volRoundAggregate(qb, video, cat) {
+  const byRound = {};
+  let vDone = 0, vTotal = 0;
+  cat.subjects.forEach(s => {
+    Object.entries(qb[s.id] || {}).forEach(([rk, r]) => {
+      if (!byRound[rk]) byRound[rk] = { round: rk, done: 0, total: 0, correct: 0 };
+      byRound[rk].done    += r.done    || 0;
+      byRound[rk].total   += r.total   || 0;
+      byRound[rk].correct += r.correct || 0;
+    });
+    const v = video[s.id] || {};
+    vDone += v.done || 0; vTotal += v.total || 0;
+  });
+  const rounds = Object.values(byRound)
+    .sort((a, b) => parseInt(a.round) - parseInt(b.round))
+    .map(r => ({
+      ...r,
+      pct: r.total > 0 ? Math.round(r.done / r.total * 100) : 0,
+      accPct: r.done > 0 ? Math.round(r.correct / r.done * 100) : null
+    }));
+  return {
+    rounds,
+    video: { done: vDone, total: vTotal, pct: vTotal > 0 ? Math.round(vDone / vTotal * 100) : 0 },
+    // 見出しに出す代表値は「1周目の到達率」。周の合算ではない
+    headlinePct: rounds.length ? rounds[0].pct : 0
+  };
+}
+
+function roundBarColor(pct) { return pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : 'var(--color-text-secondary)'; }
+
+// vol カードの中身（動画1本＋周回ごとに1本ずつ）。入力欄を含まないので差し替えても安全。
+function volSummaryInnerHtml(agg, opts) {
+  const showCounts = !opts || opts.showCounts !== false;
+  const vid = `<div class="prog-dual-row">
+      <span class="prog-dual-tag" style="--chip-color:#8b5cf6">動画</span>
+      <div class="prog-dual-bar"><div style="height:100%;width:${agg.video.pct}%;background:#8b5cf6;border-radius:3px;"></div></div>
+      <span class="prog-dual-pct">${agg.video.total > 0 ? agg.video.pct + '%' : '--'}</span>
+    </div>`;
+  const rows = agg.rounds.length === 0
+    ? `<div class="prog-dual-row">
+         <span class="prog-dual-tag" style="--chip-color:#4ECDC4">QB</span>
+         <div class="prog-dual-bar"></div>
+         <span class="prog-dual-pct">--</span>
+       </div>`
+    : agg.rounds.map(r => `<div class="prog-dual-row">
+        <span class="prog-dual-tag" style="--chip-color:#4ECDC4">${r.round}周</span>
+        <div class="prog-dual-bar"><div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div></div>
+        <span class="prog-dual-pct" style="color:${roundBarColor(r.pct)}">${r.total > 0 ? r.pct + '%' : '--'}</span>
+      </div>`).join('');
+  const counts = showCounts ? `<div class="vol-round-counts">
+      動画 ${agg.video.done}/${agg.video.total}本
+      ${agg.rounds.map(r => `・${r.round}周 ${r.done}/${r.total}問${r.accPct !== null ? `(正答${r.accPct}%)` : ''}`).join('')}
+    </div>` : '';
+  return vid + rows + counts;
+}
+
+// 入力のたびに renderQBProgress() で作り直すと、開いていた vol が閉じ、
+// 入力中の欄も破棄されてフォーカスと入力位置を失う。
+// 入力欄には触れず、そこから計算される表示（バー・％・バッジ・vol集計）だけを差し替える。
+function refreshQbDerived() {
+  const qb = getQBProgress();
+  const video = getVideoProgress();
+  const set = (sel, fn) => { const el = document.querySelector(sel); if (el) fn(el); };
+
+  subjectCategories.filter(c => c.id.startsWith('cat-vol')).forEach(cat => {
+    const agg = volRoundAggregate(qb, video, cat);
+    set(`[data-volbody="${cat.id}"]`, el => { el.innerHTML = volSummaryInnerHtml(agg); });
+    set(`[data-volpct="${cat.id}"]`, el => {
+      el.style.color = roundBarColor(agg.headlinePct);
+      el.innerHTML = `${agg.headlinePct}%<span style="font-weight:400;font-size:0.68rem;color:var(--color-text-tertiary);margin-left:3px;">1周目</span>`;
+    });
+
+    cat.subjects.forEach(s => {
+      const vp = video[s.id] || { done: 0, total: 0 };
+      const vPct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
+      set(`[data-vidfill="${s.id}"]`, el => { el.style.width = vPct + '%'; });
+      set(`[data-vidpct="${s.id}"]`, el => { el.textContent = vp.total > 0 ? vPct + '%' : '---'; });
+
+      const rounds = qb[s.id] || {};
+      Object.entries(rounds).forEach(([rk, r]) => {
+        const pct = r.total > 0 ? Math.round(r.done / r.total * 100) : 0;
+        const correct = r.correct || 0;
+        const accPct = r.done > 0 ? Math.round(correct / r.done * 100) : 0;
+        const accColorHex = accPct >= 80 ? '#3b82f6' : accPct >= 60 ? '#8b5cf6' : '#ec4899';
+        set(`[data-roundfill="${s.id}|${rk}"]`, el => {
+          el.style.width = pct + '%';
+          el.style.background = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+        });
+        set(`[data-roundpct="${s.id}|${rk}"]`, el => { el.textContent = pct + '%'; });
+        set(`[data-accof="${s.id}|${rk}"]`, el => { el.textContent = '/ ' + (r.done || 0); });
+        set(`[data-accfill="${s.id}|${rk}"]`, el => { el.style.width = accPct + '%'; el.style.background = accColorHex; });
+        set(`[data-accpct="${s.id}|${rk}"]`, el => {
+          el.textContent = r.done > 0 ? accPct + '%' : '---';
+          el.style.color = accColorHex;
+        });
+      });
+
+      // 未回収バッジ（動画が QB1周目より 20pt 以上先行しているとき）
+      const r1 = rounds['1'];
+      const q1Pct = (r1 && r1.total > 0) ? Math.round(r1.done / r1.total * 100) : 0;
+      const gap = vPct - q1Pct;
+      const showGap = vp.total > 0 && r1 && r1.total > 0 && gap >= 20;
+      set(`[data-gapslot="${s.id}"]`, el => {
+        el.innerHTML = showGap
+          ? `<span class="gap-badge" style="--chip-color:${gap >= 40 ? '#ef4444' : '#f59e0b'}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`
+          : '';
+      });
+    });
+  });
+}
+
 async function renderQBProgress(){
   await loadQBFromSupabase();
   await loadVideoFromSupabase();
@@ -4242,21 +4534,9 @@ async function renderQBProgress(){
   const qb=getQBProgress();
   const video=getVideoProgress();
 
-  // Vol summaries
-  const volSummary={};
-  subjectCategories.filter(c=>c.id.startsWith('cat-vol')).forEach(cat=>{
-    let done=0,total=0,vDone=0,vTotal=0;
-    cat.subjects.forEach(s=>{
-      const rounds=qb[s.id]||{};
-      Object.values(rounds).forEach(r=>{done+=r.done||0;total+=r.total||0;});
-      const v=video[s.id]||{};
-      vDone+=v.done||0; vTotal+=v.total||0;
-    });
-    volSummary[cat.name]={
-      done,total,pct:total>0?Math.round(done/total*100):0,
-      vDone,vTotal,vPct:vTotal>0?Math.round(vDone/vTotal*100):0
-    };
-  });
+  const volCats = subjectCategories.filter(c=>c.id.startsWith('cat-vol'));
+  const volAgg = {};
+  volCats.forEach(cat => { volAgg[cat.id] = volRoundAggregate(qb, video, cat); });
 
   ct.innerHTML=`<div style="max-width:900px;margin:0 auto;">
     <div class="page-header"><h1 class="page-title">${IC.book}教材進捗トラッカー</h1><p class="page-subtitle">科目ごとの講義動画とQBの進捗を管理</p></div>
@@ -4267,30 +4547,20 @@ async function renderQBProgress(){
       </div>
       <button class="baseline-btn" id="btn-reset-baseline">現在の値を初期値にする</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px;">
-      ${Object.entries(volSummary).map(([name,v])=>`<div class="card" style="padding:14px;">
-        <div style="font-size:0.75rem;color:var(--color-text-tertiary);text-align:center;margin-bottom:8px;">${name}</div>
-        <div class="prog-dual-row">
-          <span class="prog-dual-tag" style="--chip-color:#8b5cf6">動画</span>
-          <div class="prog-dual-bar"><div style="height:100%;width:${v.vPct}%;background:#8b5cf6;border-radius:3px;"></div></div>
-          <span class="prog-dual-pct">${v.vTotal>0?v.vPct+'%':'--'}</span>
-        </div>
-        <div class="prog-dual-row">
-          <span class="prog-dual-tag" style="--chip-color:#4ECDC4">QB</span>
-          <div class="prog-dual-bar"><div style="height:100%;width:${v.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div></div>
-          <span class="prog-dual-pct">${v.total>0?v.pct+'%':'--'}</span>
-        </div>
-        <div style="font-size:0.68rem;color:var(--color-text-tertiary);text-align:center;margin-top:6px;">動画 ${v.vDone}/${v.vTotal}本 ・ QB ${v.done}/${v.total}問</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
+      ${volCats.map(cat=>`<div class="card" style="padding:14px;">
+        <div style="font-size:0.75rem;color:var(--color-text-tertiary);text-align:center;margin-bottom:8px;">${cat.name}</div>
+        <div data-volbody="${cat.id}">${volSummaryInnerHtml(volAgg[cat.id])}</div>
       </div>`).join('')}
     </div>
-    ${subjectCategories.filter(c=>c.id.startsWith('cat-vol')).map(cat=>{
-      const volPct=volSummary[cat.name]?.pct||0;
+    ${volCats.map(cat=>{
+      const volPct=volAgg[cat.id].headlinePct;
       return`
       <div class="card" style="margin-bottom:16px;overflow:hidden;">
         <details data-cat="${cat.id}" ${qbOpenCats.has(cat.id)?'open':''}>
           <summary style="padding:10px 14px;font-weight:700;font-size:0.9rem;cursor:pointer;display:flex;align-items:center;justify-content:space-between;list-style:none;">
             <span>${cat.name}</span>
-            <span style="font-size:0.8rem;font-weight:600;color:${volPct>=80?'#10b981':volPct>=50?'#f59e0b':'var(--color-text-tertiary)'};">${volPct}%</span>
+            <span data-volpct="${cat.id}" style="font-size:0.8rem;font-weight:600;color:${roundBarColor(volPct)};">${volPct}%<span style="font-weight:400;font-size:0.68rem;color:var(--color-text-tertiary);margin-left:3px;">1周目</span></span>
           </summary>
           <div style="padding:4px;border-top:1px solid var(--color-border);">
           ${cat.subjects.map(s=>{
@@ -4310,21 +4580,21 @@ async function renderQBProgress(){
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;flex-wrap:wrap;">
                 <span style="font-weight:600;font-size:0.85rem;">${s.name}</span>
                 <span style="display:flex;align-items:center;gap:6px;">
-                  ${showGap?`<span class="gap-badge" style="--chip-color:${gapColor}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`:''}
+                  <span data-gapslot="${s.id}">${showGap?`<span class="gap-badge" style="--chip-color:${gapColor}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`:''}</span>
                   <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
                 </span>
               </div>
               <div style="margin:0 0 8px 0;padding:8px;background:var(--color-bg-elevated);border-radius:8px;font-size:0.8rem;border-left:3px solid #8b5cf6;">
-                <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-                  <span style="font-size:0.7rem;color:#a78bfa;font-weight:700;min-width:28px;">動画</span>
+                <div class="qb-metric-row">
+                  <span class="qb-metric-label" style="color:#a78bfa;font-weight:700;">動画</span>
                   <input type="number" class="vid-done" data-sub="${s.id}" value="${vp.done||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                   <span>/</span>
                   <input type="number" class="vid-total" data-sub="${s.id}" value="${vp.total||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                   <span style="font-size:0.7rem;color:var(--color-text-tertiary);">本</span>
                   <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                    <div style="height:100%;width:${vPct}%;background:#8b5cf6;border-radius:3px;"></div>
+                    <div data-vidfill="${s.id}" style="height:100%;width:${vPct}%;background:#8b5cf6;border-radius:3px;"></div>
                   </div>
-                  <span style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:#a78bfa;">${vp.total>0?vPct+'%':'---'}</span>
+                  <span data-vidpct="${s.id}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:#a78bfa;">${vp.total>0?vPct+'%':'---'}</span>
                 </div>
               </div>
               ${roundKeys.length>0?roundKeys.map(rk=>{
@@ -4335,24 +4605,24 @@ async function renderQBProgress(){
                     <span style="font-weight:700;color:var(--color-text-secondary);">${rk}周目</span>
                     <button class="qb-del-round" data-sub="${s.id}" data-round="${rk}" style="font-size:0.65rem;padding:1px 6px;background:none;border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-tertiary);cursor:pointer;">✕</button>
                   </div>
-                  <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;flex-wrap:wrap;">
-                    <span style="font-size:0.7rem;color:var(--color-text-tertiary);min-width:28px;">進捗</span>
+                  <div class="qb-metric-row" style="margin-bottom:6px;">
+                    <span class="qb-metric-label">進捗</span>
                     <input type="number" class="qb-done" data-sub="${s.id}" data-round="${rk}" value="${r.done}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                     <span>/</span>
                     <input type="number" class="qb-total" data-sub="${s.id}" data-round="${rk}" value="${r.total}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                     <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                      <div style="height:100%;width:${pct}%;background:${pct>=80?'#10b981':pct>=50?'#f59e0b':'#ef4444'};border-radius:3px;"></div>
+                      <div data-roundfill="${s.id}|${rk}" style="height:100%;width:${pct}%;background:${pct>=80?'#10b981':pct>=50?'#f59e0b':'#ef4444'};border-radius:3px;"></div>
                     </div>
-                    <span style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;">${pct}%</span>
+                    <span data-roundpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;">${pct}%</span>
                   </div>
-                  <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-                    <span style="font-size:0.7rem;color:var(--color-text-tertiary);min-width:28px;">正答</span>
+                  <div class="qb-metric-row">
+                    <span class="qb-metric-label">正答</span>
                     <input type="number" class="qb-correct" data-sub="${s.id}" data-round="${rk}" value="${correct}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
-                    <span style="font-size:0.7rem;color:var(--color-text-tertiary);">/ ${r.done}</span>
+                    <span data-accof="${s.id}|${rk}" style="font-size:0.7rem;color:var(--color-text-tertiary);">/ ${r.done}</span>
                     <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                      <div style="height:100%;width:${accPct}%;background:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};border-radius:3px;"></div>
+                      <div data-accfill="${s.id}|${rk}" style="height:100%;width:${accPct}%;background:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};border-radius:3px;"></div>
                     </div>
-                    <span style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};">${r.done>0?accPct+'%':'---'}</span>
+                    <span data-accpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};">${r.done>0?accPct+'%':'---'}</span>
                   </div>
                 </div>`;
               }).join(''):'<div style="font-size:0.75rem;color:var(--color-text-tertiary);padding:4px 8px;">未登録</div>'}
@@ -4399,7 +4669,8 @@ async function renderQBProgress(){
       if(!d[sub])d[sub]={done:0,total:0};
       if(inp.classList.contains('vid-done'))d[sub].done=parseInt(inp.value)||0;
       else d[sub].total=parseInt(inp.value)||0;
-      saveVideoProgress(d);renderQBProgress();
+      saveVideoProgress(d);
+      refreshQbDerived();   // 全再描画しない（開いている vol とフォーカスを保つ）
     });
   });
   ct.querySelectorAll('.qb-done,.qb-total,.qb-correct').forEach(inp=>{
@@ -4410,7 +4681,8 @@ async function renderQBProgress(){
       if(inp.classList.contains('qb-done'))d[sub][round].done=parseInt(inp.value)||0;
       else if(inp.classList.contains('qb-total'))d[sub][round].total=parseInt(inp.value)||0;
       else if(inp.classList.contains('qb-correct'))d[sub][round].correct=parseInt(inp.value)||0;
-      saveQBProgress(d);renderQBProgress();
+      saveQBProgress(d);
+      refreshQbDerived();   // 全再描画しない（開いている vol とフォーカスを保つ）
     });
   });
 }
