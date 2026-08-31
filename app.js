@@ -549,6 +549,112 @@ function activityChip(v){
 // 問題演習のときだけ出す「何問中何問正解」の入力欄。
 // 記録フォームは静的版と finishSession の動的版が同時に DOM に載りうるので、
 // id が衝突しないよう suffix で分ける。
+// 講義動画のときだけ出す「視聴済み本数」の入力欄。
+// QB の問題数が「今回解いた数」を足していくのに対し、こちらは
+// 教材進捗トラッカーの視聴済み本数を上書きする（本数は通し番号で数えるため）。
+function videoCountFieldsHtml(suffix){
+  const show = selectedActivity === 'video';
+  return `<div class="field video-count-field" id="video-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
+    <label>視聴済み本数（合計・任意）</label>
+    <div class="qb-count-row">
+      <input type="number" id="video-done${suffix}" min="0" step="1" placeholder="0" inputmode="numeric" />
+      <span class="qb-count-sep">/</span>
+      <span class="qb-count-sep" id="video-total${suffix}">--</span>
+      <span class="qb-count-acc" id="video-delta${suffix}">—</span>
+    </div>
+    <div class="video-count-note" id="video-note${suffix}"></div>
+  </div>`;
+}
+
+// 記録フォームで選ばれている科目ID。自由入力や未選択なら null。
+function selectedSubjectIdForForm(suffix){
+  const sel = document.getElementById('confirm-subject');
+  const v = sel ? sel.value : '';
+  if (!v || v === 'custom') return null;
+  return subjectCategories.some(c => c.subjects.some(s => s.id === v)) ? v : null;
+}
+
+// 表示の出し分けと、現在値のプリフィル。科目や活動を変えるたびに呼ぶ。
+function syncVideoCountFields(suffix){
+  const wrap = document.getElementById('video-count-wrap' + suffix);
+  if (!wrap) return;
+  wrap.style.display = (selectedActivity === 'video') ? 'block' : 'none';
+  const inp   = document.getElementById('video-done'  + suffix);
+  const totEl = document.getElementById('video-total' + suffix);
+  const dEl   = document.getElementById('video-delta' + suffix);
+  const noteEl= document.getElementById('video-note'  + suffix);
+  if (!inp || !totEl || !dEl || !noteEl) return;
+
+  const sid = selectedSubjectIdForForm(suffix);
+  if (!sid) {
+    inp.value = ''; inp.disabled = true;
+    totEl.textContent = '--'; dEl.textContent = '—'; dEl.style.color = '';
+    noteEl.textContent = '科目を選ぶと入力できます（自由入力の科目は対象外）';
+    inp.dataset.subject = ''; inp.dataset.before = '';
+    return;
+  }
+  inp.disabled = false;
+  const vp = (getVideoProgress() || {})[sid] || { done: 0, total: 0 };
+  totEl.textContent = vp.total > 0 ? vp.total + '本' : '未登録';
+  // 科目が変わったら、その科目の現在値を入れ直す
+  if (inp.dataset.subject !== sid) {
+    inp.dataset.subject = sid;
+    inp.dataset.before = String(vp.done || 0);
+    inp.value = String(vp.done || 0);
+  }
+  const before = parseInt(inp.dataset.before, 10) || 0;
+  const now = parseInt(inp.value, 10);
+  if (!Number.isFinite(now)) { dEl.textContent = '—'; dEl.style.color = ''; noteEl.textContent = `現在 ${before}本`; return; }
+  if (vp.total > 0 && now > vp.total) {
+    dEl.textContent = '登録本数を超過'; dEl.style.color = '#ef4444';
+    noteEl.textContent = `現在 ${before}本 / 登録 ${vp.total}本`;
+    return;
+  }
+  const diff = now - before;
+  dEl.textContent = diff === 0 ? '±0' : (diff > 0 ? '+' + diff : String(diff));
+  dEl.style.color = diff > 0 ? '#10b981' : (diff < 0 ? '#f59e0b' : 'var(--color-text-tertiary)');
+  noteEl.textContent = `保存すると教材進捗を ${before} → ${now}本 に更新します`;
+}
+
+function wireVideoCountFields(root, suffix){
+  const inp = (root || document).querySelector('#video-done' + suffix);
+  if (inp) inp.addEventListener('input', () => syncVideoCountFields(suffix));
+  const sel = (root || document).querySelector('#confirm-subject');
+  if (sel) sel.addEventListener('change', () => {
+    const i = document.getElementById('video-done' + suffix);
+    if (i) i.dataset.subject = '';   // 科目が変わったら現在値を入れ直させる
+    syncVideoCountFields(suffix);
+  });
+  syncVideoCountFields(suffix);
+}
+
+// 保存時に読み出す。未入力・対象外なら null。
+function readVideoCount(suffix){
+  const inp = document.getElementById('video-done' + suffix);
+  if (selectedActivity !== 'video' || !inp || inp.disabled) return { subjectId: null, done: null, error: null };
+  const sid = inp.dataset.subject || null;
+  if (!sid) return { subjectId: null, done: null, error: null };
+  const raw = inp.value.trim();
+  if (raw === '') return { subjectId: null, done: null, error: null };
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return { subjectId: null, done: null, error: '視聴済み本数が正しくありません' };
+  const vp = (getVideoProgress() || {})[sid] || { done: 0, total: 0 };
+  if (vp.total > 0 && n > vp.total) return { subjectId: null, done: null, error: `視聴済み本数が登録本数(${vp.total}本)を超えています` };
+  return { subjectId: sid, done: n, before: vp.done || 0, error: null };
+}
+
+// 教材進捗の視聴済み本数を上書きする。変更がなければ何もしない。
+function applyVideoCountToProgress(subjectId, done){
+  if (!subjectId || !Number.isFinite(done)) return null;
+  const v = getVideoProgress();
+  const cur = v[subjectId] || { done: 0, total: 0 };
+  if ((cur.done || 0) === done) return null;
+  const before = cur.done || 0;
+  v[subjectId] = { ...cur, done };
+  saveVideoProgress(v);
+  return { subjectId, before, after: done, total: cur.total || 0 };
+}
+
 function qbCountFieldsHtml(suffix){
   const show = selectedActivity === 'qb';
   return `<div class="field qb-count-field" id="qb-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
@@ -1547,6 +1653,7 @@ function finishSession(manualStop = false) {
             <label>活動の種類</label>
             ${activitySegmentHtml(selectedActivity)}
           </div>
+          ${videoCountFieldsHtml('-sync')}
           ${qbCountFieldsHtml('-sync')}
           <div class="field">
             <label>学習の目的</label>
@@ -1609,9 +1716,11 @@ function finishSession(manualStop = false) {
         selectedActivity = ev.currentTarget.dataset.val;
         saveTimerState();
         syncQbCountFields('-sync');
+        syncVideoCountFields('-sync');
       };
     });
     wireQbCountFields(overlay, '-sync');
+    wireVideoCountFields(overlay, '-sync');
     overlay.querySelector('#btn-discard-log-sync').onclick = () => { 
       overlay.remove();
       resetSW(); 
@@ -1631,10 +1740,12 @@ function finishSession(manualStop = false) {
       const loc = overlay.querySelector('#confirm-location').value;
       const foc = parseFloat(overlay.querySelector('#confirm-focus').value);
       const qb = readQbCounts('-sync');
+      const vid = readVideoCount('-sync');
 
       if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
       if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
       if(qb.error) { showToast(IC.x + ' ' + qb.error); return; }
+      if(vid.error) { showToast(IC.x + ' ' + vid.error); return; }
 
       // Disable button to show processing state and prevent double clicks
       btn.disabled = true;
@@ -1649,7 +1760,9 @@ function finishSession(manualStop = false) {
         const endedAt = new Date().toISOString();
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
+        const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
         const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
+        if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
           // Remove overlay completely to prevent duplicate ID issues in DOM
@@ -3391,6 +3504,7 @@ async function renderStudy(){
                   <label>活動の種類</label>
                   ${activitySegmentHtml(selectedActivity)}
                 </div>
+                ${videoCountFieldsHtml('')}
                 ${qbCountFieldsHtml('')}
                 <div class="field">
                   <label>学習の目的</label>
@@ -3740,9 +3854,12 @@ async function renderStudy(){
       saveTimerState();
       syncQbCountFields('');
       syncQbCountFields('-sync');
+      syncVideoCountFields('');
+      syncVideoCountFields('-sync');
     });
   });
   wireQbCountFields(document, '');
+  wireVideoCountFields(document, '');
 
   document.getElementById('btn-confirm-save')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
@@ -3761,10 +3878,12 @@ async function renderStudy(){
     const focVal = focEle ? parseFloat(focEle.value) : selectedFocusLevel;
     
     const qb = readQbCounts('');
+    const vid = readVideoCount('');
 
     if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
     if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
     if(qb.error) { showToast(IC.x + ' ' + qb.error); return; }
+    if(vid.error) { showToast(IC.x + ' ' + vid.error); return; }
 
     btn.disabled = true;
     btn.textContent = '保存中...';
@@ -3778,7 +3897,9 @@ async function renderStudy(){
 
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
+      const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
       const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
+      if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
         renderStudy();

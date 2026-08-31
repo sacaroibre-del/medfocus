@@ -2207,3 +2207,12 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   white-space: nowrap;
 }
 .fixtotal-btn:hover { background: rgba(245, 158, 11, 0.28); }
+
+/* 終了画面の「視聴済み本数」欄 */
+.video-count-note {
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+  margin-top: 5px;
+  line-height: 1.5;
+}
+.video-count-field input[type="number"]:disabled { opacity: 0.5; }
