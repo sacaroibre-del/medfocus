@@ -4581,11 +4581,16 @@ function normalizeRoundTotals() {
 function volRoundAggregate(qb, video, cat) {
   const byRound = {};
   let vDone = 0, vTotal = 0;
+  // 分母は vol 全体の総数に固定する。
+  // 「その周の行がある科目だけ」を足すと、科目を1つ2周目に着手するたびに
+  // 分母が跳ね上がり、周どうしを比べられない中途半端な数字になる。
+  // 各周は同じ範囲を1周するので、どの周も vol 全体を分母にするのが正しい。
+  let volTotal = 0;
   cat.subjects.forEach(s => {
+    volTotal += baseTotalForSubject(qb[s.id] || {});
     Object.entries(qb[s.id] || {}).forEach(([rk, r]) => {
-      if (!byRound[rk]) byRound[rk] = { round: rk, done: 0, total: 0, correct: 0 };
+      if (!byRound[rk]) byRound[rk] = { round: rk, done: 0, correct: 0 };
       byRound[rk].done    += r.done    || 0;
-      byRound[rk].total   += r.total   || 0;
       byRound[rk].correct += r.correct || 0;
     });
     const v = video[s.id] || {};
@@ -4595,7 +4600,8 @@ function volRoundAggregate(qb, video, cat) {
     .sort((a, b) => parseInt(a.round) - parseInt(b.round))
     .map(r => ({
       ...r,
-      pct: r.total > 0 ? Math.round(r.done / r.total * 100) : 0,
+      total: volTotal,
+      pct: volTotal > 0 ? Math.round(r.done / volTotal * 100) : 0,
       accPct: r.done > 0 ? Math.round(r.correct / r.done * 100) : null
     }));
   return {
