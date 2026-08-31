@@ -531,6 +531,13 @@ const ACTIVITIES = [
 const ACTIVITY_MAP = {};
 ACTIVITIES.forEach(a => { ACTIVITY_MAP[a.v] = a; });
 // 「20問中14問正解 (70%)」の表示。問題数が記録されているログにだけ付く。
+// 「動画 6本」の表示。その回に見た本数が記録されているログにだけ付く。
+function videoCountChip(log){
+  const n = log && log.videos_watched;
+  if (!Number.isFinite(Number(n)) || Number(n) <= 0) return '';
+  return `<span class="qb-count-chip" style="--chip-color:#8b5cf6">動画 ${Number(n)}本</span>`;
+}
+
 function qbCountChip(log){
   const s = log && log.questions_solved;
   if (!Number.isFinite(Number(s)) || Number(s) <= 0) return '';
@@ -640,7 +647,11 @@ function readVideoCount(suffix){
   if (!Number.isFinite(n) || n < 0) return { subjectId: null, done: null, error: '視聴済み本数が正しくありません' };
   const vp = (getVideoProgress() || {})[sid] || { done: 0, total: 0 };
   if (vp.total > 0 && n > vp.total) return { subjectId: null, done: null, error: `視聴済み本数が登録本数(${vp.total}本)を超えています` };
-  return { subjectId: sid, done: n, before: vp.done || 0, error: null };
+  const before = vp.done || 0;
+  // 終了画面は累計を上書きする方式なので、その回の本数は差分として求める。
+  // 減らす修正のときは「この回に見た本数」としては意味を成さないので記録しない。
+  const watched = n > before ? n - before : null;
+  return { subjectId: sid, done: n, before, watched, error: null };
 }
 
 // 教材進捗の視聴済み本数を上書きする。変更がなければ何もしない。
@@ -984,7 +995,7 @@ function describeQbChanges(result) {
   return `${name} ${parts.join(' / ')}`;
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null) {
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
   const applyQb = () => (activity === 'qb')
@@ -1012,6 +1023,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       activity: activity,
       questions_solved: questionsSolved,
       questions_correct: questionsCorrect,
+      videos_watched: videosWatched,
       started_at: startedAt || now,
       ended_at: endedAt || now
     };
@@ -1046,7 +1058,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
   }
 }
 
-async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined) {
+async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined, videosWatched = undefined) {
   if (!hasDB()) return;
   // If endedAt not provided, compute from startedAt + duration
   if (!endedAt && startedAt) {
@@ -1065,6 +1077,7 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
   if (activity !== undefined) payload.activity = activity;
   if (questionsSolved !== undefined) payload.questions_solved = questionsSolved;
   if (questionsCorrect !== undefined) payload.questions_correct = questionsCorrect;
+  if (videosWatched !== undefined) payload.videos_watched = videosWatched;
   if (endedAt) payload.ended_at = endedAt;
   const { error } = await supabase.from('study_logs').update(payload).eq('id', id);
   if (error) showToast(IC.x+' 更新に失敗しました');
@@ -1761,7 +1774,7 @@ function finishSession(manualStop = false) {
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
         const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched);
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -3565,7 +3578,7 @@ async function renderStudy(){
             return`<div class="study-log-entry" data-id="${l.id}">
               <div style="flex:1;min-width:0;">
                 <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap;">
-                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>${activityChip(l.activity)}${qbCountChip(l)}
+                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>${activityChip(l.activity)}${qbCountChip(l)}${videoCountChip(l)}
                   <span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span>
                   <span class="study-log-time">${tmStart}〜${tmEnd}</span>
                   ${l.location && l.location !== '未設定' ? `<span class="study-log-location" style="font-size:0.75rem; margin-left:4px; color:var(--color-text-tertiary)" title="${l.location}">${locIcon(l.location)} ${l.location}</span>` : ''}
@@ -3574,7 +3587,7 @@ async function renderStudy(){
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}</div></div>
@@ -3898,7 +3911,7 @@ async function renderStudy(){
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
       const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched);
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
@@ -4010,6 +4023,16 @@ async function renderStudy(){
               ※ ここを直しても教材進捗トラッカーの値は変わりません（進捗は保存時に一度だけ反映されます）
             </div>
           </div>
+          <div class="settings-field" style="margin-bottom:12px;">
+            <label>この回に見た講義動画（任意）</label>
+            <div class="qb-count-row">
+              <input type="number" id="edit-log-videos" min="0" step="1" inputmode="numeric" value="${ds.videos || ''}" placeholder="0" />
+              <span class="qb-count-sep">本</span>
+            </div>
+            <div style="font-size:0.68rem; color:var(--color-text-tertiary); margin-top:6px; line-height:1.5;">
+              ※ 1回のセッションで見た本数です。教材進捗トラッカーの累計は変わりません
+            </div>
+          </div>
           <div class="settings-field">
             <label>メモ</label>
             <textarea id="edit-log-memo" style="width:100%; min-height:60px;">${ds.memo}</textarea>
@@ -4041,6 +4064,9 @@ async function renderStudy(){
       const newLoc = document.getElementById('edit-log-location').value;
       const newFoc = parseFloat(document.getElementById('edit-log-focus').value);
       const newAct = document.getElementById('edit-log-activity').value || null;
+      const videosRaw = document.getElementById('edit-log-videos').value.trim();
+      const newVideos = videosRaw === '' ? null : parseInt(videosRaw, 10);
+      if (newVideos !== null && (!Number.isFinite(newVideos) || newVideos < 0)) { showToast(IC.x + ' 動画の本数が正しくありません'); return; }
       const solvedRaw = document.getElementById('edit-log-solved').value.trim();
       const correctRaw = document.getElementById('edit-log-correct').value.trim();
       const newSolved = solvedRaw === '' ? null : parseInt(solvedRaw, 10);
@@ -4056,7 +4082,7 @@ async function renderStudy(){
 
       const newStartedAt = new Date(`${newDate}T${newTime}`).toISOString();
       const newEndedAt = newEndTime ? new Date(`${newDate}T${newEndTime}`).toISOString() : null;
-      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect);
+      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect, newVideos);
       close();
       renderStudy();
     };
