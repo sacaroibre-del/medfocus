@@ -194,19 +194,77 @@ function focusOptions(selected) {
 // Default: Weekdays 180min (3h), Weekends 300min (5h)
 const DEFAULT_WEEKLY_GOALS = [300, 180, 180, 180, 180, 180, 300]; // Sun, Mon..Sat
 
+const WEEKLY_GOALS_KEY = 'medfocus_weekly_goals';
+const WEEKLY_GOALS_HISTORY_KEY = 'medfocus_weekly_goals_history';
+// 履歴が無かった時代のぶんを受け止めるための番人。これ以前の日付は存在しない。
+const GOAL_HISTORY_EPOCH = '1970-01-01';
+
 function getWeeklyGoals() {
-  const saved = localStorage.getItem('medfocus_weekly_goals');
+  const saved = localStorage.getItem(WEEKLY_GOALS_KEY);
   if (saved) {
     try { return JSON.parse(saved); } catch(e) {}
   }
   return [...DEFAULT_WEEKLY_GOALS];
 }
 
-function saveWeeklyGoals(goals) {
-  localStorage.setItem('medfocus_weekly_goals', JSON.stringify(goals));
+// 目標をいつから変えたかの履歴。[{from:'YYYY-MM-DD', goals:[7]}] を古い順に持つ。
+// これが無いと、CBT前に目標を上げた瞬間に過去の達成率まで新しい目標で
+// 評価し直されてしまう。
+function getWeeklyGoalsHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(WEEKLY_GOALS_HISTORY_KEY) || '[]');
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(e => e && typeof e.from === 'string' && Array.isArray(e.goals) && e.goals.length === 7)
+      .sort((a, b) => (a.from < b.from ? -1 : a.from > b.from ? 1 : 0));
+  } catch (e) { return []; }
+}
+
+function setWeeklyGoalsHistory(hist) {
+  try { localStorage.setItem(WEEKLY_GOALS_HISTORY_KEY, JSON.stringify(hist)); } catch (e) {}
+}
+
+// その日に有効だった曜日別テンプレート
+function getWeeklyGoalsForDate(date) {
+  const key = toLocalDateKey(date);
+  const hist = getWeeklyGoalsHistory();
+  let found = null;
+  for (const e of hist) {
+    if (e.from <= key) found = e; else break;
+  }
+  return found ? found.goals : getWeeklyGoals();
+}
+
+// Supabase の weekly_goals 列に入れる形。旧形式（7要素の配列）とも
+// 読み分けられるよう、新形式はオブジェクトにする。
+function weeklyGoalsPayload() {
+  return JSON.stringify({ current: getWeeklyGoals(), history: getWeeklyGoalsHistory() });
+}
+
+// retroactive=true なら過去にも遡って適用する（履歴を1本に畳む）。
+// 既定は「今日から適用」で、過去の日はそれまでの目標のまま残す。
+function saveWeeklyGoals(goals, options) {
+  const retroactive = !!(options && options.retroactive);
+  const todayKey = toLocalDateKey(getLogicalDate(new Date()));
+  const prev = getWeeklyGoals();
+  let hist = getWeeklyGoalsHistory();
+
+  if (retroactive) {
+    hist = [{ from: GOAL_HISTORY_EPOCH, goals }];
+  } else {
+    // 履歴がまだ無い＝この仕組みより前から使っている場合は、
+    // 変更前の目標を過去ぶんの基準として先に積む
+    if (!hist.length) hist.push({ from: GOAL_HISTORY_EPOCH, goals: prev });
+    const last = hist[hist.length - 1];
+    if (last.from === todayKey) last.goals = goals;   // 同じ日に何度直しても1件
+    else hist.push({ from: todayKey, goals });
+  }
+
+  setWeeklyGoalsHistory(hist);
+  localStorage.setItem(WEEKLY_GOALS_KEY, JSON.stringify(goals));
   // Also sync to Supabase if logged in
   if (hasDB()) {
-    supabase.from('profiles').update({ weekly_goals: JSON.stringify(goals) }).eq('id', session.user.id)
+    supabase.from('profiles').update({ weekly_goals: weeklyGoalsPayload() }).eq('id', session.user.id)
       .then(({ error }) => { if (error) console.warn('weekly_goals sync error:', error.message); });
   }
 }
@@ -453,9 +511,8 @@ function getGoalForDate(date) {
   if (snapshot) {
     try { return JSON.parse(snapshot).goal_minutes; } catch(e) {}
   }
-  // Fall back to weekly template
-  const goals = getWeeklyGoals();
-  return goals[date.getDay()];
+  // Fall back to the weekly template that was in effect on that date
+  return getWeeklyGoalsForDate(date)[date.getDay()];
 }
 
 function saveDailySnapshot(dateKey, goalMinutes, actualMinutes) {
@@ -7286,7 +7343,7 @@ async function renderInsights(){
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.112s">
       <div class="section-header">
         <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target}</div>
-        <div><div class="section-title">曜日別の目標達成率</div><div class="section-subtitle">直近${goalHistory.days}日（今日を除く）／実績はログ、目標は曜日別テンプレート</div></div>
+        <div><div class="section-title">曜日別の目標達成率</div><div class="section-subtitle">直近${goalHistory.days}日（今日を除く）／目標はその日に有効だったものを使用</div></div>
       </div>
 
       ${!goalHistory.hasData ? `
@@ -7338,7 +7395,7 @@ async function renderInsights(){
             </div>
           `).join('')}
         </div>
-        <div class="break-note">実績は学習ログから、目標は「その日の上書き→保存済みスナップショット→現在の曜日別テンプレート」の順に引いています。スナップショットが無い過去日は<strong>いまの曜日別目標</strong>で遡って評価しているため、途中で目標を変えた場合はその前の期間がずれます。スナップショットは端末内（localStorage）にしか無く、端末を変えると引き継がれません。</div>
+        <div class="break-note">実績は学習ログから、目標は「その日の上書き→保存済みスナップショット→<strong>その日に有効だった曜日別テンプレート</strong>」の順に引いています。目標を変えた日より前は、それまでの目標で評価します（設定画面で「さかのぼって適用」にした場合を除く）。ただし目標の履歴を持ち始める前の期間は、いちばん古い記録の目標で評価しています。</div>
       `}
     </div>
     ${insightGroupCloseHTML}
@@ -8601,6 +8658,18 @@ function renderSettings(){
               </div>`;
             }).join('')}
           </div>
+          <label class="goal-retro-check">
+            <input type="checkbox" id="apply-goals-retroactive"/>
+            過去の記録にもさかのぼって適用する
+          </label>
+          <div class="goal-retro-note">${(() => {
+            const hist = getWeeklyGoalsHistory();
+            const last = hist.length ? hist[hist.length - 1] : null;
+            const since = last && last.from !== GOAL_HISTORY_EPOCH ? last.from : null;
+            return `変更は<strong>保存した日から</strong>適用され、それ以前の日はそのとき設定していた目標のまま残ります（インサイトの達成率が過去まで塗り替わりません）。${
+              since ? `いまの目標は ${since} から適用中です。` : ''
+            }チェックを入れると、過去の記録もこの目標で評価し直します。`;
+          })()}</div>
         </div>
         <div class="settings-row">
           <button class="btn btn-primary" id="save-profile-btn" style="width:100%;justify-content:center">💾 プロフィールを保存</button>
@@ -8708,7 +8777,7 @@ function renderSettings(){
           weeklyGoals[dayIdx] = val;
         }
       });
-      saveWeeklyGoals(weeklyGoals);
+      saveWeeklyGoals(weeklyGoals, { retroactive: !!document.getElementById('apply-goals-retroactive')?.checked });
       
       if(!newName){ document.getElementById('input-name').focus(); showToast(' 名前を入力してください'); return; }
       
@@ -8721,7 +8790,7 @@ function renderSettings(){
           university: newUniv,
           grade: newGrade,
           daily_goal: weeklyGoals[new Date().getDay()],
-          weekly_goals: JSON.stringify(weeklyGoals),
+          weekly_goals: weeklyGoalsPayload(),
           login_id: currentUser.login_id // Ensure login_id is included in the upsert
         });
         if (error) { showToast(IC.x+' 保存に失敗しました: ' + error.message); e.target.textContent = '💾 プロフィールを保存'; return; }
@@ -8870,9 +8939,13 @@ async function initApp(){
             // Sync weekly goals from DB to localStorage
             if (profile.weekly_goals) {
               try {
-                const dbGoals = JSON.parse(profile.weekly_goals);
-                if (Array.isArray(dbGoals) && dbGoals.length === 7) {
-                  localStorage.setItem('medfocus_weekly_goals', JSON.stringify(dbGoals));
+                const parsed = JSON.parse(profile.weekly_goals);
+                if (Array.isArray(parsed) && parsed.length === 7) {
+                  // 旧形式（配列のみ）。履歴は無いのでそのまま現在値として扱う
+                  localStorage.setItem(WEEKLY_GOALS_KEY, JSON.stringify(parsed));
+                } else if (parsed && Array.isArray(parsed.current) && parsed.current.length === 7) {
+                  localStorage.setItem(WEEKLY_GOALS_KEY, JSON.stringify(parsed.current));
+                  if (Array.isArray(parsed.history)) setWeeklyGoalsHistory(parsed.history);
                 }
               } catch(e) {}
             }

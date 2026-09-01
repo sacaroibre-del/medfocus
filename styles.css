@@ -2605,3 +2605,20 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   line-height: 1.6;
 }
 .bulk-panel .filter-chip[disabled] { opacity: 0.4; cursor: not-allowed; }
+
+/* 曜日別目標の適用範囲 */
+.goal-retro-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.goal-retro-note {
+  margin-top: 6px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
