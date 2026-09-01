@@ -8698,7 +8698,6 @@ function renderSettings(){
     const newAvatar=document.getElementById('input-avatar').value.trim();
     const newUniv=document.getElementById('input-univ').value.trim();
       const newGrade=parseInt(document.getElementById('input-grade').value);
-      const isPublic = document.getElementById('input-public').checked;
 
       // Save weekly goals
       const weeklyGoals = getWeeklyGoals();
@@ -8721,7 +8720,6 @@ function renderSettings(){
           avatar_url: newAvatar,
           university: newUniv,
           grade: newGrade,
-          is_public: isPublic,
           daily_goal: weeklyGoals[new Date().getDay()],
           weekly_goals: JSON.stringify(weeklyGoals),
           login_id: currentUser.login_id // Ensure login_id is included in the upsert
@@ -8733,7 +8731,6 @@ function renderSettings(){
       currentUser.avatar_url=newAvatar;
       currentUser.university=newUniv||'未設定';
       currentUser.grade=newGrade;
-      currentUser.is_public=isPublic;
       currentUser.daily_goal=weeklyGoals[new Date().getDay()];
     renderSidebar();
     showToast(' プロフィールを保存しました！');
