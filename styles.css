@@ -2397,7 +2397,47 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   .insight-group-body { padding: var(--space-md); }
   .insight-group-sub { display: none; }
   .break-row { grid-template-columns: 68px 1fr 58px 52px; font-size: 11px; gap: 6px; }
-  .break-row > :last-child { display: none; }
+  .break-row:not(.break-row-run):not(.break-row-wide) > :last-child { display: none; }
   .break-row.break-row-run { grid-template-columns: minmax(0, 1fr) 46px 52px 52px; }
-  .break-row.break-row-run > :last-child { display: block; }
+}
+
+/* 5列版（曜日別の目標テーブルなど）。.break-row 系はインサイト内の共通コンパクト表。 */
+.break-row.break-row-wide {
+  grid-template-columns: minmax(0, 1fr) 72px 76px 56px 64px;
+}
+/* 母数が足りず判定に使えない行 */
+.break-row.is-thin {
+  opacity: 0.45;
+}
+
+/* インプット/アウトプットの基準線 */
+.io-baseline-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-md);
+  margin-top: var(--space-lg);
+}
+.io-baseline-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: var(--space-md);
+  background: var(--color-bg-elevated);
+  border-radius: var(--radius-lg);
+}
+.io-baseline-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+.io-baseline-value {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  /* 5列は幅に収まらないので、達成率から読み取れる「目標」を落として4列にする */
+  .break-row.break-row-wide { grid-template-columns: minmax(0, 1fr) 56px 44px 48px; gap: 4px; }
+  .break-row.break-row-wide > :nth-child(2) { display: none; }
+  .io-baseline-grid { grid-template-columns: 1fr; }
 }

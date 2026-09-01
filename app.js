@@ -5341,6 +5341,7 @@ function buildBreakStats(logs) {
       if (gap <= BREAK_MAX_MIN) {
         breaks.push({
           minutes: gap,
+          nextId: arr[i].log.id,
           prevDur: arr[i - 1].log.duration_minutes || 0,
           prevRunMin: runMin,
           nextFocus: arr[i].log.focus_level ? Number(arr[i].log.focus_level) : null,
@@ -5406,8 +5407,12 @@ function buildBreakStats(logs) {
     };
   });
 
+  // ログID → 直前の休憩の長さ（分）。演習の質を「休憩明けかどうか」で切るのに使う。
+  const breakBeforeById = {};
+  breaks.forEach(b => { if (b.nextId != null) breakBeforeById[b.nextId] = b.minutes; });
+
   return {
-    breaks, days, bins, bestBin, worstBin, runBins,
+    breaks, days, bins, bestBin, worstBin, runBins, breakBeforeById,
     hasData: breaks.length >= 3,
     count: breaks.length,
     avgBreak: lens.length ? Math.round(avg(lens)) : 0,
@@ -5425,9 +5430,318 @@ function buildBreakStats(logs) {
   };
 }
 
+// ==================== 演習の質（セッション単位） ====================
+// questions_solved / questions_correct はセッション単位で時刻付きに入っているので、
+// 「いつ・どんな状態で解いたか」ごとの正答率が出せる。教材進捗トラッカー側の
+// 累積正答率（全周回の合計・期間フィルタの影響を受けない）とは別の切り口。
+const QB_MIN_SESSIONS = 3;   // これ未満のセッション数の区分は判定に使わない
+const QB_MIN_SOLVED = 20;    // 解答数がこれ未満の区分も参考値どまり
+
+function qbSessionsOf(logs) {
+  return logs.map(l => {
+    const solved = Number(l.questions_solved);
+    const correct = Number(l.questions_correct);
+    if (!Number.isFinite(solved) || solved <= 0) return null;
+    if (!Number.isFinite(correct) || correct < 0 || correct > solved) return null;
+    const start = getLogRange(l).start;
+    if (isNaN(start)) return null;
+    const dur = l.duration_minutes || 0;
+    return {
+      log: l, start, solved, correct,
+      minPerQ: dur > 0 ? dur / solved : null,
+      focus: l.focus_level ? Number(l.focus_level) : null,
+      hour: start.getHours()
+    };
+  }).filter(Boolean);
+}
+
+// 区分ひとつぶんの集計。正答率は「セッションごとの率の平均」ではなく
+// 解答数で重み付けした通算（＝総正答 ÷ 総解答）にする。
+function qbBin(label, items) {
+  const solved = items.reduce((s, x) => s + x.solved, 0);
+  const correct = items.reduce((s, x) => s + x.correct, 0);
+  const paced = items.filter(x => x.minPerQ !== null && x.minPerQ > 0);
+  return {
+    label,
+    sessions: items.length,
+    solved, correct,
+    accuracy: solved > 0 ? correct / solved * 100 : null,
+    minPerQ: paced.length ? paced.reduce((s, x) => s + x.minPerQ, 0) / paced.length : null,
+    reliable: items.length >= QB_MIN_SESSIONS && solved >= QB_MIN_SOLVED
+  };
+}
+
+const QB_SPEED_BINS = [
+  { label: '〜1分',   min: 0,   max: 1 },
+  { label: '1〜2分',  min: 1,   max: 2 },
+  { label: '2〜3分',  min: 2,   max: 3 },
+  { label: '3分〜',   min: 3,   max: Infinity }
+];
+
+function buildQbQualityStats(logs, breakBeforeById) {
+  const items = qbSessionsOf(logs);
+  const bb = breakBeforeById || {};
+  const solved = items.reduce((s, x) => s + x.solved, 0);
+  const correct = items.reduce((s, x) => s + x.correct, 0);
+  const paced = items.filter(x => x.minPerQ !== null && x.minPerQ > 0);
+
+  const bySlot = ['morning', 'afternoon', 'evening', 'night']
+    .map(sl => ({ key: sl, ...qbBin(getTimeSlotLabel(sl), items.filter(x => getTimeSlotForHour(x.hour) === sl)) }));
+
+  const byFocus = [
+    { label: '★1〜2', match: x => x.focus !== null && x.focus <= 2 },
+    { label: '★3',    match: x => x.focus === 3 },
+    { label: '★4',    match: x => x.focus === 4 },
+    { label: '★5',    match: x => x.focus === 5 }
+  ].map(b => qbBin(b.label, items.filter(b.match)));
+
+  const byBreak = [
+    { label: '休憩をはさまず連続',  match: x => bb[x.log.id] === undefined },
+    { label: '〜15分の休憩明け',    match: x => bb[x.log.id] !== undefined && bb[x.log.id] <= 15 },
+    { label: '16分以上の休憩明け',  match: x => bb[x.log.id] !== undefined && bb[x.log.id] > 15 }
+  ].map(b => qbBin(b.label, items.filter(b.match)));
+
+  // 速く解いた回で正答率が落ちていないか（雑になっていないか）
+  const bySpeed = QB_SPEED_BINS.map(b =>
+    ({ ...qbBin(b.label, paced.filter(x => x.minPerQ >= b.min && x.minPerQ < b.max)) }));
+
+  // ★の自己申告が実際の成績と対応しているか。
+  // 高評価（★4以上）と低評価（★2以下）の正答率差で見る。
+  const hi = qbBin('hi', items.filter(x => x.focus !== null && x.focus >= 4));
+  const lo = qbBin('lo', items.filter(x => x.focus !== null && x.focus <= 2));
+  const calibration = (hi.reliable && lo.reliable && hi.accuracy !== null && lo.accuracy !== null)
+    ? { hi: hi.accuracy, lo: lo.accuracy, diff: hi.accuracy - lo.accuracy }
+    : null;
+
+  const reliableSlots = bySlot.filter(b => b.reliable);
+  const bestSlot  = reliableSlots.length ? reliableSlots.reduce((a, b) => (b.accuracy > a.accuracy ? b : a)) : null;
+  const worstSlot = reliableSlots.length > 1 ? reliableSlots.reduce((a, b) => (b.accuracy < a.accuracy ? b : a)) : null;
+
+  return {
+    hasData: items.length >= QB_MIN_SESSIONS && solved >= QB_MIN_SOLVED,
+    items, bySlot, byFocus, byBreak, bySpeed, calibration, bestSlot, worstSlot,
+    sessionCount: items.length,
+    coverage: logs.length ? Math.round(items.length / logs.length * 100) : 0,
+    solved, correct,
+    accuracy: solved > 0 ? correct / solved * 100 : null,
+    minPerQ: paced.length ? paced.reduce((s, x) => s + x.minPerQ, 0) / paced.length : null,
+    medianMinPerQ: paced.length ? median(paced.map(x => x.minPerQ)) : null
+  };
+}
+
+// ==================== 解き直しの間隔 ====================
+// activity='review' は使っていない（復習も問題演習として記録している）ため、
+// タグではなく「同じ科目に前回触れた日からの間隔」で復習を捉える。
+// 粒度は科目単位なので、問題単位の忘却曲線ではない点に注意。
+const REVIEW_GAP_BINS = [
+  { label: '翌日',     min: 1,  max: 1 },
+  { label: '2〜3日',   min: 2,  max: 3 },
+  { label: '4〜7日',   min: 4,  max: 7 },
+  { label: '8〜14日',  min: 8,  max: 14 },
+  { label: '15〜30日', min: 15, max: 30 },
+  { label: '31日以上', min: 31, max: Infinity }
+];
+const REVIEW_STALE_DAYS = 14;   // これ以上空いた科目を放置として挙げる
+
+function buildReviewIntervalStats(logs, logicalToday) {
+  // 科目 × 論理日 に畳んでから、その科目を触った日の並びで間隔を取る。
+  // 同じ日に複数セッションあっても「1回の学習」として数える。
+  const bySubject = {};
+  logs.forEach(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return;
+    const name = normalizeSubjectName(l.subject_name);
+    const key = toLocalDateKey(getLogicalDate(r.start));
+    const days = (bySubject[name] = bySubject[name] || {});
+    const e = (days[key] = days[key] || { solved: 0, correct: 0, minutes: 0, focusSum: 0, focusN: 0, hasQb: false });
+    e.minutes += l.duration_minutes || 0;
+    const sv = Number(l.questions_solved), co = Number(l.questions_correct);
+    if (Number.isFinite(sv) && sv > 0 && Number.isFinite(co) && co >= 0 && co <= sv) {
+      e.solved += sv; e.correct += co; e.hasQb = true;
+    }
+    if (l.focus_level) { e.focusSum += Number(l.focus_level); e.focusN++; }
+  });
+
+  const dayDiff = (a, b) => Math.round((new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000);
+  const visits = [];
+  const subjects = [];
+  Object.entries(bySubject).forEach(([name, days]) => {
+    const keys = Object.keys(days).sort();
+    keys.forEach((k, i) => {
+      visits.push({ subject: name, day: k, gapDays: i === 0 ? null : dayDiff(k, keys[i - 1]), ...days[k] });
+    });
+    subjects.push({ subject: name, lastDay: keys[keys.length - 1], visitCount: keys.length });
+  });
+
+  const bins = REVIEW_GAP_BINS.map(b => {
+    const hit = visits.filter(v => v.gapDays !== null && v.gapDays >= b.min && v.gapDays <= b.max);
+    const qb = hit.filter(v => v.hasQb);
+    const solved = qb.reduce((s, v) => s + v.solved, 0);
+    const correct = qb.reduce((s, v) => s + v.correct, 0);
+    const foc = hit.filter(v => v.focusN > 0);
+    return {
+      ...b,
+      count: hit.length,
+      qbCount: qb.length,
+      solved, correct,
+      accuracy: solved > 0 ? correct / solved * 100 : null,
+      avgFocus: foc.length ? foc.reduce((s, v) => s + v.focusSum / v.focusN, 0) / foc.length : null,
+      reliable: qb.length >= QB_MIN_SESSIONS && solved >= QB_MIN_SOLVED
+    };
+  });
+
+  const cands = bins.filter(b => b.reliable && b.accuracy !== null);
+  const bestBin = cands.length ? cands.reduce((a, b) => (b.accuracy > a.accuracy ? b : a)) : null;
+  const worstBin = cands.length > 1 ? cands.reduce((a, b) => (b.accuracy < a.accuracy ? b : a)) : null;
+
+  const todayKey = toLocalDateKey(logicalToday);
+  const stale = subjects
+    .map(x => ({ ...x, daysSince: dayDiff(todayKey, x.lastDay) }))
+    .filter(x => x.daysSince >= REVIEW_STALE_DAYS)
+    .sort((a, b) => b.daysSince - a.daysSince);
+
+  const gaps = visits.filter(v => v.gapDays !== null).map(v => v.gapDays);
+  return {
+    hasData: gaps.length >= QB_MIN_SESSIONS,
+    visits, bins, bestBin, worstBin, stale,
+    subjectCount: subjects.length,
+    revisitCount: gaps.length,
+    avgGap: gaps.length ? Math.round(gaps.reduce((s, v) => s + v, 0) / gaps.length) : null,
+    medianGap: gaps.length ? Math.round(median(gaps)) : null,
+    hasAccuracy: bins.some(b => b.accuracy !== null)
+  };
+}
+
+// ==================== 目標と実績（曜日別） ====================
+// 実績はログから直接出す。目標は getGoalForDate（上書き→スナップショット→曜日別
+// テンプレートの順）から引くので、過去日でスナップショットが無いぶんは
+// 「いまの曜日別テンプレート」で評価している点に注意。
+const GOAL_HISTORY_DAYS = 56;
+
+function buildGoalHistory(allLogs, logicalToday, days = GOAL_HISTORY_DAYS) {
+  const minutesByDay = {};
+  allLogs.forEach(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return;
+    const k = toLocalDateKey(getLogicalDate(r.start));
+    minutesByDay[k] = (minutesByDay[k] || 0) + (l.duration_minutes || 0);
+  });
+
+  const rows = [];
+  // 今日はまだ途中なので入れない
+  for (let i = days; i >= 1; i--) {
+    const d = new Date(logicalToday);
+    d.setDate(d.getDate() - i);
+    const k = toLocalDateKey(d);
+    const goal = getGoalForDate(d) || 0;
+    const actual = minutesByDay[k] || 0;
+    rows.push({ date: k, dow: d.getDay(), goal, actual, off: actual === 0, met: goal > 0 && actual >= goal });
+  }
+
+  const dowNames = ['日', '月', '火', '水', '木', '金', '土'];
+  const dow = [1, 2, 3, 4, 5, 6, 0].map(d => {
+    const hit = rows.filter(r => r.dow === d);
+    const studied = hit.filter(r => !r.off);
+    const goalSum = hit.reduce((s, r) => s + r.goal, 0);
+    const actualSum = hit.reduce((s, r) => s + r.actual, 0);
+    const studiedMins = studied.map(r => r.actual);
+    return {
+      dow: d, label: dowNames[d],
+      days: hit.length,
+      offDays: hit.length - studied.length,
+      offRate: hit.length ? Math.round((hit.length - studied.length) / hit.length * 100) : 0,
+      metDays: hit.filter(r => r.met).length,
+      avgGoal: hit.length ? Math.round(goalSum / hit.length) : 0,
+      avgActual: hit.length ? Math.round(actualSum / hit.length) : 0,
+      // 学習した日だけで見た実績。オフ日で薄まらない値。
+      avgActualStudied: studiedMins.length ? Math.round(studiedMins.reduce((s, v) => s + v, 0) / studiedMins.length) : 0,
+      medianStudied: studiedMins.length ? Math.round(median(studiedMins)) : 0,
+      rate: goalSum > 0 ? Math.round(actualSum / goalSum * 100) : null
+    };
+  });
+
+  // オフ日が半分以上あって達成率も低い曜日＝目標が実態に合っていない曜日
+  const mismatched = dow
+    .filter(x => x.days >= 4 && x.avgGoal > 0 && x.offRate >= 50 && x.rate !== null && x.rate < 60)
+    .sort((a, b) => b.offRate - a.offRate);
+
+  const totalGoal = rows.reduce((s, r) => s + r.goal, 0);
+  const totalActual = rows.reduce((s, r) => s + r.actual, 0);
+  const studiedRows = rows.filter(r => !r.off);
+  return {
+    hasData: rows.some(r => r.actual > 0),
+    rows, dow, mismatched,
+    days: rows.length,
+    offDays: rows.length - studiedRows.length,
+    metDays: rows.filter(r => r.met).length,
+    rate: totalGoal > 0 ? Math.round(totalActual / totalGoal * 100) : null,
+    // オフ日を除いた達成率。バイト・旅行の日に引きずられない見方。
+    rateStudied: (() => {
+      const g = studiedRows.reduce((s, r) => s + r.goal, 0);
+      const a = studiedRows.reduce((s, r) => s + r.actual, 0);
+      return g > 0 ? Math.round(a / g * 100) : null;
+    })()
+  };
+}
+
+// ==================== インプット / アウトプットの基準線 ====================
+// 動画1本と1問では単位あたりの所要時間が違うので、時間比をそのまま
+// 50:50 と比べても意味がない。実測の単価 × 教材の総量から
+// 「この教材を終えたら必然的にこうなる」比率を出して基準線にする。
+const UNIT_MIN_VIDEOS = 5;      // 単価を出すのに要る最低サンプル
+const UNIT_MIN_QUESTIONS = 50;
+
+function buildUnitCost(logs) {
+  let vMin = 0, vCount = 0, vSessions = 0, qMin = 0, qCount = 0, qSessions = 0;
+  logs.forEach(l => {
+    const m = l.duration_minutes || 0;
+    const vw = Number(l.videos_watched), qs = Number(l.questions_solved);
+    if (l.activity === 'video' && Number.isFinite(vw) && vw > 0) { vMin += m; vCount += vw; vSessions++; }
+    if (l.activity === 'qb' && Number.isFinite(qs) && qs > 0) { qMin += m; qCount += qs; qSessions++; }
+  });
+  return {
+    minPerVideo: vCount > 0 ? vMin / vCount : null,
+    videoSamples: vCount, videoSessions: vSessions,
+    minPerQuestion: qCount > 0 ? qMin / qCount : null,
+    questionSamples: qCount, questionSessions: qSessions,
+    hasVideo: vCount >= UNIT_MIN_VIDEOS,
+    hasQuestion: qCount >= UNIT_MIN_QUESTIONS
+  };
+}
+
+function buildIOBaseline(unit, pipelineRows) {
+  const rows = pipelineRows || [];
+  const videoTotal = rows.reduce((s, r) => s + (r.videoTotal || 0), 0);
+  const videoDone = rows.reduce((s, r) => s + (r.videoDone || 0), 0);
+  const qbTotal = rows.reduce((s, r) => s + (r.qb1Total || 0), 0);
+  const qbDone = rows.reduce((s, r) => s + (r.qb1Done || 0), 0);
+  const progress = {
+    videoPct: videoTotal > 0 ? videoDone / videoTotal * 100 : null,
+    qbPct: qbTotal > 0 ? qbDone / qbTotal * 100 : null,
+    videoTotal, videoDone, qbTotal, qbDone
+  };
+  progress.gap = (progress.videoPct !== null && progress.qbPct !== null)
+    ? progress.videoPct - progress.qbPct : null;
+
+  if (!unit.hasVideo || !unit.hasQuestion || videoTotal <= 0 || qbTotal <= 0) {
+    return { hasData: false, progress };
+  }
+  const vMin = videoTotal * unit.minPerVideo;
+  const qMin = qbTotal * unit.minPerQuestion;
+  const total = vMin + qMin;
+  return {
+    hasData: true, progress,
+    videoTotal, qbTotal, vMin, qMin,
+    videoShare: total > 0 ? vMin / total * 100 : null,
+    // 残りを終えるのに必要な時間（QBは1周目のみを前提）
+    remainVideoMin: Math.max(0, videoTotal - videoDone) * unit.minPerVideo,
+    remainQbMin: Math.max(0, qbTotal - qbDone) * unit.minPerQuestion
+  };
+}
+
 // ==================== インサイトのセクション折りたたみ ====================
 const INSIGHT_GROUP_KEY = 'medfocus_insight_groups';
-const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, qb: false, life: false, trend: false, sessions: false };
+const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, goal: false, qb: false, life: false, trend: false, sessions: false };
 function getInsightGroupState() {
   try { return JSON.parse(localStorage.getItem(INSIGHT_GROUP_KEY) || '{}'); } catch (e) { return {}; }
 }
@@ -5487,6 +5801,23 @@ const insightIcons = {
   focus: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>',
   target: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
 };
+
+// 条件別の正答率テーブル。母数が足りない行は薄く出して、判定に使わないことを示す。
+function qbAccTable(bins) {
+  return `<div class="break-table">
+    <div class="break-row break-row-head break-row-run">
+      <div>区分</div><div style="text-align:right">解答数</div><div style="text-align:right">正答率</div><div style="text-align:right">1問あたり</div>
+    </div>
+    ${bins.map(b => `
+      <div class="break-row break-row-run ${b.reliable ? '' : 'is-thin'}">
+        <div class="break-row-label">${b.label}</div>
+        <div class="break-row-num">${b.solved > 0 ? b.solved + '問' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+        <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+        <div class="break-row-num">${b.minPerQ !== null ? b.minPerQ.toFixed(1) + '分' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+      </div>
+    `).join('')}
+  </div>`;
+}
 
 async function renderInsights(){
   const ct=document.getElementById('page-container');
@@ -6077,6 +6408,11 @@ async function renderInsights(){
   const io = buildIOBalance(logs);
   const breakStats = buildBreakStats(logs);
   const intraStats = buildIntraSessionStats(logs);
+  const qbQuality = buildQbQualityStats(logs, breakStats.breakBeforeById);
+  const reviewStats = buildReviewIntervalStats(logs, logicalToday);
+  const goalHistory = buildGoalHistory(allLogs, logicalToday);
+  const unitCost = buildUnitCost(logs);
+  const ioBaseline = buildIOBaseline(unitCost, pipeline.rows);
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -6339,7 +6675,69 @@ async function renderInsights(){
     </div>
     ${insightGroupCloseHTML}
 
-    ${insightGroupOpenHTML('qb', '演習・QB分析', '正答率、周回ごとの伸び、インプットとアウトプットの比率', insightIcons.target, 'var(--color-accent-green)')}
+    ${insightGroupOpenHTML('goal', '目標と実績', '曜日ごとに目標が実態に合っているか', insightIcons.target, 'var(--color-accent-green)')}
+    <!-- Section J: 目標達成率（曜日別） -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.112s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target}</div>
+        <div><div class="section-title">曜日別の目標達成率</div><div class="section-subtitle">直近${goalHistory.days}日（今日を除く）／実績はログ、目標は曜日別テンプレート</div></div>
+      </div>
+
+      ${!goalHistory.hasData ? `
+        <div class="data-collecting-msg">学習記録が貯まると、曜日ごとの目標と実績の差が出ます。</div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.check} 目標を達成した日</div>
+            <div class="rhythm-stat-value">${goalHistory.metDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
+            <div class="rhythm-stat-change change-neutral">学習しなかった日 ${goalHistory.offDays}日</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.chart} 達成率（全日）</div>
+            <div class="rhythm-stat-value">${goalHistory.rate !== null ? goalHistory.rate : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change change-neutral">目標の合計に対する実績の合計</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.target} 達成率（学習した日）</div>
+            <div class="rhythm-stat-value">${goalHistory.rateStudied !== null ? goalHistory.rateStudied : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change ${goalHistory.rateStudied >= 100 ? 'change-positive' : goalHistory.rateStudied >= 80 ? 'change-neutral' : 'change-warning'}">バイト・旅行の日に薄められない値</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.calendar} 学習した日</div>
+            <div class="rhythm-stat-value">${goalHistory.days - goalHistory.offDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
+            <div class="rhythm-stat-change change-neutral">残りはオフ日として扱う</div>
+          </div>
+        </div>
+
+        ${goalHistory.mismatched.length > 0 ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.warn}</span>
+            <div>${goalHistory.mismatched.map(m =>
+              `<strong>${m.label}曜</strong>は ${m.days}日中 ${m.offDays}日が学習なしで、達成率 ${m.rate}%。目標 ${formatMinutes(m.avgGoal)} は実態に合っていない可能性があります${m.medianStudied > 0 ? `（学習した日の中央値は ${formatMinutes(m.medianStudied)}）` : ''}。`
+            ).join('<br>')}</div>
+          </div>
+        ` : ''}
+
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-wide">
+            <div>曜日</div><div style="text-align:right">目標</div><div style="text-align:right">実績平均</div><div style="text-align:right">オフ日</div><div style="text-align:right">達成率</div>
+          </div>
+          ${goalHistory.dow.map(d => `
+            <div class="break-row break-row-wide ${d.rate !== null && d.rate >= 100 ? 'is-best' : ''}">
+              <div class="break-row-label">${d.label}曜</div>
+              <div class="break-row-num">${d.avgGoal > 0 ? formatMinutes(d.avgGoal) : '<span style="color:var(--color-text-tertiary)">なし</span>'}</div>
+              <div class="break-row-num">${formatMinutes(d.avgActual)}</div>
+              <div class="break-row-num">${d.offDays}/${d.days}</div>
+              <div class="break-row-num">${d.rate !== null ? d.rate + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">実績は学習ログから、目標は「その日の上書き→保存済みスナップショット→現在の曜日別テンプレート」の順に引いています。スナップショットが無い過去日は<strong>いまの曜日別目標</strong>で遡って評価しているため、途中で目標を変えた場合はその前の期間がずれます。スナップショットは端末内（localStorage）にしか無く、端末を変えると引き継がれません。</div>
+      `}
+    </div>
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('qb', '演習・QB分析', '正答率、解くスピード、解き直しの間隔、教材の消化バランス', insightIcons.target, 'var(--color-accent-green)')}
     <!-- Section D: QB正答率と弱点科目 -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
       <div class="section-header">
@@ -6553,7 +6951,7 @@ async function renderInsights(){
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.125s">
       <div class="section-header">
         <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.summary}</div>
-        <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">講義動画に偏っていないか（${presetLabels[insightFilters.preset]}）</div></div>
+        <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">教材の構成から引いた基準線と比べる（${presetLabels[insightFilters.preset]}）</div></div>
       </div>
 
       ${!io.hasData ? `
@@ -6575,13 +6973,212 @@ async function renderInsights(){
           <span><i class="io-qb"></i>問題演習 ${formatMinutes(io.qb)}</span>
           ${io.other > 0 ? `<span><i class="io-other"></i>暗記・復習など ${formatMinutes(io.other)}（比率対象外）</span>` : ''}
         </div>
-        ${io.videoShare !== null && io.videoShare > 60 ? `
-          <div class="acc-warn-box" style="margin-top:12px;margin-bottom:0">
-            ${IC.warn} 講義動画が ${io.videoShare.toFixed(0)}% を占めています。インプット過多の傾向です。
-            <div class="acc-warn-sub">動画を見ただけで理解した気になるのは、最も起こりやすい失敗です。QBで回収する時間を増やしましょう。</div>
+        ${(() => {
+          // 動画1本と1問では所要時間が違うので、時間比を 50:50 と比べても意味がない。
+          // 教材を1周終えたら必然的にそうなる比率を基準線として並べ、そこからのズレだけを見る。
+          if (!ioBaseline.hasData) {
+            return `<div class="break-note">動画の本数と問題数の記録が貯まると、「この教材を1周すると時間配分は必然的に◯:◯になる」という基準線を引いて比べられます（現在 動画 ${unitCost.videoSamples}本 / ${unitCost.questionSamples}問ぶん）。</div>`;
+          }
+          const diff = io.videoShare - ioBaseline.videoShare;
+          const verdict = diff > 10 ? { cls: 'change-warning', txt: '基準より講義動画に寄っています' }
+                        : diff < -10 ? { cls: 'change-positive', txt: '基準より問題演習に寄っています' }
+                        : { cls: 'change-positive', txt: '教材の構成どおりの配分です' };
+          return `
+            <div class="io-baseline-grid">
+              <div class="io-baseline-item">
+                <div class="io-baseline-label">実績</div>
+                <div class="io-baseline-value">動画 ${io.videoShare.toFixed(0)}% : QB ${(100 - io.videoShare).toFixed(0)}%</div>
+              </div>
+              <div class="io-baseline-item">
+                <div class="io-baseline-label">基準線（教材を1周した場合）</div>
+                <div class="io-baseline-value">動画 ${ioBaseline.videoShare.toFixed(0)}% : QB ${(100 - ioBaseline.videoShare).toFixed(0)}%</div>
+              </div>
+              <div class="io-baseline-item">
+                <div class="io-baseline-label">基準からのズレ</div>
+                <div class="io-baseline-value ${verdict.cls}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}pt ${verdict.txt}</div>
+              </div>
+            </div>
+            <div class="break-note">基準線は 実測の単価（動画1本 ${unitCost.minPerVideo.toFixed(0)}分 / 1問 ${unitCost.minPerQuestion.toFixed(1)}分）× 教材の総量（動画 ${ioBaseline.videoTotal}本 / ${ioBaseline.qbTotal}問）から算出。QBは1周目のみを前提にしているので、複数周やる前提ならQB側の基準はもっと高くなります。残りを終えるには 動画 ${formatMinutes(Math.round(ioBaseline.remainVideoMin))} / QB ${formatMinutes(Math.round(ioBaseline.remainQbMin))} が必要です。</div>
+          `;
+        })()}
+        ${ioBaseline.progress.gap !== null ? `
+          <div class="break-verdict ${ioBaseline.progress.gap > 20 ? '' : 'break-verdict-muted'}">
+            ${ioBaseline.progress.gap > 20 ? `<span class="break-verdict-mark">${IC.warn}</span>` : ''}
+            <div>進捗で見ると 動画 <strong>${ioBaseline.progress.videoPct.toFixed(0)}%</strong> / QB1周目 <strong>${ioBaseline.progress.qbPct.toFixed(0)}%</strong>（差 ${ioBaseline.progress.gap.toFixed(0)}pt）。${
+              ioBaseline.progress.gap > 20
+                ? '見た講義に対してQBでの回収が追いついていません。'
+                : '消化の進み方は揃っています。'
+            }時間ではなく消化率で比べているので、単位あたりの所要時間の違いに影響されません。</div>
           </div>
         ` : ''}
         ${io.unclassified > 0 ? `<div class="acc-thin-note">活動が未分類のログ ${formatMinutes(io.unclassified)} は比率から除外しています。</div>` : ''}
+      `}
+    </div>
+
+    <!-- Section K: 演習の質（条件別） -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.128s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.focus}</div>
+        <div><div class="section-title">条件別の正答率</div><div class="section-subtitle">セッションごとの解答記録から、いつ・どんな状態で解いた問題がよく当たっているか</div></div>
+      </div>
+
+      ${!qbQuality.hasData ? `
+        <div class="data-collecting-msg">
+          問題演習のセッションで「解いた数」と「正答数」を記録すると、時間帯・集中度・休憩明けごとの正答率が出ます。<br>
+          現在 ${qbQuality.sessionCount}セッション / ${qbQuality.solved}問（${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問以上で表示）
+        </div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.book} 通算正答率</div>
+            <div class="rhythm-stat-value">${qbQuality.accuracy.toFixed(0)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change change-neutral">${qbQuality.correct} / ${qbQuality.solved}問</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.timer} 1問あたりの時間</div>
+            <div class="rhythm-stat-value">${qbQuality.minPerQ !== null ? qbQuality.minPerQ.toFixed(1) : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+            <div class="rhythm-stat-change change-neutral">${qbQuality.medianMinPerQ !== null ? `中央値 ${qbQuality.medianMinPerQ.toFixed(1)}分` : ''}（解説を読む時間を含む）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.target} ★と成績の対応</div>
+            <div class="rhythm-stat-value">${qbQuality.calibration ? (qbQuality.calibration.diff >= 0 ? '+' : '') + qbQuality.calibration.diff.toFixed(0) + 'pt' : '--'}</div>
+            <div class="rhythm-stat-change ${!qbQuality.calibration ? 'change-neutral' : qbQuality.calibration.diff >= 5 ? 'change-positive' : 'change-warning'}">${qbQuality.calibration ? '★4以上 と ★2以下 の正答率差' : '★の記録が貯まると判定できます'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.list} 対象セッション</div>
+            <div class="rhythm-stat-value">${qbQuality.sessionCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">件</span></div>
+            <div class="rhythm-stat-change change-neutral">記録全体の${qbQuality.coverage}%</div>
+          </div>
+        </div>
+
+        ${qbQuality.bestSlot && qbQuality.worstSlot && qbQuality.bestSlot.label !== qbQuality.worstSlot.label ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div><strong>${qbQuality.bestSlot.label}</strong>に解いた問題の正答率が ${qbQuality.bestSlot.accuracy.toFixed(0)}% でいちばん高く、<strong>${qbQuality.worstSlot.label}</strong>は ${qbQuality.worstSlot.accuracy.toFixed(0)}% でした（差 ${(qbQuality.bestSlot.accuracy - qbQuality.worstSlot.accuracy).toFixed(0)}pt）。</div>
+          </div>
+        ` : ''}
+
+        ${qbQuality.calibration && qbQuality.calibration.diff < 5 ? `
+          <div class="break-verdict break-verdict-muted">
+            <div>★4以上をつけた回の正答率 ${qbQuality.calibration.hi.toFixed(0)}% に対し、★2以下の回は ${qbQuality.calibration.lo.toFixed(0)}%。<strong>体感の集中度と実際の成績がほとんど対応していません。</strong>★を基準に調子を判断するより、正答率そのものを見たほうが確かです。</div>
+          </div>
+        ` : ''}
+
+        <div class="break-subtitle">時間帯別</div>
+        ${qbAccTable(qbQuality.bySlot)}
+
+        <div class="break-subtitle">集中度別</div>
+        ${qbAccTable(qbQuality.byFocus)}
+
+        <div class="break-subtitle">休憩をはさんだか</div>
+        ${qbAccTable(qbQuality.byBreak)}
+
+        <div class="break-note">正答率はセッションごとの率を平均せず、解答数で重み付けした通算（総正答 ÷ 総解答）です。灰色の行は ${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問に届いておらず、参考値どまりです。</div>
+      `}
+    </div>
+
+    <!-- Section L: 解くスピードと正答率 -->
+    ${qbQuality.hasData ? `
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.timer}</div>
+        <div><div class="section-title">解くスピードと正答率</div><div class="section-subtitle">速く解いた回で雑になっていないか</div></div>
+      </div>
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-run">
+          <div>1問あたり</div><div style="text-align:right">セッション</div><div style="text-align:right">解答数</div><div style="text-align:right">正答率</div>
+        </div>
+        ${qbQuality.bySpeed.map(b => `
+          <div class="break-row break-row-run ${b.reliable ? '' : 'is-thin'}">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-row-num">${b.sessions}件</div>
+            <div class="break-row-num">${b.solved}問</div>
+            <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+          </div>
+        `).join('')}
+      </div>
+      ${(() => {
+        const rel = qbQuality.bySpeed.filter(b => b.reliable && b.accuracy !== null);
+        if (rel.length < 2) return '<div class="break-note">区分ごとの母数が揃うと、速さと正確さのトレードオフを判定できます。</div>';
+        const fastest = rel[0], slowest = rel[rel.length - 1];
+        const d = slowest.accuracy - fastest.accuracy;
+        return d >= 10
+          ? `<div class="break-verdict"><span class="break-verdict-mark">${IC.warn}</span><div><strong>${fastest.label}</strong>で解いた回の正答率は ${fastest.accuracy.toFixed(0)}%、<strong>${slowest.label}</strong>では ${slowest.accuracy.toFixed(0)}%。速く解いた回ほど正答率が ${d.toFixed(0)}pt 低く、雑になっている可能性があります。</div></div>`
+          : `<div class="break-verdict break-verdict-muted"><div>${fastest.label} で ${fastest.accuracy.toFixed(0)}%、${slowest.label} で ${slowest.accuracy.toFixed(0)}%。速さによる正答率の差は ${Math.abs(d).toFixed(0)}pt で、大きな崩れはありません。</div></div>`;
+      })()}
+    </div>
+    ` : ''}
+
+    <!-- Section M: 解き直しの間隔 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.132s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.calendar}</div>
+        <div><div class="section-title">解き直しの間隔</div><div class="section-subtitle">同じ科目に前回触れてから何日空けたか（活動が「復習」でなくても数えます）</div></div>
+      </div>
+
+      ${!reviewStats.hasData ? `
+        <div class="data-collecting-msg">同じ科目を2回以上やった記録が貯まると、間隔ごとの正答率が出ます。</div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.calendar} 解き直しの間隔</div>
+            <div class="rhythm-stat-value">${reviewStats.medianGap}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
+            <div class="rhythm-stat-change change-neutral">中央値（平均 ${reviewStats.avgGap}日）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.list} 解き直した回数</div>
+            <div class="rhythm-stat-value">${reviewStats.revisitCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+            <div class="rhythm-stat-change change-neutral">${reviewStats.subjectCount}科目が対象</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.target} いちばん当たった間隔</div>
+            <div class="rhythm-stat-value">${reviewStats.bestBin ? reviewStats.bestBin.label : '--'}</div>
+            <div class="rhythm-stat-change ${reviewStats.bestBin ? 'change-positive' : 'change-neutral'}">${reviewStats.bestBin ? `正答率 ${reviewStats.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.warn} ${REVIEW_STALE_DAYS}日以上あいた科目</div>
+            <div class="rhythm-stat-value">${reviewStats.stale.length}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
+            <div class="rhythm-stat-change ${reviewStats.stale.length > 0 ? 'change-warning' : 'change-positive'}">${reviewStats.stale.length > 0 ? `最長 ${reviewStats.stale[0].daysSince}日` : '放置なし'}</div>
+          </div>
+        </div>
+
+        ${reviewStats.bestBin && reviewStats.worstBin && reviewStats.bestBin.label !== reviewStats.worstBin.label ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div><strong>${reviewStats.bestBin.label}</strong>空けて解き直したときの正答率が ${reviewStats.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${reviewStats.worstBin.label}</strong>では ${reviewStats.worstBin.accuracy.toFixed(0)}% まで落ちています。</div>
+          </div>
+        ` : ''}
+
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>前回からの間隔</div><div style="text-align:right">回数</div><div style="text-align:right">正答率</div><div style="text-align:right">平均集中度</div>
+          </div>
+          ${reviewStats.bins.map(b => `
+            <div class="break-row break-row-run ${reviewStats.bestBin && b.label === reviewStats.bestBin.label ? 'is-best' : b.reliable ? '' : 'is-thin'}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}回</div>
+              <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+              <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>
+          `).join('')}
+        </div>
+
+        ${reviewStats.stale.length > 0 ? `
+          <div class="break-subtitle">しばらく触れていない科目</div>
+          <div class="break-table">
+            ${reviewStats.stale.slice(0, 8).map(x => `
+              <div class="break-row break-row-run">
+                <div class="break-row-label">${x.subject}</div>
+                <div class="break-row-num">${x.visitCount}回</div>
+                <div class="break-row-num"></div>
+                <div class="break-row-num" style="color:${x.daysSince >= 30 ? '#ef4444' : '#f59e0b'}">${x.daysSince}日前</div>
+              </div>
+            `).join('')}
+          </div>
+          ${reviewStats.stale.length > 8 ? `<div class="break-note">他 ${reviewStats.stale.length - 8}科目</div>` : ''}
+        ` : ''}
+
+        <div class="break-note">粒度は科目単位（「2C 循環器を3日前にやった」まで）で、問題単位ではありません。厳密な忘却曲線ではなく、解き直しの間隔の傾向として読んでください。</div>
       `}
     </div>
 
