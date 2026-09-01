@@ -2622,3 +2622,11 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   color: var(--color-text-tertiary);
   line-height: 1.6;
 }
+
+.bulk-scope {
+  display: block;
+  margin-top: 4px;
+  font-size: var(--font-size-xs);
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+}

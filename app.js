@@ -600,9 +600,12 @@ function bulkActivityTargets(logs) {
 }
 
 async function applyBulkActivity(ids, activity) {
-  if (!hasDB()) { showToast(IC.x + ' デモモードでは変更できません'); return false; }
-  // .in() に載せるIDが多いとURLが長くなりすぎるので分割して投げる
-  const CHUNK = 100;
+  if (!hasDB()) { showToast(IC.x + ' デモモードでは変更できません'); return { ok: false, done: 0, total: ids.length }; }
+  // .in() に載せるIDが多いとURLが長くなりすぎるので分割して投げる。
+  // ログは新しい順に並んでいるため、途中で失敗すると「新しいぶんだけ変わった」
+  // という分かりにくい結果になる。どこまで反映できたかを返して呼び出し側で伝える。
+  const CHUNK = 50;
+  let done = 0;
   for (let i = 0; i < ids.length; i += CHUNK) {
     const part = ids.slice(i, i + CHUNK);
     const { error } = await supabase.from('study_logs')
@@ -611,12 +614,13 @@ async function applyBulkActivity(ids, activity) {
       .eq('user_id', session.user.id);
     if (error) {
       console.error('bulk activity update error:', error);
-      showToast(IC.x + ' 更新に失敗しました: ' + error.message);
-      return false;
+      invalidateCache('study_logs');
+      return { ok: false, done, total: ids.length, message: error.message };
     }
+    done += part.length;
   }
   invalidateCache('study_logs');
-  return true;
+  return { ok: true, done, total: ids.length };
 }
 
 // ==================== ACTIVITY（活動種別） ====================
@@ -1022,14 +1026,39 @@ function invalidateCache(key) {
   else Object.keys(_dataCache).forEach(k => delete _dataCache[k]);
 }
 
+// PostgREST は1リクエストで返す行数に上限がある（既定1000行）。
+// started_at の新しい順に取っているので、上限を超えると古いログが丸ごと
+// 落ちて「直近ぶんしか無い」状態になる。分析も一括設定もそれに引きずられる
+// ため、空のページが返るまで range を送って全件そろえる。
+const STUDY_LOG_PAGE = 500;
+const STUDY_LOG_MAX_PAGES = 100;   // 暴走よけ（5万件ぶん）
+
 async function fetchStudyLogs() {
   if (!hasDB()) return [];
   const cached = getCached('study_logs');
   if (cached) return cached;
-  const { data, error } = await supabase.from('study_logs').select('*').eq('user_id', session.user.id).order('started_at', { ascending: false });
-  const result = error ? [] : data;
-  setCache('study_logs', result);
-  return result;
+
+  const all = [];
+  let failed = false;
+  for (let page = 0, from = 0; page < STUDY_LOG_MAX_PAGES; page++) {
+    const { data, error } = await supabase.from('study_logs')
+      .select('*')
+      .eq('user_id', session.user.id)
+      // started_at が同値のときに並びがぶれると range でこぼれるので id で固定する
+      .order('started_at', { ascending: false })
+      .order('id', { ascending: false })
+      .range(from, from + STUDY_LOG_PAGE - 1);
+    if (error) { console.error('fetchStudyLogs error:', error.message); failed = true; break; }
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    from += data.length;
+    // data.length < ページ幅でも「サーバ側の上限」の可能性があるので、
+    // 空が返るまでは打ち切らない
+  }
+
+  // 途中で失敗したぶんをキャッシュすると、欠けたまま固定されてしまう
+  if (!failed) setCache('study_logs', all);
+  return all;
 }
 
 // 1セッションの演習実績を教材進捗トラッカーへ反映する。
@@ -3523,8 +3552,9 @@ function bindBulkActivityEvents(logs) {
     const label = (ACTIVITY_MAP[activity] || {}).l || activity;
     if (!confirm(`${targets.length}件の活動を「${label}」に設定します。よろしいですか？`)) return;
     chip.disabled = true;
-    const ok = await applyBulkActivity(targets.map(l => l.id), activity);
-    if (ok) showToast(IC.check + ` ${targets.length}件を「${label}」に設定しました`);
+    const res = await applyBulkActivity(targets.map(l => l.id), activity);
+    if (res.ok) showToast(IC.check + ` ${res.done}件を「${label}」に設定しました`);
+    else if (res.done > 0) showToast(IC.x + ` ${res.total}件中 ${res.done}件まで反映しました（${res.message || 'エラー'}）`);
     renderStudy();
   });
 }
@@ -3733,7 +3763,12 @@ async function renderStudy(){
                 </select>
                 <label class="bulk-check"><input type="checkbox" id="bulk-unclassified" ${bulkActivity.onlyUnclassified ? 'checked' : ''}> 未分類のログだけ</label>
               </div>
-              <div class="bulk-summary">対象 <strong>${targets.length}件</strong>（計 ${formatMinutes(targetMin)}）</div>
+              <div class="bulk-summary">
+                対象 <strong>${targets.length}件</strong>（計 ${formatMinutes(targetMin)}）
+                <span class="bulk-scope">読み込み済みの学習ログ ${logs.length}件${
+                  logs.length ? `／${toLocalDateKey(getLogicalDate(getLogRange(logs[logs.length - 1]).start))} 〜 ${toLocalDateKey(getLogicalDate(getLogRange(logs[0]).start))}` : ''
+                }</span>
+              </div>
               <div class="bulk-row">
                 <span class="bulk-label">この活動にする</span>
                 <div class="filter-chips" id="bulk-activity-chips">
