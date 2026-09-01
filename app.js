@@ -2768,7 +2768,11 @@ async function renderDashboard(){
         ${pacer.status === 'warning' ? `<div class="pacer-verdict warning">${IC.warn} ぎりぎりです。1日 ${Math.ceil(pacer.requiredPerDay)}問 を切らないようにしましょう。</div>` : ''}
         ${pacer.status === 'danger' ? `<div class="pacer-verdict danger">${IC.warn} このままだと ${Math.round(pacer.projectedPct)}% で本番を迎えます。1日 ${Math.ceil(pacer.requiredPerDay)}問 が必要です。</div>` : ''}
         ${pacer.status === 'unknown' ? `<div class="pacer-verdict">学習記録で「問題演習」の問題数を入れると、実績ペースと予測が出ます。</div>` : ''}
-        ${pacer.videoBlocking ? `<div class="pacer-note">${IC.warn} 講義動画が ${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
+        ${pacer.videoBlocking ? `<div class="pacer-note">${IC.warn} 講義動画が ${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。${
+          pacer.video.pace.perDay !== null
+            ? `直近7日は 1日 <strong style="color:${pacer.video.pace.perDay >= pacer.video.requiredPerDay ? '#10b981' : '#ef4444'}">${(Math.round(pacer.video.pace.perDay * 10) / 10)}本</strong> のペースです。`
+            : ''
+        }見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
       `}
     </div>`}
 
@@ -4514,6 +4518,33 @@ function recentQuestionPace(allLogs, snapshotDeltas, days) {
   return { perDay: null, total: 0, source: null, days };
 }
 
+// 直近 days 日の動画消化ペース（本/日）。
+// セッション記録(videos_watched)があればそれを使う。時刻付きで最も正確なため。
+// 無ければ進捗スナップショットの差分にフォールバックする。
+function recentVideoPace(allLogs, snapshotDeltas, days) {
+  const today = getLogicalDate(new Date());
+  const since = new Date(today); since.setDate(since.getDate() - (days - 1));
+  const sinceKey = toLocalDateKey(since);
+
+  let logged = 0, hasLogged = false;
+  (allLogs || []).forEach(l => {
+    const n = Number(l.videos_watched);
+    if (!Number.isFinite(n) || n <= 0) return;
+    if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) < sinceKey) return;
+    logged += n; hasLogged = true;
+  });
+  if (hasLogged) return { perDay: logged / days, total: logged, source: 'session', days };
+
+  let snap = 0, hasSnap = false;
+  (snapshotDeltas || []).forEach(d => {
+    if (d.date < sinceKey) return;
+    if (d.videoDone > 0) { snap += d.videoDone; hasSnap = true; }
+  });
+  if (hasSnap) return { perDay: snap / days, total: snap, source: 'snapshot', days };
+
+  return { perDay: null, total: 0, source: null, days };
+}
+
 function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
   const today = getLogicalDate(new Date()); today.setHours(0,0,0,0);
   const future = (exams || [])
@@ -4544,8 +4575,9 @@ function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
     else status = 'danger';
   }
 
-  // 動画は本数で管理しており、セッション側に本数を記録していないので
-  // ペースはスナップショットの差分からしか出せない
+  // 動画は本数で管理する。セッションに videos_watched を記録するようになったので
+  // QBと同じくログから実績ペースを出し、無い場合だけスナップショット差分に落とす。
+  const videoPace = recentVideoPace(allLogs, snapshotDeltas, 7);
   let vDone = 0, vTotal = 0;
   Object.values(video || {}).forEach(v => { vDone += v.done || 0; vTotal += v.total || 0; });
   const videoRemaining = Math.max(0, vTotal - vDone);
@@ -4555,6 +4587,7 @@ function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
     qb: qbT, pace, requiredPerDay, projectedDone, projectedPct, status,
     video: { done: vDone, total: vTotal, remaining: videoRemaining,
              requiredPerDay: daysLeft > 0 ? videoRemaining / daysLeft : videoRemaining,
+             pace: videoPace,
              pct: vTotal > 0 ? (vDone / vTotal) * 100 : null },
     // 動画を見ていない範囲はQBに進めないため、動画が残っているとQBの必要ペースは実質もっと厳しい
     videoBlocking: vTotal > 0 && videoRemaining > 0
@@ -5182,9 +5215,13 @@ function buildIOBalance(logs) {
     else acc.other += m;
   });
   const core = acc.video + acc.qb;
+  const total = acc.video + acc.qb + acc.other + acc.unclassified;
   return {
     ...acc,
-    core,
+    core, total,
+    // 比率の判定に使えた時間が全体の何割か。暗記・その他・未分類はここから漏れる。
+    coverage: total > 0 ? (core / total) * 100 : null,
+    excluded: acc.other + acc.unclassified,
     videoShare: core > 0 ? (acc.video / core) * 100 : null,
     ratio: acc.video > 0 ? acc.qb / acc.video : null,
     hasData: core > 0
@@ -5709,12 +5746,90 @@ function buildUnitCost(logs) {
   };
 }
 
-function buildIOBaseline(unit, pipelineRows) {
+// 1〜2周目は全問、3周目以降は「間違えたことのある問題」を中心に回す運用に合わせて、
+// 目標周回まで解く総問題数を見積もる。誤答の集合は問題単位で持っていないので、
+// 1周目の正答数から誤答率を出して代用する。
+const QB_FULL_ROUNDS = 2;
+
+function qbPlannedTotal(qb, targetRound) {
+  let total = 0, done = 0, base = 0, wrongEver = 0, subjects = 0, withWrongData = 0;
+  Object.values(qb || {}).forEach(rounds => {
+    const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10)).filter(Number.isFinite).sort((a, b) => a - b);
+    if (!keys.length) return;
+    const r1 = rounds[String(keys[0])];
+    const b = r1 && r1.total ? r1.total : 0;
+    if (!b) return;
+    subjects++;
+    base += b;
+
+    const d1 = r1.done || 0;
+    const c1 = Number.isFinite(Number(r1.correct)) ? Number(r1.correct) : null;
+    // 正答数が未入力の科目は誤答率が出せない。3周目以降も全問やる前提に倒す
+    // （多めに見積もる側なので、QBの必要時間を過小評価しない）。
+    let wrongCap = b;
+    if (c1 !== null && d1 > 0) {
+      wrongCap = Math.round(b * Math.max(0, d1 - c1) / d1);
+      withWrongData++;
+    }
+    wrongEver += wrongCap;
+
+    for (let r = 1; r <= targetRound; r++) {
+      const cap = r <= QB_FULL_ROUNDS ? b : wrongCap;
+      total += cap;
+      const cur = rounds[String(r)];
+      done += Math.min(cur ? (cur.done || 0) : 0, cap);
+    }
+  });
+  return {
+    total, done, remaining: Math.max(0, total - done),
+    base, wrongEver, subjects, withWrongData,
+    wrongRate: base > 0 ? wrongEver / base * 100 : null,
+    // 誤答率を1科目も出せていないと、3周目以降の見積もりが全問扱いのままになる
+    hasWrongEstimate: withWrongData > 0
+  };
+}
+
+// 実績側の母数がこれを下回るときは、基準線とのズレを判定しない
+const IO_MIN_CORE_MIN = 300;
+// 補正後の配分がこの範囲に収まっていれば「バランスが取れている」とみなす
+const IO_BALANCED_PT = 10;
+
+// 講義動画は教材に登録された全部を見るとは限らない（CBTは主要分野だけ、など）。
+// 視聴予定の本数を持たせ、未設定なら登録総数＝全部見る前提にフォールバックする。
+const IO_VIDEO_PLAN_KEY = 'medfocus_io_video_plan';
+function getIOVideoPlan() {
+  const v = parseInt(localStorage.getItem(IO_VIDEO_PLAN_KEY), 10);
+  return Number.isFinite(v) && v > 0 ? v : null;
+}
+function setIOVideoPlan(n) {
+  try {
+    if (n === null) localStorage.removeItem(IO_VIDEO_PLAN_KEY);
+    else localStorage.setItem(IO_VIDEO_PLAN_KEY, String(n));
+  } catch (e) {}
+}
+
+// 教材の構成を基準に、実績の配分を「基準どおりなら50%」になるよう補正する。
+// 講義動画と問題演習それぞれを『教材が要求する割合』で割ってから正規化するので、
+// 教材どおりの配分だと両者が等しくなり 50:50 に、動画を使いすぎていれば
+// 50%より動画側へ振れる。素の時間比と違い、動画1本と1問の所要時間の差に
+// 引きずられない。
+function correctedVideoShare(videoMin, qbMin, baselineVideoShare) {
+  if (baselineVideoShare === null || baselineVideoShare === undefined) return null;
+  const b = baselineVideoShare / 100;
+  if (!(b > 0 && b < 1)) return null;          // 基準が片側に振り切れていると補正できない
+  const v = (videoMin || 0) / b;
+  const q = (qbMin || 0) / (1 - b);
+  if (v + q <= 0) return null;
+  return v / (v + q) * 100;
+}
+
+function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan) {
   const rows = pipelineRows || [];
   const videoTotal = rows.reduce((s, r) => s + (r.videoTotal || 0), 0);
   const videoDone = rows.reduce((s, r) => s + (r.videoDone || 0), 0);
   const qbTotal = rows.reduce((s, r) => s + (r.qb1Total || 0), 0);
   const qbDone = rows.reduce((s, r) => s + (r.qb1Done || 0), 0);
+  const plan = qbPlannedTotal(qbProgress, targetRound);
   const progress = {
     videoPct: videoTotal > 0 ? videoDone / videoTotal * 100 : null,
     qbPct: qbTotal > 0 ? qbDone / qbTotal * 100 : null,
@@ -5723,19 +5838,23 @@ function buildIOBaseline(unit, pipelineRows) {
   progress.gap = (progress.videoPct !== null && progress.qbPct !== null)
     ? progress.videoPct - progress.qbPct : null;
 
-  if (!unit.hasVideo || !unit.hasQuestion || videoTotal <= 0 || qbTotal <= 0) {
-    return { hasData: false, progress };
+  // 見る予定の本数。登録総数を超える指定は総数で頭打ちにする。
+  const videoPlanned = videoPlan !== null && videoPlan !== undefined
+    ? Math.min(videoPlan, videoTotal) : videoTotal;
+  if (!unit.hasVideo || !unit.hasQuestion || videoPlanned <= 0 || plan.total <= 0) {
+    return { hasData: false, progress, plan, targetRound, videoTotal, videoPlanned };
   }
-  const vMin = videoTotal * unit.minPerVideo;
-  const qMin = qbTotal * unit.minPerQuestion;
+  // 講義動画は見る予定のぶんを1回。QBは目標周回ぶん。
+  const vMin = videoPlanned * unit.minPerVideo;
+  const qMin = plan.total * unit.minPerQuestion;
   const total = vMin + qMin;
   return {
-    hasData: true, progress,
-    videoTotal, qbTotal, vMin, qMin,
+    hasData: true, progress, plan, targetRound,
+    videoTotal, videoPlanned, qbTotal: plan.total, vMin, qMin,
+    videoPlanPct: videoTotal > 0 ? videoPlanned / videoTotal * 100 : null,
     videoShare: total > 0 ? vMin / total * 100 : null,
-    // 残りを終えるのに必要な時間（QBは1周目のみを前提）
-    remainVideoMin: Math.max(0, videoTotal - videoDone) * unit.minPerVideo,
-    remainQbMin: Math.max(0, qbTotal - qbDone) * unit.minPerQuestion
+    remainVideoMin: Math.max(0, videoPlanned - videoDone) * unit.minPerVideo,
+    remainQbMin: plan.remaining * unit.minPerQuestion
   };
 }
 
@@ -6411,8 +6530,20 @@ async function renderInsights(){
   const qbQuality = buildQbQualityStats(logs, breakStats.breakBeforeById);
   const reviewStats = buildReviewIntervalStats(logs, logicalToday);
   const goalHistory = buildGoalHistory(allLogs, logicalToday);
-  const unitCost = buildUnitCost(logs);
-  const ioBaseline = buildIOBaseline(unitCost, pipeline.rows);
+  // 単価（動画1本◯分・1問◯分）は教材の性質なので期間フィルタでは変えない。
+  // 期間で動かすと「今日」を選んだだけでサンプル不足になり基準線ごと消えてしまう。
+  const unitCost = buildUnitCost(allLogs);
+  const ioTargetRound = getPacerTargetRound();
+  const ioBaseline = buildIOBaseline(unitCost, pipeline.rows, getQBProgress(), ioTargetRound, getIOVideoPlan());
+  // 母数が小さいとセッション数回でズレ判定がひっくり返るので、下限を切る
+  const ioThin = io.core < IO_MIN_CORE_MIN;
+  const ioCorrected = ioBaseline.hasData ? correctedVideoShare(io.video, io.qb, ioBaseline.videoShare) : null;
+  const ioDiff = ioCorrected !== null ? ioCorrected - 50 : null;
+  const ioVerdict = ioCorrected === null ? null
+    : ioThin ? { cls: 'change-neutral', txt: `判定にはあと ${formatMinutes(IO_MIN_CORE_MIN - io.core)} 必要です` }
+    : ioDiff > IO_BALANCED_PT ? { cls: 'change-warning', txt: '講義動画に寄っています' }
+    : ioDiff < -IO_BALANCED_PT ? { cls: 'change-warning', txt: '問題演習に寄っています' }
+    : { cls: 'change-positive', txt: 'バランスが取れています' };
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -6954,51 +7085,84 @@ async function renderInsights(){
         <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">教材の構成から引いた基準線と比べる（${presetLabels[insightFilters.preset]}）</div></div>
       </div>
 
+      ${ioBaseline.videoTotal > 0 ? `
+        <div class="io-plan-row">
+          <span class="io-plan-label">見る予定の講義動画</span>
+          <input type="number" class="io-plan-input" id="io-video-plan" min="1" max="${ioBaseline.videoTotal}" value="${ioBaseline.videoPlanned}">
+          <span class="io-plan-sub">本 / 登録 ${ioBaseline.videoTotal}本${ioBaseline.videoPlanPct !== null && ioBaseline.videoPlanPct < 99.5 ? `（${ioBaseline.videoPlanPct.toFixed(0)}%）` : ''}</span>
+          ${getIOVideoPlan() !== null ? '<button class="filter-reset-btn" id="io-video-plan-reset">全部見る前提に戻す</button>' : ''}
+        </div>
+      ` : ''}
+
       ${!io.hasData ? `
         <div class="data-collecting-msg">
           学習を記録するときに「活動の種類」を選ぶと、講義動画と問題演習の時間配分がここに出ます。
           ${io.unclassified > 0 ? `<div class="acc-thin-note" style="margin-top:8px">この期間には活動が未分類のログが ${formatMinutes(io.unclassified)} 分あります（比率の計算から除外）。</div>` : ''}
         </div>
       ` : `
-        <div class="io-ratio-line">
-          <span class="io-ratio-big">${io.ratio === null ? '—' : '1 : ' + io.ratio.toFixed(1)}</span>
-          <span class="io-ratio-cap">講義動画 : 問題演習</span>
-        </div>
-        <div class="io-bar">
-          <div class="io-seg io-video" style="width:${io.core > 0 ? (io.video / io.core) * 100 : 0}%"></div>
-          <div class="io-seg io-qb" style="width:${io.core > 0 ? (io.qb / io.core) * 100 : 0}%"></div>
-        </div>
-        <div class="io-legend">
-          <span><i class="io-video"></i>講義動画 ${formatMinutes(io.video)}</span>
-          <span><i class="io-qb"></i>問題演習 ${formatMinutes(io.qb)}</span>
-          ${io.other > 0 ? `<span><i class="io-other"></i>暗記・復習など ${formatMinutes(io.other)}（比率対象外）</span>` : ''}
-        </div>
+        ${ioVerdict ? `
+          <div class="io-verdict-line">
+            <span class="io-verdict-big ${ioVerdict.cls}">${ioThin ? '判定不可' : (ioDiff >= 0 ? '+' : '') + ioDiff.toFixed(0) + 'pt'}</span>
+            <span class="io-verdict-cap">${ioVerdict.txt}</span>
+          </div>
+        ` : `
+          <div class="io-ratio-line">
+            <span class="io-ratio-big">${io.ratio === null ? '—' : '1 : ' + io.ratio.toFixed(1)}</span>
+            <span class="io-ratio-cap">講義動画 : 問題演習</span>
+          </div>
+        `}
+
+        ${(() => {
+          const rawShare = io.core > 0 ? (io.video / io.core) * 100 : 0;
+          const share = ioCorrected !== null ? ioCorrected : rawShare;
+          const seg = (pct, cls) => `<div class="io-seg ${cls}" style="width:${pct}%">${pct >= 14 ? pct.toFixed(0) + '%' : ''}</div>`;
+          return `
+            <div class="io-compare">
+              <div class="io-cmp-head">
+                <span class="io-cmp-label">${ioCorrected !== null ? '教材基準で補正した配分' : '時間の配分'}</span>
+                <span class="io-cmp-sub">実際の時間 動画 ${formatMinutes(io.video)} / 問題演習 ${formatMinutes(io.qb)}</span>
+              </div>
+              <div class="io-cmp-bar">
+                ${seg(share, 'io-video')}${seg(100 - share, 'io-qb')}
+                ${ioCorrected !== null ? '<div class="io-cmp-center"></div>' : ''}
+              </div>
+              ${ioCorrected !== null ? `
+                <div class="io-scale">
+                  <span>← 講義動画に偏り</span>
+                  <span class="io-scale-mid">均衡 50%</span>
+                  <span>問題演習に偏り →</span>
+                </div>
+              ` : ''}
+            </div>
+            <div class="io-legend">
+              <span><i class="io-video"></i>講義動画</span>
+              <span><i class="io-qb"></i>問題演習</span>
+              ${io.excluded > 0 ? `<span><i class="io-other"></i>比率対象外 ${formatMinutes(io.excluded)}${io.unclassified > 0 ? `（うち未分類 ${formatMinutes(io.unclassified)}）` : ''}</span>` : ''}
+            </div>
+          `;
+        })()}
         ${(() => {
           // 動画1本と1問では所要時間が違うので、時間比を 50:50 と比べても意味がない。
           // 教材を1周終えたら必然的にそうなる比率を基準線として並べ、そこからのズレだけを見る。
           if (!ioBaseline.hasData) {
-            return `<div class="break-note">動画の本数と問題数の記録が貯まると、「この教材を1周すると時間配分は必然的に◯:◯になる」という基準線を引いて比べられます（現在 動画 ${unitCost.videoSamples}本 / ${unitCost.questionSamples}問ぶん）。</div>`;
+            return `<div class="break-note">動画の本数と問題数の記録が貯まると、「この教材をやりきると時間配分は必然的に◯:◯になる」という基準線を引いて比べられます。単価の算出には 動画${UNIT_MIN_VIDEOS}本・${UNIT_MIN_QUESTIONS}問ぶんが必要です（現在 動画 ${unitCost.videoSamples}本 / ${unitCost.questionSamples}問）。</div>`;
           }
-          const diff = io.videoShare - ioBaseline.videoShare;
-          const verdict = diff > 10 ? { cls: 'change-warning', txt: '基準より講義動画に寄っています' }
-                        : diff < -10 ? { cls: 'change-positive', txt: '基準より問題演習に寄っています' }
-                        : { cls: 'change-positive', txt: '教材の構成どおりの配分です' };
+          const plan = ioBaseline.plan;
           return `
-            <div class="io-baseline-grid">
-              <div class="io-baseline-item">
-                <div class="io-baseline-label">実績</div>
-                <div class="io-baseline-value">動画 ${io.videoShare.toFixed(0)}% : QB ${(100 - io.videoShare).toFixed(0)}%</div>
-              </div>
-              <div class="io-baseline-item">
-                <div class="io-baseline-label">基準線（教材を1周した場合）</div>
-                <div class="io-baseline-value">動画 ${ioBaseline.videoShare.toFixed(0)}% : QB ${(100 - ioBaseline.videoShare).toFixed(0)}%</div>
-              </div>
-              <div class="io-baseline-item">
-                <div class="io-baseline-label">基準からのズレ</div>
-                <div class="io-baseline-value ${verdict.cls}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}pt ${verdict.txt}</div>
-              </div>
+            <div class="break-note">
+              基準線は 実測の単価（動画1本 ${unitCost.minPerVideo.toFixed(0)}分 / 1問 ${unitCost.minPerQuestion.toFixed(1)}分）× こなす総量（動画 ${ioBaseline.videoPlanned}本${ioBaseline.videoPlanned < ioBaseline.videoTotal ? `（登録 ${ioBaseline.videoTotal}本のうち見る予定のぶん）` : ''} / QB ${plan.total.toLocaleString()}問）から算出しています。
+              QBは<strong>1〜${QB_FULL_ROUNDS}周目は全問（${plan.base.toLocaleString()}問）、${QB_FULL_ROUNDS + 1}周目以降は間違えたことのある問題のみ</strong>として数えました${
+                ioBaseline.targetRound <= QB_FULL_ROUNDS ? `（現在の目標は${ioBaseline.targetRound}周目までなので全問ぶんのみ）` : ''
+              }。${
+                ioBaseline.targetRound > QB_FULL_ROUNDS
+                  ? (plan.hasWrongEstimate
+                      ? `誤答の集合は問題単位で持っていないため、1周目の誤答率 ${plan.wrongRate.toFixed(0)}%（約${plan.wrongEver.toLocaleString()}問）で代用しています${plan.withWrongData < plan.subjects ? `。正答数が未入力の ${plan.subjects - plan.withWrongData}科目は全問やる前提に倒しています` : ''}。`
+                      : '正答数がまだ入力されていないため、3周目以降も全問やる前提で多めに見積もっています。教材進捗トラッカーで正答数を入れると精度が上がります。')
+                  : ''
+              }
+              目標周回は試験ペーサーの設定を使っています。残りを終えるには 動画 ${formatMinutes(Math.round(ioBaseline.remainVideoMin))} / QB ${formatMinutes(Math.round(ioBaseline.remainQbMin))} が必要です。
+              グラフは講義動画と問題演習それぞれを「教材が要求する割合」で割って正規化しているので、<strong>教材どおりの配分なら 50:50</strong> になります（素の時間比は 動画 ${io.videoShare === null ? '--' : io.videoShare.toFixed(0)}% : QB ${io.videoShare === null ? '--' : (100 - io.videoShare).toFixed(0)}%、教材の基準は 動画 ${ioBaseline.videoShare.toFixed(0)}%）。
             </div>
-            <div class="break-note">基準線は 実測の単価（動画1本 ${unitCost.minPerVideo.toFixed(0)}分 / 1問 ${unitCost.minPerQuestion.toFixed(1)}分）× 教材の総量（動画 ${ioBaseline.videoTotal}本 / ${ioBaseline.qbTotal}問）から算出。QBは1周目のみを前提にしているので、複数周やる前提ならQB側の基準はもっと高くなります。残りを終えるには 動画 ${formatMinutes(Math.round(ioBaseline.remainVideoMin))} / QB ${formatMinutes(Math.round(ioBaseline.remainQbMin))} が必要です。</div>
           `;
         })()}
         ${ioBaseline.progress.gap !== null ? `
@@ -7011,7 +7175,6 @@ async function renderInsights(){
             }時間ではなく消化率で比べているので、単位あたりの所要時間の違いに影響されません。</div>
           </div>
         ` : ''}
-        ${io.unclassified > 0 ? `<div class="acc-thin-note">活動が未分類のログ ${formatMinutes(io.unclassified)} は比率から除外しています。</div>` : ''}
       `}
     </div>
 
@@ -7748,6 +7911,16 @@ async function renderInsights(){
   // --- Event: Reset ---
   document.getElementById('filter-reset')?.addEventListener('click', () => {
     resetInsightFilters();
+    renderInsights();
+  });
+  // --- Event: 見る予定の講義動画本数 ---
+  document.getElementById('io-video-plan')?.addEventListener('change', e => {
+    const n = parseInt(e.target.value, 10);
+    setIOVideoPlan(Number.isFinite(n) && n > 0 ? n : null);
+    renderInsights();
+  });
+  document.getElementById('io-video-plan-reset')?.addEventListener('click', () => {
+    setIOVideoPlan(null);
     renderInsights();
   });
   // --- Event: セクションの折りたたみ ---

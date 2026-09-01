@@ -1878,13 +1878,6 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .io-ratio-line { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
 .io-ratio-big { font-size: 1.9rem; font-weight: 800; }
 .io-ratio-cap { font-size: 0.74rem; color: var(--color-text-tertiary); }
-.io-bar {
-  display: flex;
-  height: 14px;
-  border-radius: 7px;
-  overflow: hidden;
-  background: var(--color-bg-elevated);
-}
 .io-seg { height: 100%; }
 .io-seg.io-video, i.io-video { background: #8b5cf6; }
 .io-seg.io-qb, i.io-qb { background: #4ECDC4; }
@@ -2411,33 +2404,98 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 }
 
 /* インプット/アウトプットの基準線 */
-.io-baseline-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-md);
-  margin-top: var(--space-lg);
-}
-.io-baseline-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: var(--space-md);
-  background: var(--color-bg-elevated);
-  border-radius: var(--radius-lg);
-}
-.io-baseline-label {
-  font-size: var(--font-size-xs);
-  color: var(--color-text-tertiary);
-  font-weight: 500;
-}
-.io-baseline-value {
-  font-size: var(--font-size-sm);
-  font-weight: 700;
-}
-
 @media (max-width: 640px) {
   /* 5列は幅に収まらないので、達成率から読み取れる「目標」を落として4列にする */
   .break-row.break-row-wide { grid-template-columns: minmax(0, 1fr) 56px 44px 48px; gap: 4px; }
   .break-row.break-row-wide > :nth-child(2) { display: none; }
-  .io-baseline-grid { grid-template-columns: 1fr; }
 }
+
+/* 基準からのズレ（このカードの結論） */
+.io-verdict-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.io-verdict-big { font-size: 1.9rem; font-weight: 800; letter-spacing: -0.5px; }
+.io-verdict-cap { font-size: 0.8rem; font-weight: 600; color: var(--color-text-secondary); }
+
+/* 実績と基準線を同じ幅で上下に並べ、境目のズレを一目で見せる */
+.io-compare { position: relative; margin-top: var(--space-md); }
+.io-cmp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 12px 0 5px;
+  font-size: 0.72rem;
+}
+.io-cmp-head:first-child { margin-top: 0; }
+.io-cmp-label { font-weight: 700; color: var(--color-text-secondary); white-space: nowrap; flex-shrink: 0; }
+.io-cmp-sub {
+  color: var(--color-text-tertiary);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.io-cmp-bar {
+  position: relative;
+  display: flex;
+  height: 20px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--color-bg-elevated);
+}
+.io-cmp-bar .io-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 800;
+  color: #0b1220;
+  overflow: hidden;
+}
+/* 均衡（50%）の位置 */
+.io-cmp-center {
+  position: absolute;
+  left: 50%; top: 0; bottom: 0;
+  width: 0;
+  margin-left: -1px;
+  border-left: 2px dashed rgba(248, 250, 252, 0.9);
+  pointer-events: none;
+}
+.io-scale {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+}
+.io-scale-mid { font-weight: 700; color: var(--color-text-secondary); }
+
+/* 見る予定の講義動画本数 */
+.io-plan-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: var(--space-md);
+  font-size: var(--font-size-xs);
+}
+.io-plan-label { font-weight: 600; color: var(--color-text-secondary); }
+.io-plan-sub { color: var(--color-text-tertiary); }
+.io-plan-input {
+  width: 76px;
+  padding: 4px 8px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+.io-plan-input:focus { outline: none; border-color: var(--color-border-focus); }
