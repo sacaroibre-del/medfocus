@@ -2337,7 +2337,7 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   font-size: var(--font-size-xs);
 }
 .break-row.break-row-run {
-  grid-template-columns: 1fr 72px 84px 84px;
+  grid-template-columns: minmax(0, 1fr) 72px 84px 84px;
 }
 .break-row-head {
   color: var(--color-text-tertiary);
@@ -2353,6 +2353,8 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   font-weight: 600;
   color: var(--color-text-secondary);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .break-row-num {
   text-align: right;
@@ -2396,6 +2398,6 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   .insight-group-sub { display: none; }
   .break-row { grid-template-columns: 68px 1fr 58px 52px; font-size: 11px; gap: 6px; }
   .break-row > :last-child { display: none; }
-  .break-row.break-row-run { grid-template-columns: 1fr 52px 60px 60px; }
+  .break-row.break-row-run { grid-template-columns: minmax(0, 1fr) 46px 52px 52px; }
   .break-row.break-row-run > :last-child { display: block; }
 }

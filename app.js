@@ -5216,11 +5216,107 @@ const BREAK_RUN_BINS = [
   { label: '151分〜',   min: 151, max: Infinity }
 ];
 
+// セッション内の休憩＝タイマーを一時停止していた区間。study_logs.breaks に
+// [{start, end}] で入っている（保存側は saveStudyLog の payload.breaks）。
+// ポモドーロ／試験シミュレーションはフェーズ切替のたびに pauseSW→startSW を
+// 連続で呼ぶので長さ0の休憩が1件残る。これを実際の一時停止と混ぜないよう、
+// MIN_PAUSE_SEC 未満は捨てる。
+const MIN_PAUSE_SEC = 30;
+// ended_at − started_at − duration_minutes ＝ セッション内の非学習時間。
+// 一時停止だけでなくポモドーロの休憩フェーズも拾えるが、保存確認画面を開いた
+// まま放置した分も混ざるので、極端な値は集計から外す。
+const MAX_OVERHEAD_MIN = 180;
+
 // 旧ログには ended_at が無く、started_at が実際には「記録した時刻（＝終了時刻）」になっている。
 function getLogRange(l) {
   if (l.ended_at) return { start: new Date(l.started_at), end: new Date(l.ended_at) };
   const end = new Date(l.started_at);
   return { start: new Date(end.getTime() - (l.duration_minutes || 0) * 60000), end };
+}
+
+// study_logs.breaks を一時停止の配列に変換する。文字列でもオブジェクトでも受ける。
+function parseSessionBreaks(raw) {
+  if (!raw) return [];
+  let arr = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch (e) { return []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map(b => {
+    if (!b || !b.start || !b.end) return null;  // 再開せずに終わった休憩は長さが確定しない
+    const st = new Date(b.start), en = new Date(b.end);
+    if (isNaN(st) || isNaN(en)) return null;
+    const seconds = Math.round((en - st) / 1000);
+    return seconds >= MIN_PAUSE_SEC ? { start: st, end: en, seconds } : null;
+  }).filter(Boolean);
+}
+
+// 1セッションの内訳（実学習・一時停止・逆算した非学習時間）を出す。
+// ended_at の無い旧ログは開始時刻が復元値で差が必ず0になるため対象外。
+function describeSession(l) {
+  if (!l.ended_at) return null;
+  const start = new Date(l.started_at), end = new Date(l.ended_at);
+  if (isNaN(start) || isNaN(end)) return null;
+  const span = Math.round((end - start) / 60000);
+  const dur = l.duration_minutes || 0;
+  const pauses = parseSessionBreaks(l.breaks);
+  const overheadRaw = span - dur;
+  return {
+    log: l, span, dur, pauses,
+    pauseCount: pauses.length,
+    pauseMin: Math.round(pauses.reduce((a, b) => a + b.seconds, 0) / 60),
+    // 逆算値。負（時間を手で増やした）や極端に大きいものは信用しない
+    overhead: overheadRaw >= 0 && overheadRaw <= MAX_OVERHEAD_MIN ? overheadRaw : null,
+    overheadRaw
+  };
+}
+
+function buildIntraSessionStats(logs) {
+  const sessions = logs.map(describeSession).filter(Boolean);
+  const avg = a => a.length ? a.reduce((s, v) => s + v, 0) / a.length : null;
+  const pauseLens = [];
+  sessions.forEach(x => x.pauses.forEach(pz => pauseLens.push(pz.seconds / 60)));
+  const withPause = sessions.filter(x => x.pauseCount > 0);
+  const oh = sessions.filter(x => x.overhead !== null);
+
+  const pauseBins = [
+    { label: '一時停止なし', match: x => x.pauseCount === 0 },
+    { label: '1回',         match: x => x.pauseCount === 1 },
+    { label: '2回以上',     match: x => x.pauseCount >= 2 }
+  ].map(bin => {
+    const hit = sessions.filter(bin.match);
+    const focus = hit.filter(x => x.log.focus_level);
+    return {
+      label: bin.label,
+      count: hit.length,
+      share: sessions.length ? Math.round(hit.length / sessions.length * 100) : 0,
+      focusCount: focus.length,
+      avgFocus: avg(focus.map(x => Number(x.log.focus_level))),
+      avgDur: hit.length ? Math.round(avg(hit.map(x => x.dur))) : null,
+      avgPauseMin: hit.length ? Math.round(avg(hit.map(x => x.pauseMin))) : null
+    };
+  });
+
+  return {
+    sessions,
+    // 一時停止が1件でも取れていれば内訳を出す価値がある
+    hasData: sessions.length >= 3 && (pauseLens.length > 0 || oh.some(x => x.overhead > 0)),
+    sessionCount: sessions.length,
+    coverage: logs.length ? Math.round(sessions.length / logs.length * 100) : 0,
+    pauseCount: pauseLens.length,
+    pausedSessions: withPause.length,
+    pausePerSession: sessions.length ? +(pauseLens.length / sessions.length).toFixed(1) : 0,
+    totalPauseMin: Math.round(pauseLens.reduce((a, b) => a + b, 0)),
+    avgPauseMin: pauseLens.length ? Math.round(avg(pauseLens)) : null,
+    medianPauseMin: pauseLens.length ? Math.round(median(pauseLens)) : null,
+    longestPauseMin: pauseLens.length ? Math.round(Math.max(...pauseLens)) : null,
+    overheadCount: oh.length,
+    overheadTotalMin: oh.reduce((a, b) => a + b.overhead, 0),
+    avgOverheadMin: oh.length ? Math.round(avg(oh.map(x => x.overhead))) : null,
+    medianOverheadMin: oh.length ? Math.round(median(oh.map(x => x.overhead))) : null,
+    overheadExcluded: sessions.length - oh.length,
+    pauseBins
+  };
 }
 
 function buildBreakStats(logs) {
@@ -5258,8 +5354,15 @@ function buildBreakStats(logs) {
         runMin = dur;
       }
     }
+    // 拘束時間＝各セッションの実経過（started_at〜ended_at）。逆算が信用できない
+    // ログは実学習時間で代用するので、密度が過小に出ることはあっても過大には出ない。
+    const spanMin = arr.reduce((s, x) => {
+      const d = x.log.duration_minutes || 0;
+      const sp = Math.round((x.end - x.start) / 60000);
+      return s + (sp >= d && sp - d <= MAX_OVERHEAD_MIN ? sp : d);
+    }, 0);
     days.push({
-      date, sessions: arr.length, breakMin, breakCount, cutCount,
+      date, sessions: arr.length, breakMin, breakCount, cutCount, spanMin,
       studyMin: arr.reduce((s, x) => s + (x.log.duration_minutes || 0), 0)
     });
   });
@@ -5268,6 +5371,8 @@ function buildBreakStats(logs) {
   const multiDays = days.filter(d => d.sessions > 1);
   const totalStudy = days.reduce((s, d) => s + d.studyMin, 0);
   const totalBreak = days.reduce((s, d) => s + d.breakMin, 0);
+  const totalSpan = days.reduce((s, d) => s + d.spanMin, 0);
+  const totalIntra = Math.max(0, totalSpan - totalStudy);  // セッション内の非学習時間
   const avg = a => a.length ? a.reduce((s, v) => s + v, 0) / a.length : null;
 
   const bins = BREAK_BINS.map(bin => {
@@ -5311,8 +5416,11 @@ function buildBreakStats(logs) {
     perDay: multiDays.length ? +(breaks.length / multiDays.length).toFixed(1) : 0,
     activeDays: multiDays.length,
     totalBreak,
-    // 拘束時間（実学習＋休憩）に占める実学習の割合
-    density: (totalStudy + totalBreak) > 0 ? Math.round(totalStudy / (totalStudy + totalBreak) * 100) : null,
+    totalIntra,
+    totalStudy,
+    // 拘束時間（セッションの実経過＋セッション間の休憩）に占める実学習の割合。
+    // セッション内の一時停止・ポモドーロ休憩も分母に入る。
+    density: (totalSpan + totalBreak) > 0 ? Math.round(totalStudy / (totalSpan + totalBreak) * 100) : null,
     avgRunBeforeBreak: breaks.length ? Math.round(avg(breaks.map(b => b.prevDur))) : 0
   };
 }
@@ -5968,6 +6076,7 @@ async function renderInsights(){
   const oldestBacklog = backlogDated.length > 0 ? backlogDated[0] : null;
   const io = buildIOBalance(logs);
   const breakStats = buildBreakStats(logs);
+  const intraStats = buildIntraSessionStats(logs);
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -6085,12 +6194,70 @@ async function renderInsights(){
     </div>
     ${insightGroupCloseHTML}
 
-    ${insightGroupOpenHTML('breaks', '休憩とセッションの間隔', '休憩の長さ・頻度と、休憩明けの集中の戻り', insightIcons.clock, 'var(--color-accent-orange)', breakStats.hasData ? breakStats.count + '件' : '')}
-    <!-- Section I: 休憩分析 -->
+    ${insightGroupOpenHTML('breaks', '休憩の取り方', 'セッション内の一時停止と、セッション間の空き時間', insightIcons.clock, 'var(--color-accent-orange)', breakStats.hasData ? breakStats.count + '件' : '')}
+    <!-- Section I-1: セッション内の休憩 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.105s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
+        <div><div class="section-title">セッション内の休憩</div><div class="section-subtitle">タイマーを止めていた時間と、記録に残らなかった空き時間</div></div>
+      </div>
+
+      ${!intraStats.hasData ? `
+        <div class="data-collecting-msg">
+          タイマーの一時停止を挟んだセッションが貯まると、ここに内訳が出ます。<br>
+          対象セッション ${intraStats.sessionCount}件 / 一時停止 ${intraStats.pauseCount}件
+        </div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.timer} 1セッションの一時停止</div>
+            <div class="rhythm-stat-value">${intraStats.pausePerSession}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+            <div class="rhythm-stat-change change-neutral">${intraStats.pausedSessions}/${intraStats.sessionCount}セッションで停止している</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.clock} 一時停止の長さ</div>
+            <div class="rhythm-stat-value">${intraStats.avgPauseMin !== null ? intraStats.avgPauseMin : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+            <div class="rhythm-stat-change change-neutral">${intraStats.medianPauseMin !== null ? `中央値 ${intraStats.medianPauseMin}分 / 最長 ${intraStats.longestPauseMin}分` : 'データなし'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.book} セッション内の空き時間</div>
+            <div class="rhythm-stat-value">${intraStats.avgOverheadMin !== null ? formatMinutes(intraStats.avgOverheadMin) : '--'}</div>
+            <div class="rhythm-stat-change change-neutral">1セッションあたり（計 ${formatMinutes(intraStats.overheadTotalMin)}）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.list} 分析できたセッション</div>
+            <div class="rhythm-stat-value">${intraStats.coverage}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change change-neutral">${intraStats.sessionCount}/${sessionCount}件（開始・終了が揃った記録）</div>
+          </div>
+        </div>
+
+        <div class="break-verdict break-verdict-muted">
+          <div>「セッション内の空き時間」は <strong>終了時刻 − 開始時刻 − 実学習時間</strong> の逆算です。一時停止のほか、ポモドーロ／試験シミュレーションの休憩フェーズや、保存画面を開いたままだった時間もここに入ります。一時停止として記録されたのは合計 ${formatMinutes(intraStats.totalPauseMin)} でした。</div>
+        </div>
+
+        <div class="break-subtitle">一時停止の回数 × そのセッションの質</div>
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>一時停止</div><div style="text-align:right">セッション</div><div style="text-align:right">平均集中度</div><div style="text-align:right">学習時間</div>
+          </div>
+          ${intraStats.pauseBins.map(b => `
+            <div class="break-row break-row-run">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
+              <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+              <div class="break-row-num">${b.avgDur !== null ? formatMinutes(b.avgDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>
+          `).join('')}
+        </div>
+        ${intraStats.overheadExcluded > 0 ? `<div class="break-note">${intraStats.overheadExcluded}件は空き時間が${MAX_OVERHEAD_MIN}分を超えるか計算が合わないため、逆算の集計から除いています（保存画面の開きっぱなし、時間の手入力など）。</div>` : ''}
+      `}
+    </div>
+
+    <!-- Section I-2: セッション間の休憩 -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
       <div class="section-header">
         <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.clock}</div>
-        <div><div class="section-title">休憩の取り方</div><div class="section-subtitle">前の記録の終了〜次の記録の開始を休憩として推定（${BREAK_MAX_MIN}分を超える空きは中断とみなして除外）</div></div>
+        <div><div class="section-title">セッション間の休憩</div><div class="section-subtitle">前の記録の終了〜次の記録の開始を休憩として推定（${BREAK_MAX_MIN}分を超える空きは中断とみなして除外）</div></div>
       </div>
 
       ${!breakStats.hasData ? `
@@ -6113,7 +6280,7 @@ async function renderInsights(){
           <div class="rhythm-stat-item">
             <div class="rhythm-stat-label">${IC.target} 学習密度</div>
             <div class="rhythm-stat-value">${breakStats.density !== null ? breakStats.density : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change ${breakStats.density >= 80 ? 'change-positive' : breakStats.density >= 65 ? 'change-neutral' : 'change-warning'}">机に向かった時間のうち実学習（休憩計 ${formatMinutes(breakStats.totalBreak)}）</div>
+            <div class="rhythm-stat-change ${breakStats.density >= 80 ? 'change-positive' : breakStats.density >= 65 ? 'change-neutral' : 'change-warning'}">机に向かった時間のうち実学習（セッション内 ${formatMinutes(breakStats.totalIntra)} ＋ セッション間 ${formatMinutes(breakStats.totalBreak)}）</div>
           </div>
           <div class="rhythm-stat-item">
             <div class="rhythm-stat-label">${IC.book} 休憩前の連続学習</div>
