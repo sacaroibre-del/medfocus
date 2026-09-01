@@ -5198,6 +5198,173 @@ function median(arr) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
+// ==================== 休憩分析 ====================
+// 「休憩」＝同じ論理日のなかで、前のセッションの終了から次のセッションの開始までの空き時間。
+// BREAK_MAX_MIN を超える空きは休憩ではなく学習ブロックの切れ目（外出・食事・就寝前後）とみなして除外する。
+const BREAK_MAX_MIN = 90;
+const BREAK_BINS = [
+  { key: 'micro', label: '〜5分',    min: 0,  max: 5 },
+  { key: 'short', label: '6〜15分',  min: 6,  max: 15 },
+  { key: 'mid',   label: '16〜30分', min: 16, max: 30 },
+  { key: 'long',  label: '31〜60分', min: 31, max: 60 },
+  { key: 'xlong', label: '61〜90分', min: 61, max: 90 }
+];
+const BREAK_RUN_BINS = [
+  { label: '〜45分',    min: 0,   max: 45 },
+  { label: '46〜90分',  min: 46,  max: 90 },
+  { label: '91〜150分', min: 91,  max: 150 },
+  { label: '151分〜',   min: 151, max: Infinity }
+];
+
+// 旧ログには ended_at が無く、started_at が実際には「記録した時刻（＝終了時刻）」になっている。
+function getLogRange(l) {
+  if (l.ended_at) return { start: new Date(l.started_at), end: new Date(l.ended_at) };
+  const end = new Date(l.started_at);
+  return { start: new Date(end.getTime() - (l.duration_minutes || 0) * 60000), end };
+}
+
+function buildBreakStats(logs) {
+  const byDay = {};
+  logs.forEach(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start) || isNaN(r.end)) return;
+    const key = toLocalDateKey(getLogicalDate(r.start));
+    (byDay[key] = byDay[key] || []).push({ log: l, start: r.start, end: r.end });
+  });
+
+  const breaks = [];
+  const days = [];
+  Object.entries(byDay).forEach(([date, arr]) => {
+    arr.sort((a, b) => a.start - b.start);
+    let runMin = arr[0].log.duration_minutes || 0;  // 直近の中断以降に積み上げた実学習時間
+    let breakMin = 0, breakCount = 0, cutCount = 0;
+    for (let i = 1; i < arr.length; i++) {
+      const gap = Math.round((arr[i].start - arr[i - 1].end) / 60000);
+      const dur = arr[i].log.duration_minutes || 0;
+      if (gap < 0) { runMin += dur; continue; }  // 記録が重なっている場合は休憩とみなさない
+      if (gap <= BREAK_MAX_MIN) {
+        breaks.push({
+          minutes: gap,
+          prevDur: arr[i - 1].log.duration_minutes || 0,
+          prevRunMin: runMin,
+          nextFocus: arr[i].log.focus_level ? Number(arr[i].log.focus_level) : null,
+          nextDur: dur,
+          hour: arr[i - 1].end.getHours()
+        });
+        breakMin += gap; breakCount++;
+        runMin += dur;
+      } else {
+        cutCount++;
+        runMin = dur;
+      }
+    }
+    days.push({
+      date, sessions: arr.length, breakMin, breakCount, cutCount,
+      studyMin: arr.reduce((s, x) => s + (x.log.duration_minutes || 0), 0)
+    });
+  });
+
+  const lens = breaks.map(b => b.minutes);
+  const multiDays = days.filter(d => d.sessions > 1);
+  const totalStudy = days.reduce((s, d) => s + d.studyMin, 0);
+  const totalBreak = days.reduce((s, d) => s + d.breakMin, 0);
+  const avg = a => a.length ? a.reduce((s, v) => s + v, 0) / a.length : null;
+
+  const bins = BREAK_BINS.map(bin => {
+    const hit = breaks.filter(b => b.minutes >= bin.min && b.minutes <= bin.max);
+    const focus = hit.filter(b => b.nextFocus);
+    return {
+      ...bin,
+      count: hit.length,
+      share: breaks.length ? Math.round(hit.length / breaks.length * 100) : 0,
+      focusCount: focus.length,
+      avgNextFocus: avg(focus.map(b => b.nextFocus)),
+      avgNextDur: hit.length ? Math.round(avg(hit.map(b => b.nextDur))) : null
+    };
+  });
+
+  // 休憩明けの集中度がいちばん高かった長さ。母数が少ないビンで断定しないよう3件以上に絞る。
+  const cands = bins.filter(b => b.focusCount >= 3 && b.avgNextFocus !== null);
+  const bestBin = cands.length ? cands.reduce((a, b) => (b.avgNextFocus > a.avgNextFocus ? b : a)) : null;
+  const worstBin = cands.length > 1 ? cands.reduce((a, b) => (b.avgNextFocus < a.avgNextFocus ? b : a)) : null;
+
+  // 「どれだけ続けて勉強したあとの休憩か」別に、休憩明けの集中度を見る。
+  const runBins = BREAK_RUN_BINS.map(r => {
+    const hit = breaks.filter(b => b.prevDur >= r.min && b.prevDur <= r.max);
+    const focus = hit.filter(b => b.nextFocus);
+    return {
+      ...r,
+      count: hit.length,
+      focusCount: focus.length,
+      avgBreak: hit.length ? Math.round(avg(hit.map(b => b.minutes))) : null,
+      avgNextFocus: avg(focus.map(b => b.nextFocus))
+    };
+  });
+
+  return {
+    breaks, days, bins, bestBin, worstBin, runBins,
+    hasData: breaks.length >= 3,
+    count: breaks.length,
+    avgBreak: lens.length ? Math.round(avg(lens)) : 0,
+    medianBreak: lens.length ? Math.round(median(lens)) : 0,
+    longestBreak: lens.length ? Math.max(...lens) : 0,
+    perDay: multiDays.length ? +(breaks.length / multiDays.length).toFixed(1) : 0,
+    activeDays: multiDays.length,
+    totalBreak,
+    // 拘束時間（実学習＋休憩）に占める実学習の割合
+    density: (totalStudy + totalBreak) > 0 ? Math.round(totalStudy / (totalStudy + totalBreak) * 100) : null,
+    avgRunBeforeBreak: breaks.length ? Math.round(avg(breaks.map(b => b.prevDur))) : 0
+  };
+}
+
+// ==================== インサイトのセクション折りたたみ ====================
+const INSIGHT_GROUP_KEY = 'medfocus_insight_groups';
+const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, qb: false, life: false, trend: false, sessions: false };
+function getInsightGroupState() {
+  try { return JSON.parse(localStorage.getItem(INSIGHT_GROUP_KEY) || '{}'); } catch (e) { return {}; }
+}
+function isInsightGroupOpen(id) {
+  const st = getInsightGroupState();
+  return st[id] === undefined ? (INSIGHT_GROUP_DEFAULTS[id] ?? true) : !!st[id];
+}
+function setInsightGroupOpen(id, open) {
+  const st = getInsightGroupState();
+  st[id] = open;
+  localStorage.setItem(INSIGHT_GROUP_KEY, JSON.stringify(st));
+}
+function insightGroupOpenHTML(id, title, subtitle, icon, color, badge) {
+  const open = isInsightGroupOpen(id);
+  return `
+    <section class="insight-group ${open ? 'open' : ''}" data-group="${id}">
+      <button type="button" class="insight-group-header" data-group-toggle="${id}" aria-expanded="${open}">
+        <span class="section-icon-wrap" style="color:${color}">${icon}</span>
+        <span class="insight-group-heading">
+          <span class="insight-group-title">${title}</span>
+          <span class="insight-group-sub">${subtitle}</span>
+        </span>
+        ${badge ? `<span class="insight-group-badge">${badge}</span>` : ''}
+        <span class="insight-group-chevron"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></span>
+      </button>
+      <div class="insight-group-body">`;
+}
+const insightGroupCloseHTML = `</div></section>`;
+
+function toggleInsightGroup(id, force) {
+  const sec = document.querySelector(`.insight-group[data-group="${id}"]`);
+  if (!sec) return;
+  const open = force === undefined ? !sec.classList.contains('open') : force;
+  sec.classList.toggle('open', open);
+  sec.querySelector('.insight-group-header')?.setAttribute('aria-expanded', String(open));
+  setInsightGroupOpen(id, open);
+  // 閉じたまま生成されたグラフは幅0で描かれているので、開いたときに測り直す
+  if (open) setTimeout(() => {
+    sec.querySelectorAll('canvas').forEach(c => chartInstances[c.id]?.resize());
+  }, 20);
+}
+function setAllInsightGroups(open) {
+  document.querySelectorAll('.insight-group').forEach(sec => toggleInsightGroup(sec.dataset.group, open));
+}
+
 // SVG icons for section headers (no emoji)
 const insightIcons = {
   filter: '<svg viewBox="0 0 24 24"><path d="M22 3H2l8 9.46V19l4 2v-8.54L22 3z"/></svg>',
@@ -5800,6 +5967,7 @@ async function renderInsights(){
   const backlogDated = backlog.filter(b => b.daysSince !== null);
   const oldestBacklog = backlogDated.length > 0 ? backlogDated[0] : null;
   const io = buildIOBalance(logs);
+  const breakStats = buildBreakStats(logs);
 
   // --- Build HTML ---
   ct.innerHTML = `
@@ -5880,10 +6048,13 @@ async function renderInsights(){
         </div>
       </div>
       <div class="filter-actions">
+        <button class="filter-reset-btn" id="insight-expand-all">すべて開く</button>
+        <button class="filter-reset-btn" id="insight-collapse-all">すべて閉じる</button>
         <button class="filter-reset-btn" id="filter-reset">リセット</button>
       </div>
     </div>
 
+    ${insightGroupOpenHTML('overview', '概要', '期間全体のサマリー', insightIcons.summary, 'var(--color-accent-teal)')}
     <!-- Summary Cards -->
     <div class="insight-summary-grid animate-slide-up" style="animation-delay:.1s">
       <div class="insight-summary-card">
@@ -5912,6 +6083,96 @@ async function renderInsights(){
         <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
       </div>
     </div>
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('breaks', '休憩とセッションの間隔', '休憩の長さ・頻度と、休憩明けの集中の戻り', insightIcons.clock, 'var(--color-accent-orange)', breakStats.hasData ? breakStats.count + '件' : '')}
+    <!-- Section I: 休憩分析 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.clock}</div>
+        <div><div class="section-title">休憩の取り方</div><div class="section-subtitle">前の記録の終了〜次の記録の開始を休憩として推定（${BREAK_MAX_MIN}分を超える空きは中断とみなして除外）</div></div>
+      </div>
+
+      ${!breakStats.hasData ? `
+        <div class="data-collecting-msg">
+          同じ日に2回以上セッションを記録すると、その間隔から休憩の傾向を分析します。<br>
+          現在の休憩データ: ${breakStats.count}件（3件以上で表示されます）
+        </div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.timer} 平均休憩時間</div>
+            <div class="rhythm-stat-value">${breakStats.avgBreak}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+            <div class="rhythm-stat-change change-neutral">中央値 ${breakStats.medianBreak}分 / 最長 ${breakStats.longestBreak}分</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.clock} 1日あたりの休憩</div>
+            <div class="rhythm-stat-value">${breakStats.perDay}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+            <div class="rhythm-stat-change change-neutral">2セッション以上の${breakStats.activeDays}日が対象</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.target} 学習密度</div>
+            <div class="rhythm-stat-value">${breakStats.density !== null ? breakStats.density : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change ${breakStats.density >= 80 ? 'change-positive' : breakStats.density >= 65 ? 'change-neutral' : 'change-warning'}">机に向かった時間のうち実学習（休憩計 ${formatMinutes(breakStats.totalBreak)}）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.book} 休憩前の連続学習</div>
+            <div class="rhythm-stat-value">${formatMinutes(breakStats.avgRunBeforeBreak)}</div>
+            <div class="rhythm-stat-change change-neutral">この長さ続けたところで休憩している</div>
+          </div>
+        </div>
+
+        ${breakStats.bestBin ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div><strong>${breakStats.bestBin.label}</strong>の休憩をはさんだあとが、いちばん集中して戻れています（休憩明け 平均 ★${breakStats.bestBin.avgNextFocus.toFixed(1)} / ${breakStats.bestBin.focusCount}回）${
+              breakStats.worstBin && breakStats.worstBin.key !== breakStats.bestBin.key
+                ? `。いっぽう <strong>${breakStats.worstBin.label}</strong> のあとは ★${breakStats.worstBin.avgNextFocus.toFixed(1)} まで落ちています。`
+                : '。'
+            }</div>
+          </div>
+        ` : `
+          <div class="break-verdict break-verdict-muted">
+            <div>休憩明けのセッションで集中度（★）を記録すると、どの長さの休憩がいちばん効いているかを判定できます。（各区分3件以上で判定）</div>
+          </div>
+        `}
+
+        <div class="break-table">
+          <div class="break-row break-row-head">
+            <div>休憩の長さ</div><div>回数の分布</div><div style="text-align:right">回数</div><div style="text-align:right">休憩明け集中</div><div style="text-align:right">次の学習時間</div>
+          </div>
+          ${breakStats.bins.map(b => {
+            const isBest = breakStats.bestBin && b.key === breakStats.bestBin.key;
+            return `<div class="break-row ${isBest ? 'is-best' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-bar-wrap"><div class="break-bar-fill" style="width:${b.share}%"></div></div>
+              <div class="break-row-num">${b.count}回<span class="break-row-share">${b.share}%</span></div>
+              <div class="break-row-num">${b.avgNextFocus !== null ? '★' + b.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+              <div class="break-row-num">${b.avgNextDur !== null ? formatMinutes(b.avgNextDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>`;
+          }).join('')}
+        </div>
+
+        <div class="break-subtitle">続けて勉強した時間 × 休憩明けの集中度</div>
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>連続学習</div><div style="text-align:right">回数</div><div style="text-align:right">平均休憩</div><div style="text-align:right">休憩明け集中</div>
+          </div>
+          ${breakStats.runBins.map(r => `
+            <div class="break-row break-row-run">
+              <div class="break-row-label">${r.label}</div>
+              <div class="break-row-num">${r.count}回</div>
+              <div class="break-row-num">${r.avgBreak !== null ? r.avgBreak + '分' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+              <div class="break-row-num">${r.avgNextFocus !== null ? '★' + r.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">セッションを記録し忘れた時間は休憩として数えられます。タイマーの停止／再開が実態に近いほど精度が上がります。</div>
+      `}
+    </div>
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('qb', '演習・QB分析', '正答率、周回ごとの伸び、インプットとアウトプットの比率', insightIcons.target, 'var(--color-accent-green)')}
     <!-- Section D: QB正答率と弱点科目 -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
       <div class="section-header">
@@ -6157,6 +6418,9 @@ async function renderInsights(){
       `}
     </div>
 
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('life', '生活リズムと睡眠', '起床・就寝、学習タイプ、睡眠と成績の関係', insightIcons.calendar, 'var(--color-accent-yellow)')}
     <!-- Section A: Recent Rhythm & Trends -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
       <div class="section-header" style="justify-content:space-between">
@@ -6317,6 +6581,9 @@ async function renderInsights(){
       ` : '<div class="data-collecting-msg">睡眠データが蓄積されると統計が表示されます</div>'}
     </div>
 
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('trend', '学習時間の傾向', '推移・科目・時間帯・場所・曜日の内訳', insightIcons.trend, 'var(--color-accent-blue)')}
     <!-- Trend Chart + Subject Donut -->
     <div class="insights-grid animate-slide-up" style="animation-delay:.15s">
       <div class="card" style="overflow:hidden">
@@ -6447,6 +6714,11 @@ async function renderInsights(){
           <canvas id="insightBalanceChart"></canvas>
         </div>
       </div>
+    </div>
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('sessions', 'セッション記録', '条件に一致した学習ログの一覧', insightIcons.list, 'var(--color-accent-pink)', sessionCount + '件')}
+    <div class="insights-grid full">
       <div class="card" style="overflow:hidden">
         <div class="section-header">
           <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${insightIcons.list}</div>
@@ -6472,6 +6744,7 @@ async function renderInsights(){
         </div>
       </div>
     </div>
+    ${insightGroupCloseHTML}
 
   `;
 
@@ -6713,6 +6986,12 @@ async function renderInsights(){
     resetInsightFilters();
     renderInsights();
   });
+  // --- Event: セクションの折りたたみ ---
+  ct.querySelectorAll('[data-group-toggle]').forEach(btn => {
+    btn.addEventListener('click', () => toggleInsightGroup(btn.dataset.groupToggle));
+  });
+  document.getElementById('insight-expand-all')?.addEventListener('click', () => setAllInsightGroups(true));
+  document.getElementById('insight-collapse-all')?.addEventListener('click', () => setAllInsightGroups(false));
 
 }
 
