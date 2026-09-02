@@ -6487,9 +6487,299 @@ function buildComebackStats(allLogs) {
   };
 }
 
+// ==================== 動画→QBのラグ ====================
+// 「未回収在庫」は溜まっている量を見る指標で、見てから回収するまでの速さは
+// 測っていない。科目ごとに動画の日とQBの日を時系列で突き合わせ、
+// 「動画を見てからその科目のQBに入るまで何日か」を実測する。
+const LAG_BINS = [
+  { label: '同日',     min: 0,  max: 0 },
+  { label: '1〜2日',   min: 1,  max: 2 },
+  { label: '3〜7日',   min: 3,  max: 7 },
+  { label: '8〜14日',  min: 8,  max: 14 },
+  { label: '15日以上', min: 15, max: Infinity }
+];
+
+function dayKeyDiff(a, b) {
+  return Math.round((new Date(a + 'T00:00:00') - new Date(b + 'T00:00:00')) / 86400000);
+}
+
+function buildVideoQbLag(logs, logicalToday) {
+  const bySubject = {};
+  (logs || []).forEach(l => {
+    if (l.activity !== 'video' && l.activity !== 'qb') return;
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return;
+    const name = normalizeSubjectName(l.subject_name);
+    const day = toLocalDateKey(getLogicalDate(r.start));
+    const e = (bySubject[name] = bySubject[name] || { video: {}, qb: {} });
+    if (l.activity === 'video') {
+      e.video[day] = true;
+    } else {
+      const q = (e.qb[day] = e.qb[day] || { solved: 0, correct: 0 });
+      const sv = Number(l.questions_solved), co = Number(l.questions_correct);
+      if (Number.isFinite(sv) && sv > 0 && Number.isFinite(co) && co >= 0 && co <= sv) {
+        q.solved += sv; q.correct += co;
+      }
+    }
+  });
+
+  const todayKey = toLocalDateKey(logicalToday);
+  const items = [], pending = [], subjects = [];
+  Object.entries(bySubject).forEach(([name, e]) => {
+    const qbDays = Object.keys(e.qb).sort();
+    const videoDays = Object.keys(e.video).sort();
+    if (!videoDays.length) return;
+    const lags = [];
+    let pendCount = 0, oldest = null;
+    videoDays.forEach(vd => {
+      // その動画の日以降で最初にQBをやった日。同日にやっていればラグ0。
+      const hit = qbDays.find(qd => qd >= vd);
+      if (hit) {
+        const lag = dayKeyDiff(hit, vd);
+        items.push({ subject: name, videoDay: vd, qbDay: hit, lagDays: lag, qb: e.qb[hit] });
+        lags.push(lag);
+      } else {
+        const age = dayKeyDiff(todayKey, vd);
+        pending.push({ subject: name, videoDay: vd, ageDays: age });
+        pendCount++;
+        if (oldest === null || age > oldest) oldest = age;
+      }
+    });
+    subjects.push({
+      subject: name, videoDays: videoDays.length, collected: lags.length,
+      medianLag: lags.length ? Math.round(median(lags)) : null,
+      pending: pendCount, oldestPending: oldest
+    });
+  });
+
+  const lagValues = items.map(x => x.lagDays);
+  const bins = LAG_BINS.map(b => {
+    const hit = items.filter(x => x.lagDays >= b.min && x.lagDays <= b.max);
+    // 1つのQBの日が複数の動画の日を受け止めることがあるので、
+    // 正答率の集計では同じ (科目,QBの日) を二重に数えない
+    const seen = {};
+    let solved = 0, correct = 0;
+    hit.forEach(x => {
+      const k = x.subject + '|' + x.qbDay;
+      if (seen[k]) return;
+      seen[k] = true;
+      solved += x.qb.solved; correct += x.qb.correct;
+    });
+    return {
+      ...b, count: hit.length,
+      share: items.length ? Math.round(hit.length / items.length * 100) : 0,
+      solved, correct,
+      accuracy: solved > 0 ? correct / solved * 100 : null,
+      reliable: solved >= QB_MIN_SOLVED
+    };
+  });
+
+  const cands = bins.filter(b => b.reliable && b.accuracy !== null);
+  const bestBin = cands.length ? cands.reduce((a, b) => (b.accuracy > a.accuracy ? b : a)) : null;
+  const worstBin = cands.length > 1 ? cands.reduce((a, b) => (b.accuracy < a.accuracy ? b : a)) : null;
+
+  return {
+    hasData: items.length >= 3,
+    items, pending, bins, bestBin, worstBin,
+    subjects: subjects.sort((a, b) => (b.oldestPending || 0) - (a.oldestPending || 0)),
+    count: items.length,
+    medianLag: lagValues.length ? Math.round(median(lagValues)) : null,
+    sameDayRate: items.length ? Math.round(items.filter(x => x.lagDays === 0).length / items.length * 100) : null,
+    pendingCount: pending.length,
+    oldestPending: pending.length ? Math.max(...pending.map(x => x.ageDays)) : null
+  };
+}
+
+// ==================== 1日の科目の混ぜ方 ====================
+// 1科目に集中する日（ブロック）と、複数科目を混ぜる日（インターリーブ）で
+// 学習量・集中度・正答率がどう変わるかを見る。
+const MIX_BINS = [
+  { label: '1科目に集中', min: 1, max: 1 },
+  { label: '2科目',       min: 2, max: 2 },
+  { label: '3科目',       min: 3, max: 3 },
+  { label: '4科目以上',   min: 4, max: Infinity }
+];
+
+function buildSubjectMix(logs) {
+  const byDay = {};
+  (logs || []).forEach(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return;
+    const day = toLocalDateKey(getLogicalDate(r.start));
+    const e = (byDay[day] = byDay[day] || {
+      subjects: {}, order: [], min: 0, focusSum: 0, focusN: 0, solved: 0, correct: 0
+    });
+    const name = normalizeSubjectName(l.subject_name);
+    e.subjects[name] = true;
+    e.order.push({ start: r.start, name });
+    e.min += l.duration_minutes || 0;
+    if (l.focus_level) { e.focusSum += Number(l.focus_level); e.focusN++; }
+    const sv = Number(l.questions_solved), co = Number(l.questions_correct);
+    if (Number.isFinite(sv) && sv > 0 && Number.isFinite(co) && co >= 0 && co <= sv) {
+      e.solved += sv; e.correct += co;
+    }
+  });
+
+  const days = Object.entries(byDay).map(([date, e]) => {
+    const sorted = e.order.slice().sort((a, b) => a.start - b.start);
+    let switches = 0;
+    for (let i = 1; i < sorted.length; i++) if (sorted[i].name !== sorted[i - 1].name) switches++;
+    return {
+      date, subjectCount: Object.keys(e.subjects).length, sessions: sorted.length, switches,
+      min: e.min, solved: e.solved, correct: e.correct,
+      focus: e.focusN > 0 ? e.focusSum / e.focusN : null
+    };
+  });
+
+  const bins = MIX_BINS.map(b => {
+    const hit = days.filter(d => d.subjectCount >= b.min && d.subjectCount <= b.max);
+    const withFocus = hit.filter(d => d.focus !== null);
+    const solved = hit.reduce((s, d) => s + d.solved, 0);
+    const correct = hit.reduce((s, d) => s + d.correct, 0);
+    return {
+      ...b, count: hit.length,
+      avgMin: hit.length ? hit.reduce((s, d) => s + d.min, 0) / hit.length : null,
+      avgFocus: withFocus.length ? withFocus.reduce((s, d) => s + d.focus, 0) / withFocus.length : null,
+      solved, accuracy: solved > 0 ? correct / solved * 100 : null,
+      reliable: hit.length >= QB_MIN_SESSIONS
+    };
+  });
+
+  const cands = bins.filter(b => b.reliable && b.avgFocus !== null);
+  const bestFocus = cands.length ? cands.reduce((a, b) => (b.avgFocus > a.avgFocus ? b : a)) : null;
+  const accCands = bins.filter(b => b.solved >= QB_MIN_SOLVED && b.accuracy !== null);
+  const bestAcc = accCands.length ? accCands.reduce((a, b) => (b.accuracy > a.accuracy ? b : a)) : null;
+  const worstAcc = accCands.length > 1 ? accCands.reduce((a, b) => (b.accuracy < a.accuracy ? b : a)) : null;
+
+  return {
+    hasData: days.length >= 5,
+    days, bins, bestFocus, bestAcc, worstAcc,
+    dayCount: days.length,
+    avgSubjects: days.length ? days.reduce((s, d) => s + d.subjectCount, 0) / days.length : null,
+    avgSwitches: days.length ? days.reduce((s, d) => s + d.switches, 0) / days.length : null
+  };
+}
+
+// ==================== 動画とQBを同じ日にやるか ====================
+// 日単位で「動画だけ / QBだけ / 両方」に分けて比べる。
+// 科目単位では「動画を見た日に、その科目のQBまで通したか」を即日回収率とする。
+function buildSameDayMix(logs) {
+  const byDay = {};
+  const bySubjectDay = {};
+  (logs || []).forEach(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return;
+    const day = toLocalDateKey(getLogicalDate(r.start));
+    const e = (byDay[day] = byDay[day] || { video: 0, qb: 0, min: 0, focusSum: 0, focusN: 0, solved: 0, correct: 0 });
+    e.min += l.duration_minutes || 0;
+    if (l.focus_level) { e.focusSum += Number(l.focus_level); e.focusN++; }
+    if (l.activity === 'video') e.video += l.duration_minutes || 0;
+    if (l.activity === 'qb') {
+      e.qb += l.duration_minutes || 0;
+      const sv = Number(l.questions_solved), co = Number(l.questions_correct);
+      if (Number.isFinite(sv) && sv > 0 && Number.isFinite(co) && co >= 0 && co <= sv) {
+        e.solved += sv; e.correct += co;
+      }
+    }
+    if (l.activity === 'video' || l.activity === 'qb') {
+      const k = normalizeSubjectName(l.subject_name) + '|' + day;
+      const sd = (bySubjectDay[k] = bySubjectDay[k] || { video: false, qb: false });
+      if (l.activity === 'video') sd.video = true; else sd.qb = true;
+    }
+  });
+
+  const days = Object.entries(byDay)
+    .map(([date, e]) => ({ date, ...e, focus: e.focusN > 0 ? e.focusSum / e.focusN : null }))
+    .filter(d => d.video > 0 || d.qb > 0);
+
+  const groups = [
+    { key: 'both',  label: '動画とQBの両方', match: d => d.video > 0 && d.qb > 0 },
+    { key: 'video', label: '動画だけ',       match: d => d.video > 0 && d.qb === 0 },
+    { key: 'qb',    label: 'QBだけ',         match: d => d.video === 0 && d.qb > 0 }
+  ].map(g => {
+    const hit = days.filter(g.match);
+    const withFocus = hit.filter(d => d.focus !== null);
+    const solved = hit.reduce((s, d) => s + d.solved, 0);
+    const correct = hit.reduce((s, d) => s + d.correct, 0);
+    return {
+      key: g.key, label: g.label, count: hit.length,
+      share: days.length ? Math.round(hit.length / days.length * 100) : 0,
+      avgMin: hit.length ? hit.reduce((s, d) => s + d.min, 0) / hit.length : null,
+      avgFocus: withFocus.length ? withFocus.reduce((s, d) => s + d.focus, 0) / withFocus.length : null,
+      solved, accuracy: solved > 0 ? correct / solved * 100 : null
+    };
+  });
+
+  const videoSubjectDays = Object.values(bySubjectDay).filter(x => x.video);
+  const sameDay = videoSubjectDays.filter(x => x.qb).length;
+
+  return {
+    hasData: days.length >= 5,
+    days, groups,
+    dayCount: days.length,
+    videoSubjectDays: videoSubjectDays.length,
+    sameDayCollected: sameDay,
+    sameDayRate: videoSubjectDays.length ? Math.round(sameDay / videoSubjectDays.length * 100) : null
+  };
+}
+
+// ==================== セッションの長さと成果 ====================
+const SESSION_LEN_BINS = [
+  { label: '〜30分',    min: 0,  max: 30 },
+  { label: '31〜60分',  min: 31, max: 60 },
+  { label: '61〜90分',  min: 61, max: 90 },
+  { label: '91分〜',    min: 91, max: Infinity }
+];
+
+function buildSessionLengthStats(logs) {
+  const items = (logs || []).map(l => {
+    const dur = l.duration_minutes || 0;
+    if (dur <= 0) return null;
+    const sv = Number(l.questions_solved), co = Number(l.questions_correct);
+    const hasQb = Number.isFinite(sv) && sv > 0 && Number.isFinite(co) && co >= 0 && co <= sv;
+    return {
+      dur, focus: l.focus_level ? Number(l.focus_level) : null,
+      solved: hasQb ? sv : 0, correct: hasQb ? co : 0,
+      minPerQ: hasQb ? dur / sv : null
+    };
+  }).filter(Boolean);
+
+  const bins = SESSION_LEN_BINS.map(b => {
+    const hit = items.filter(x => x.dur >= b.min && x.dur <= b.max);
+    const withFocus = hit.filter(x => x.focus !== null);
+    const solved = hit.reduce((s, x) => s + x.solved, 0);
+    const correct = hit.reduce((s, x) => s + x.correct, 0);
+    const paced = hit.filter(x => x.minPerQ !== null);
+    return {
+      ...b, count: hit.length,
+      share: items.length ? Math.round(hit.length / items.length * 100) : 0,
+      avgFocus: withFocus.length ? withFocus.reduce((s, x) => s + x.focus, 0) / withFocus.length : null,
+      focusCount: withFocus.length,
+      solved, accuracy: solved > 0 ? correct / solved * 100 : null,
+      minPerQ: paced.length ? paced.reduce((s, x) => s + x.minPerQ, 0) / paced.length : null,
+      reliableFocus: withFocus.length >= QB_MIN_SESSIONS,
+      reliableAcc: solved >= QB_MIN_SOLVED
+    };
+  });
+
+  const fc = bins.filter(b => b.reliableFocus && b.avgFocus !== null);
+  const bestFocus = fc.length ? fc.reduce((a, b) => (b.avgFocus > a.avgFocus ? b : a)) : null;
+  const ac = bins.filter(b => b.reliableAcc && b.accuracy !== null);
+  const bestAcc = ac.length ? ac.reduce((a, b) => (b.accuracy > a.accuracy ? b : a)) : null;
+  const worstAcc = ac.length > 1 ? ac.reduce((a, b) => (b.accuracy < a.accuracy ? b : a)) : null;
+
+  return {
+    hasData: items.length >= 10,
+    bins, bestFocus, bestAcc, worstAcc,
+    sessionCount: items.length,
+    avgDur: items.length ? items.reduce((s, x) => s + x.dur, 0) / items.length : null,
+    medianDur: items.length ? median(items.map(x => x.dur)) : null
+  };
+}
+
 // ==================== インサイトのセクション折りたたみ ====================
 const INSIGHT_GROUP_KEY = 'medfocus_insight_groups';
-const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, goal: false, qb: false, life: false, trend: false, sessions: false };
+const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, goal: false, qb: false, method: false, life: false, trend: false, sessions: false };
 function getInsightGroupState() {
   try { return JSON.parse(localStorage.getItem(INSIGHT_GROUP_KEY) || '{}'); } catch (e) { return {}; }
 }
@@ -7170,6 +7460,10 @@ async function renderInsights(){
   const accTrend = buildAccuracyTrend(logs, logicalToday);
   const subjectBudget = buildSubjectBudget(getQBProgress(), unitCost, ioTargetRound);
   const comeback = buildComebackStats(allLogs);
+  const videoLag = buildVideoQbLag(logs, logicalToday);
+  const subjectMix = buildSubjectMix(logs);
+  const sameDayMix = buildSameDayMix(logs);
+  const sessionLen = buildSessionLengthStats(logs);
   const allNighter = buildAllNighterImpact(getSleepLogs(), allLogs, logicalToday);
   // 母数が小さいとセッション数回でズレ判定がひっくり返るので、下限を切る
   const ioThin = io.core < IO_MIN_CORE_MIN;
@@ -7761,6 +8055,82 @@ async function renderInsights(){
       `}
     </div>
 
+    <!-- Section S: 動画→QBのラグ -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.122s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.trend}</div>
+        <div><div class="section-title">動画からQBまでのラグ</div><div class="section-subtitle">講義動画を見てから、その科目の問題演習に入るまで何日かかっているか</div></div>
+      </div>
+
+      ${!videoLag.hasData ? `
+        <div class="data-collecting-msg">
+          講義動画と問題演習の記録が同じ科目で貯まると、回収までの日数を測れます。<br>
+          現在 動画の日 ${videoLag.count + videoLag.pendingCount}件（うち回収済み ${videoLag.count}件）
+        </div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.calendar} 回収までの日数</div>
+            <div class="rhythm-stat-value">${videoLag.medianLag}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
+            <div class="rhythm-stat-change change-neutral">中央値（対象 ${videoLag.count}件）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.check} 同日に回収した割合</div>
+            <div class="rhythm-stat-value">${videoLag.sameDayRate}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+            <div class="rhythm-stat-change ${videoLag.sameDayRate >= 50 ? 'change-positive' : 'change-neutral'}">見たその日にQBまで通した日</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.warn} まだ回収していない</div>
+            <div class="rhythm-stat-value">${videoLag.pendingCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日ぶん</span></div>
+            <div class="rhythm-stat-change ${videoLag.pendingCount > 0 ? 'change-warning' : 'change-positive'}">${videoLag.oldestPending !== null ? `最古 ${videoLag.oldestPending}日前` : '滞留なし'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高いラグ</div>
+            <div class="rhythm-stat-value">${videoLag.bestBin ? videoLag.bestBin.label : '--'}</div>
+            <div class="rhythm-stat-change ${videoLag.bestBin ? 'change-positive' : 'change-neutral'}">${videoLag.bestBin ? `正答率 ${videoLag.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+          </div>
+        </div>
+
+        ${videoLag.bestBin && videoLag.worstBin && videoLag.bestBin.label !== videoLag.worstBin.label ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div>動画から <strong>${videoLag.bestBin.label}</strong> でQBに入ったときの正答率が ${videoLag.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${videoLag.worstBin.label}</strong> では ${videoLag.worstBin.accuracy.toFixed(0)}% でした（差 ${(videoLag.bestBin.accuracy - videoLag.worstBin.accuracy).toFixed(0)}pt）。</div>
+          </div>
+        ` : ''}
+
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>回収までの日数</div><div style="text-align:right">件数</div><div style="text-align:right">割合</div><div style="text-align:right">正答率</div>
+          </div>
+          ${videoLag.bins.map(b => `
+            <div class="break-row break-row-run ${videoLag.bestBin && b.label === videoLag.bestBin.label ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}件</div>
+              <div class="break-row-num">${b.share}%</div>
+              <div class="break-row-num">${b.accuracy !== null && b.reliable ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            </div>
+          `).join('')}
+        </div>
+
+        ${videoLag.pending.length > 0 ? `
+          <div class="break-subtitle">まだQBに入っていない動画</div>
+          <div class="break-table">
+            ${[...videoLag.pending].sort((a,b)=>b.ageDays-a.ageDays).slice(0, 8).map(x => `
+              <div class="break-row break-row-run">
+                <div class="break-row-label">${x.subject}</div>
+                <div class="break-row-num">${x.videoDay}</div>
+                <div class="break-row-num"></div>
+                <div class="break-row-num" style="color:${x.ageDays >= 30 ? '#ef4444' : '#f59e0b'}">${x.ageDays}日前</div>
+              </div>
+            `).join('')}
+          </div>
+          ${videoLag.pending.length > 8 ? `<div class="break-note">他 ${videoLag.pending.length - 8}件</div>` : ''}
+        ` : ''}
+
+        <div class="break-note">「動画を見た日」ごとに、その科目のQBを次にやった日を探して日数を出しています。1つのQBの日が複数の動画の日を受け止めることがあるため、正答率の集計では同じ科目・同じ日を二重に数えないようにしています。学習パイプラインの「未回収」が溜まっている量を見るのに対し、こちらは回収の速さを見る指標です。</div>
+      `}
+    </div>
+
     <!-- Section H: インプット / アウトプット比率 -->
     <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.125s">
       <div class="section-header">
@@ -8118,6 +8488,153 @@ async function renderInsights(){
       `}
     </div>
 
+    ${insightGroupCloseHTML}
+
+    ${insightGroupOpenHTML('method', '勉強の進め方', '科目の混ぜ方、動画とQBの通し方、セッションの長さ', insightIcons.focus, 'var(--color-accent-purple)')}
+    <!-- Section T: 科目の混ぜ方 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.subject}</div>
+        <div><div class="section-title">科目の混ぜ方</div><div class="section-subtitle">1科目に集中した日と、複数科目を混ぜた日の違い</div></div>
+      </div>
+      ${!subjectMix.hasData ? `
+        <div class="data-collecting-msg">学習した日が5日以上たまると、科目の混ぜ方による違いが出ます。</div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.subject} 1日あたりの科目数</div>
+            <div class="rhythm-stat-value">${subjectMix.avgSubjects.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
+            <div class="rhythm-stat-change change-neutral">対象 ${subjectMix.dayCount}日</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.timer} 1日あたりの切り替え</div>
+            <div class="rhythm-stat-value">${subjectMix.avgSwitches.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+            <div class="rhythm-stat-change change-neutral">連続するセッションで科目が変わった回数</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい組み方</div>
+            <div class="rhythm-stat-value">${subjectMix.bestFocus ? subjectMix.bestFocus.label : '--'}</div>
+            <div class="rhythm-stat-change ${subjectMix.bestFocus ? 'change-positive' : 'change-neutral'}">${subjectMix.bestFocus ? `平均 ★${subjectMix.bestFocus.avgFocus.toFixed(1)}` : 'データが貯まると判定できます'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い組み方</div>
+            <div class="rhythm-stat-value">${subjectMix.bestAcc ? subjectMix.bestAcc.label : '--'}</div>
+            <div class="rhythm-stat-change ${subjectMix.bestAcc ? 'change-positive' : 'change-neutral'}">${subjectMix.bestAcc ? `正答率 ${subjectMix.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+          </div>
+        </div>
+        ${subjectMix.bestAcc && subjectMix.worstAcc && subjectMix.bestAcc.label !== subjectMix.worstAcc.label ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div><strong>${subjectMix.bestAcc.label}</strong>の日の正答率が ${subjectMix.bestAcc.accuracy.toFixed(0)}% で、<strong>${subjectMix.worstAcc.label}</strong>の日は ${subjectMix.worstAcc.accuracy.toFixed(0)}%（差 ${(subjectMix.bestAcc.accuracy - subjectMix.worstAcc.accuracy).toFixed(0)}pt）。</div>
+          </div>
+        ` : ''}
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-wide">
+            <div>その日の科目数</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
+          </div>
+          ${subjectMix.bins.map(b => `
+            <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : subjectMix.bestAcc && b.label === subjectMix.bestAcc.label ? 'is-best' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}日</div>
+              <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}</div>
+              <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
+              <div class="break-row-num">${b.accuracy === null || b.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">1科目に絞る（ブロック）ほうが集中しやすい一方、複数科目を混ぜる（インターリーブ）ほうが定着しやすいとされます。どちらが自分に効いているかは、集中度と正答率の両方を見て判断してください。日数の少ない行は参考値です。</div>
+      `}
+    </div>
+
+    <!-- Section U: 動画とQBを同じ日にやるか -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.134s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.summary}</div>
+        <div><div class="section-title">動画とQBの通し方</div><div class="section-subtitle">同じ日にQBまで通しているか、日を分けているか</div></div>
+      </div>
+      ${!sameDayMix.hasData ? `
+        <div class="data-collecting-msg">活動の種類が入った記録が5日以上たまると比較できます。</div>
+      ` : `
+        ${sameDayMix.sameDayRate !== null ? `
+          <div class="break-verdict ${sameDayMix.sameDayRate >= 50 ? '' : 'break-verdict-muted'}">
+            ${sameDayMix.sameDayRate >= 50 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
+            <div>動画を見た科目のうち <strong>${sameDayMix.sameDayRate}%</strong> は同じ日にQBまで通しています（${sameDayMix.sameDayCollected}/${sameDayMix.videoSubjectDays}件）。${
+              sameDayMix.sameDayRate >= 50 ? '見たその日に回収できています。' : '見た日と解く日が離れがちです。'
+            }</div>
+          </div>
+        ` : ''}
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-wide">
+            <div>その日の組み合わせ</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
+          </div>
+          ${sameDayMix.groups.map(g => `
+            <div class="break-row break-row-wide ${g.count === 0 ? 'is-thin' : g.key === 'both' ? 'is-best' : ''}">
+              <div class="break-row-label">${g.label}</div>
+              <div class="break-row-num">${g.count}日<span class="break-row-share">${g.share}%</span></div>
+              <div class="break-row-num">${g.avgMin === null ? '-' : formatMinutes(Math.round(g.avgMin))}</div>
+              <div class="break-row-num">${g.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + g.avgFocus.toFixed(1)}</div>
+              <div class="break-row-num">${g.accuracy === null || g.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : g.accuracy.toFixed(0) + '%'}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">「動画とQBの両方」の日はその日にインプットとアウトプットが揃っている日です。即日回収率は科目単位（動画を見た科目・日のうち、同じ日にその科目のQBもやった割合）で、上の日単位の表とは母数が違います。</div>
+      `}
+    </div>
+
+    <!-- Section V: セッションの長さと成果 -->
+    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.138s">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
+        <div><div class="section-title">セッションの長さと成果</div><div class="section-subtitle">何分くらいで区切るのが自分に合っているか</div></div>
+      </div>
+      ${!sessionLen.hasData ? `
+        <div class="data-collecting-msg">セッションが10件以上たまると比較できます。</div>
+      ` : `
+        <div class="rhythm-stat-grid">
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.timer} セッションの長さ</div>
+            <div class="rhythm-stat-value">${formatMinutes(Math.round(sessionLen.medianDur))}</div>
+            <div class="rhythm-stat-change change-neutral">中央値（平均 ${formatMinutes(Math.round(sessionLen.avgDur))}／${sessionLen.sessionCount}件）</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい長さ</div>
+            <div class="rhythm-stat-value">${sessionLen.bestFocus ? sessionLen.bestFocus.label : '--'}</div>
+            <div class="rhythm-stat-change ${sessionLen.bestFocus ? 'change-positive' : 'change-neutral'}">${sessionLen.bestFocus ? `平均 ★${sessionLen.bestFocus.avgFocus.toFixed(1)}` : '★の記録が貯まると判定できます'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い長さ</div>
+            <div class="rhythm-stat-value">${sessionLen.bestAcc ? sessionLen.bestAcc.label : '--'}</div>
+            <div class="rhythm-stat-change ${sessionLen.bestAcc ? 'change-positive' : 'change-neutral'}">${sessionLen.bestAcc ? `正答率 ${sessionLen.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+          </div>
+          <div class="rhythm-stat-item">
+            <div class="rhythm-stat-label">${IC.book} いちばん多い長さ</div>
+            <div class="rhythm-stat-value">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return t.label; })()}</div>
+            <div class="rhythm-stat-change change-neutral">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return `${t.count}件（${t.share}%）`; })()}</div>
+          </div>
+        </div>
+        ${sessionLen.bestAcc && sessionLen.worstAcc && sessionLen.bestAcc.label !== sessionLen.worstAcc.label ? `
+          <div class="break-verdict">
+            <span class="break-verdict-mark">${IC.check}</span>
+            <div><strong>${sessionLen.bestAcc.label}</strong>のセッションの正答率が ${sessionLen.bestAcc.accuracy.toFixed(0)}% でいちばん高く、<strong>${sessionLen.worstAcc.label}</strong>では ${sessionLen.worstAcc.accuracy.toFixed(0)}% でした（差 ${(sessionLen.bestAcc.accuracy - sessionLen.worstAcc.accuracy).toFixed(0)}pt）。</div>
+          </div>
+        ` : ''}
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-wide">
+            <div>セッションの長さ</div><div style="text-align:right">件数</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div><div style="text-align:right">1問あたり</div>
+          </div>
+          ${sessionLen.bins.map(b => `
+            <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : sessionLen.bestAcc && b.label === sessionLen.bestAcc.label ? 'is-best' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
+              <div class="break-row-num">${b.avgFocus === null || !b.reliableFocus ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
+              <div class="break-row-num">${b.accuracy === null || !b.reliableAcc ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
+              <div class="break-row-num">${b.minPerQ === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.minPerQ.toFixed(1) + '分'}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">長いセッションは休憩を挟んでいれば実質は分割されているので、「セッション内の休憩」のカードと合わせて読んでください。母数が足りない区分（${QB_MIN_SESSIONS}件・${QB_MIN_SOLVED}問未満）は薄く表示し、判定からも外しています。</div>
+      `}
+    </div>
     ${insightGroupCloseHTML}
 
     ${insightGroupOpenHTML('life', '生活リズムと睡眠', '起床・就寝、学習タイプ、睡眠と成績の関係', insightIcons.calendar, 'var(--color-accent-yellow)')}

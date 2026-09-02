@@ -2406,8 +2406,13 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 /* インプット/アウトプットの基準線 */
 @media (max-width: 640px) {
   /* 5列は幅に収まらないので、達成率から読み取れる「目標」を落として4列にする */
-  .break-row.break-row-wide { grid-template-columns: minmax(0, 1fr) 56px 44px 48px; gap: 4px; }
+  .break-row.break-row-wide { grid-template-columns: minmax(0, 1fr) 56px 42px 54px; gap: 4px; }
   .break-row.break-row-wide > :nth-child(2) { display: none; }
+  /* 「21時間19分」「52回100%」のような長い値が数pxだけ溢れるので、
+     数値側だけ一段小さくする（ラベルは11pxのまま） */
+  .break-row .break-row-num { font-size: 10px; }
+  /* 「3時間13分 +6%」のように本体＋補足が入るセルは、補足を次の行に落とす */
+  .break-row .break-row-share { display: block; margin-left: 0; line-height: 1.3; }
 }
 
 /* 基準からのズレ（このカードの結論） */
