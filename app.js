@@ -2514,6 +2514,10 @@ function initRouter(){
 
 // --- Dashboard ---
 let dashboardPeriod = 'daily'; // 'daily' | 'weekly' | 'monthly'
+// 「その日の勉強分析」で見ている日。0＝今日、1＝前日。
+// 夜に振り返れないまま寝た日を翌朝に見返せるよう、さかのぼれるようにしてある。
+let dashboardReviewOffset = 0;
+const REVIEW_MAX_BACK_DAYS = 30;
 
 function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLabel) {
   if (typeof Chart === 'undefined') return;
@@ -2795,6 +2799,13 @@ async function renderDashboard(){
   const dashLag = buildVideoQbLag(logs, logicalToday);
   const dashPending = [...dashLag.pending].sort((a, b) => b.ageDays - a.ageDays);
 
+  // その日の勉強分析（既定は今日。◀▶ でさかのぼる）
+  const reviewDate = new Date(logicalToday);
+  reviewDate.setDate(reviewDate.getDate() - dashboardReviewOffset);
+  const review = buildDailyReview(logs, reviewDate);
+  // 科目の色はダッシュボード全体で振っているものを使い回す
+  const reviewColorOf = (name) => (subjectTimeMap[name.toLowerCase()] || {}).color || 'var(--color-accent-teal)';
+
   // Format hours for ring display
   const todayH = (todayMin / 60).toFixed(1);
   const goalH = (goalMin / 60).toFixed(1);
@@ -2989,6 +3000,19 @@ async function renderDashboard(){
     </div>
     ` : ''}
 
+    <!-- その日の勉強分析 -->
+    <div class="card review-card animate-slide-up" style="animation-delay:.12s">
+      <div class="card-header">
+        <div class="card-title">${IC.stats}その日の勉強分析</div>
+        <div class="review-nav">
+          <button type="button" class="review-nav-btn" id="review-prev" ${dashboardReviewOffset >= REVIEW_MAX_BACK_DAYS ? 'disabled' : ''} aria-label="前の日">◀</button>
+          <span class="review-nav-date">${dashboardReviewOffset === 0 ? '今日' : `${review.date.getMonth() + 1}/${review.date.getDate()}(${['日','月','火','水','木','金','土'][review.date.getDay()]})`}</span>
+          <button type="button" class="review-nav-btn" id="review-next" ${dashboardReviewOffset === 0 ? 'disabled' : ''} aria-label="次の日">▶</button>
+        </div>
+      </div>
+      <div id="review-body">${dailyReviewBodyHTML(review, reviewColorOf)}</div>
+    </div>
+
     <!-- Study Trend Chart -->
     <div class="card animate-slide-up" style="animation-delay:.15s">
       <div class="card-header">
@@ -3169,6 +3193,16 @@ async function renderDashboard(){
   // Period tabs
   document.getElementById('pacer-exam')?.addEventListener('change', e => { setPacerExamId(e.target.value); renderDashboard(); });
   document.getElementById('pacer-round')?.addEventListener('change', e => { setPacerTargetRound(parseInt(e.target.value, 10)); renderDashboard(); });
+
+  // その日の勉強分析の日付送り
+  document.getElementById('review-prev')?.addEventListener('click', () => {
+    dashboardReviewOffset = Math.min(REVIEW_MAX_BACK_DAYS, dashboardReviewOffset + 1);
+    renderDashboard();
+  });
+  document.getElementById('review-next')?.addEventListener('click', () => {
+    dashboardReviewOffset = Math.max(0, dashboardReviewOffset - 1);
+    renderDashboard();
+  });
 
   document.getElementById('period-tabs')?.addEventListener('click', (e) => {
     const btn = e.target.closest('.period-tab');
@@ -6623,6 +6657,265 @@ function buildSessionLengthStats(logs) {
   };
 }
 
+// ==================== その日の勉強分析 ====================
+// ダッシュボードは「今日どう動くか」、インサイトは「全期間の傾向」を見る場所で、
+// 「今日はどうだったか」を振り返る場所が無かった。ここは対象日1日ぶんだけを切り出し、
+// 直近の平均と比べて、その日が普段と比べてどうだったかを出す。
+// 日の切り分けは目標リングと同じく started_at の論理日（3時始まり）で揃える。
+const REVIEW_BASELINE_DAYS = 14;
+// 比較対象は「学習した日」だけ。休んだ日を混ぜると平均が下がって、
+// 普通に勉強した日がすべて「平均超え」になってしまう。
+const REVIEW_MIN_BASELINE_DAYS = 3;
+
+function reviewDayKey(l) {
+  const t = new Date(l.started_at);
+  return isNaN(t) ? null : toLocalDateKey(getLogicalDate(t));
+}
+
+// 1日ぶんのログを合計する。集中度は時間で重みづけする
+// （5分のログと3時間のログを同じ1票にすると、短いログに引っ張られるため）。
+function aggregateReviewDay(dayLogs) {
+  let min = 0, focusMin = 0, focusSum = 0, solved = 0, correct = 0, correctMin = 0, videos = 0;
+  dayLogs.forEach(l => {
+    const m = l.duration_minutes || 0;
+    min += m;
+    if (l.focus_level) { focusSum += Number(l.focus_level) * m; focusMin += m; }
+    const s = Number(l.questions_solved);
+    if (Number.isFinite(s) && s > 0) {
+      solved += s;
+      const c = Number(l.questions_correct);
+      // 正答数が入っていないログは正答率の母数からも外す
+      if (Number.isFinite(c)) { correct += c; correctMin += s; }
+    }
+    const v = Number(l.videos_watched);
+    if (Number.isFinite(v) && v > 0) videos += v;
+  });
+  return {
+    min, sessions: dayLogs.length, solved, correct, videos,
+    accSolved: correctMin,
+    focus: focusMin > 0 ? focusSum / focusMin : null,
+    accuracy: correctMin > 0 ? (correct / correctMin) * 100 : null
+  };
+}
+
+function buildDailyReview(allLogs, targetDate, baselineDays = REVIEW_BASELINE_DAYS) {
+  const byDay = {};
+  (allLogs || []).forEach(l => {
+    const k = reviewDayKey(l);
+    if (k) (byDay[k] = byDay[k] || []).push(l);
+  });
+
+  const dateKey = toLocalDateKey(targetDate);
+  const dayLogs = byDay[dateKey] || [];
+  const agg = aggregateReviewDay(dayLogs);
+  const goalMin = getGoalForDate(targetDate);
+
+  // --- 活動の内訳（何をしたか） ---
+  const actMin = {};
+  dayLogs.forEach(l => {
+    const k = l.activity && ACTIVITY_MAP[l.activity] ? l.activity : 'none';
+    actMin[k] = (actMin[k] || 0) + (l.duration_minutes || 0);
+  });
+  const activities = [...ACTIVITIES.map(a => ({ v: a.v, label: a.l, color: a.color })),
+                      { v: 'none', label: '未分類', color: '#64748b' }]
+    .map(a => ({ ...a, minutes: actMin[a.v] || 0 }))
+    .filter(a => a.minutes > 0)
+    .sort((a, b) => b.minutes - a.minutes)
+    .map(a => ({ ...a, share: agg.min > 0 ? (a.minutes / agg.min) * 100 : 0 }));
+
+  // --- 科目の内訳 ---
+  const subMin = {};
+  dayLogs.forEach(l => {
+    const name = normalizeSubjectName(l.subject_name);
+    subMin[name] = (subMin[name] || 0) + (l.duration_minutes || 0);
+  });
+  const subjects = Object.entries(subMin)
+    .map(([name, minutes]) => ({ name, minutes, share: agg.min > 0 ? (minutes / agg.min) * 100 : 0 }))
+    .filter(s => s.minutes > 0)
+    .sort((a, b) => b.minutes - a.minutes);
+
+  // --- 時間の使い方（初回開始・最終終了・休憩・最長の連続） ---
+  const ordered = dayLogs
+    .map(l => { const r = getLogRange(l); return { log: l, start: r.start, end: r.end }; })
+    .filter(x => !isNaN(x.start) && !isNaN(x.end))
+    .sort((a, b) => a.start - b.start);
+
+  let breakMin = 0, breakCount = 0, longestRunMin = 0, run = 0;
+  ordered.forEach((x, i) => {
+    const dur = x.log.duration_minutes || 0;
+    if (i === 0) { run = dur; return; }
+    const gap = Math.round((x.start - ordered[i - 1].end) / 60000);
+    if (gap < 0) { run += dur; return; }              // 記録が重なっている場合は続きとみなす
+    if (gap <= BREAK_MAX_MIN) {                        // 休憩をはさんだ続き
+      breakMin += gap; breakCount++; run += dur;
+    } else {                                           // ここで学習ブロックが切れている
+      longestRunMin = Math.max(longestRunMin, run);
+      run = dur;
+    }
+  });
+  longestRunMin = Math.max(longestRunMin, run);
+
+  // セッション内の一時停止（タイマーを止めていた分）
+  const sessions = dayLogs.map(describeSession).filter(Boolean);
+  const pauseMin = Math.round(sessions.reduce((s, x) => s + x.pauseMin, 0));
+  const pauseCount = sessions.reduce((s, x) => s + x.pauseCount, 0);
+
+  // --- 直近の平均（対象日は含めない。学習した日だけを平均する） ---
+  const baseKeys = [];
+  for (let i = 1; i <= baselineDays; i++) {
+    const d = new Date(targetDate); d.setDate(d.getDate() - i);
+    const k = toLocalDateKey(d);
+    if (byDay[k] && byDay[k].length) baseKeys.push(k);
+  }
+  const baseAggs = baseKeys.map(k => aggregateReviewDay(byDay[k]));
+  const avgOf = (pick) => {
+    const vals = baseAggs.map(pick).filter(v => v !== null && Number.isFinite(v));
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
+  const baseSolved = baseAggs.reduce((s, a) => s + a.accSolved, 0);
+  const baseCorrect = baseAggs.reduce((s, a) => s + a.correct, 0);
+  const baseline = {
+    days: baseAggs.length,
+    // 平均と比べて意味がある件数が貯まっているか
+    reliable: baseAggs.length >= REVIEW_MIN_BASELINE_DAYS,
+    avgMin: avgOf(a => a.min),
+    avgSessions: avgOf(a => a.sessions),
+    avgFocus: avgOf(a => a.focus),
+    avgSolved: avgOf(a => a.solved),
+    // 正答率は日ごとの平均ではなく期間の通算（問題数の少ない日に引っ張られないように）
+    accuracy: baseSolved > 0 ? (baseCorrect / baseSolved) * 100 : null
+  };
+
+  return {
+    date: new Date(targetDate), dateKey,
+    hasData: dayLogs.length > 0,
+    logCount: dayLogs.length,
+    studyMin: agg.min,
+    goalMin,
+    achievedPct: goalMin > 0 ? Math.round((agg.min / goalMin) * 100) : null,
+    sessionCount: agg.sessions,
+    focus: agg.focus,
+    qb: { solved: agg.solved, correct: agg.correct, accSolved: agg.accSolved, accuracy: agg.accuracy },
+    videos: agg.videos,
+    activities, subjects,
+    firstStart: ordered.length ? ordered[0].start : null,
+    lastEnd: ordered.length ? ordered[ordered.length - 1].end : null,
+    breakMin, breakCount, longestRunMin, pauseMin, pauseCount,
+    baseline
+  };
+}
+
+// 直近平均との差。時間・集中度・正答率はいずれも「多いほど良い」のでまとめて扱える。
+function reviewDeltaHTML(value, base, format, opts = {}) {
+  if (value === null || base === null || !Number.isFinite(value) || !Number.isFinite(base)) return '';
+  const diff = value - base;
+  const eps = opts.eps ?? 0;
+  if (Math.abs(diff) <= eps) return `<span class="review-delta flat">平均どおり</span>`;  // 差が誤差の範囲
+  const up = diff > 0;
+  return `<span class="review-delta ${up ? 'up' : 'down'}">平均比 ${up ? '▲' : '▼'}${format(Math.abs(diff))}</span>`;
+}
+
+function reviewTimeHTML(d) {
+  return d ? `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}` : '--';
+}
+
+// カードの中身。日付の切り替えでここだけ差し替える。
+function dailyReviewBodyHTML(rv, colorOf) {
+  if (!rv.hasData) {
+    return `<div class="review-empty">この日の学習記録はありません。</div>`;
+  }
+  const b = rv.baseline;
+  const cmp = b.reliable;
+  const focusTxt = rv.focus !== null ? rv.focus.toFixed(1) : '--';
+
+  return `
+    <div class="review-stats">
+      <div class="review-stat">
+        <div class="review-stat-label">学習時間</div>
+        <div class="review-stat-value">${formatMinutes(rv.studyMin)}</div>
+        <div class="review-stat-sub">
+          ${rv.achievedPct !== null ? `目標 ${formatMinutes(rv.goalMin)} の ${rv.achievedPct}%` : '目標なし'}
+          ${cmp ? reviewDeltaHTML(rv.studyMin, b.avgMin, v => formatMinutes(Math.round(v)), { eps: 10 }) : ''}
+        </div>
+      </div>
+      <div class="review-stat">
+        <div class="review-stat-label">セッション</div>
+        <div class="review-stat-value">${rv.sessionCount}<span class="acc-unit">コマ</span></div>
+        <div class="review-stat-sub">
+          最長 ${formatMinutes(rv.longestRunMin)} 連続
+          ${cmp ? reviewDeltaHTML(rv.sessionCount, b.avgSessions, v => `${v.toFixed(1)}コマ`, { eps: 0.5 }) : ''}
+        </div>
+      </div>
+      <div class="review-stat">
+        <div class="review-stat-label">平均集中度</div>
+        <div class="review-stat-value">${focusTxt}${rv.focus !== null ? '<span class="acc-unit">/ 5.0</span>' : ''}</div>
+        <div class="review-stat-sub">
+          ${rv.focus !== null ? '時間で重みづけ' : '未記録'}
+          ${cmp ? reviewDeltaHTML(rv.focus, b.avgFocus, v => v.toFixed(1), { eps: 0.1 }) : ''}
+        </div>
+      </div>
+      <div class="review-stat">
+        <div class="review-stat-label">休憩</div>
+        <div class="review-stat-value">${rv.breakMin > 0 || rv.pauseMin > 0 ? formatMinutes(rv.breakMin + rv.pauseMin) : '--'}</div>
+        <div class="review-stat-sub">${
+          rv.breakCount + rv.pauseCount > 0
+            ? `コマ間 ${rv.breakCount}回${rv.pauseCount > 0 ? ` ・ 一時停止 ${rv.pauseCount}回` : ''}`
+            : '記録なし'}</div>
+      </div>
+    </div>
+
+    ${rv.firstStart ? `
+      <div class="review-span">
+        ${IC.clock}${reviewTimeHTML(rv.firstStart)} 〜 ${reviewTimeHTML(rv.lastEnd)} のあいだに ${rv.sessionCount}コマ${
+          rv.breakMin > 0 ? `・コマ間の休憩は合計 ${formatMinutes(rv.breakMin)}` : ''}
+      </div>` : ''}
+
+    ${rv.activities.length ? `
+      <div class="review-label">何に使ったか</div>
+      <div class="review-bar">
+        ${rv.activities.map(a => `<div class="review-bar-seg" style="width:${a.share}%;background:${a.color}" title="${a.label} ${formatMinutes(a.minutes)}"></div>`).join('')}
+      </div>
+      <div class="review-legend">
+        ${rv.activities.map(a => `<span class="review-legend-item"><i style="background:${a.color}"></i>${a.label} ${formatMinutes(a.minutes)}<span class="review-legend-pct">${Math.round(a.share)}%</span></span>`).join('')}
+      </div>` : ''}
+
+    ${(rv.qb.solved > 0 || rv.videos > 0) ? `
+      <div class="review-label">こなした量</div>
+      <div class="review-output">
+        ${rv.qb.solved > 0 ? `
+          <div class="review-output-item">
+            <span class="review-output-value">${rv.qb.solved.toLocaleString()}<span class="acc-unit">問</span></span>
+            <span class="review-output-label">解いた問題数${cmp && b.avgSolved ? ` <span class="review-output-base">直近平均 ${Math.round(b.avgSolved)}問/日</span>` : ''}</span>
+          </div>
+          ${rv.qb.accuracy !== null ? `
+            <div class="review-output-item">
+              <span class="review-output-value" style="color:${accColor(rv.qb.accuracy)}">${rv.qb.accuracy.toFixed(0)}<span class="acc-unit">%</span></span>
+              <span class="review-output-label">正答率（${rv.qb.correct}/${rv.qb.accSolved}問）${cmp ? reviewDeltaHTML(rv.qb.accuracy, b.accuracy, v => `${v.toFixed(0)}pt`, { eps: 1 }) : ''}</span>
+            </div>` : ''}
+        ` : ''}
+        ${rv.videos > 0 ? `
+          <div class="review-output-item">
+            <span class="review-output-value" style="color:#8b5cf6">${rv.videos}<span class="acc-unit">本</span></span>
+            <span class="review-output-label">視聴した講義動画</span>
+          </div>` : ''}
+      </div>` : ''}
+
+    ${rv.subjects.length ? `
+      <div class="review-label">科目の内訳</div>
+      <div class="review-subjects">
+        ${rv.subjects.slice(0, 5).map(s => `
+          <div class="review-subject">
+            <span class="review-subject-name"><i style="background:${colorOf(s.name)}"></i>${s.name}</span>
+            <span class="review-subject-bar"><span style="width:${s.share}%;background:${colorOf(s.name)}"></span></span>
+            <span class="review-subject-min">${formatMinutes(s.minutes)}</span>
+          </div>`).join('')}
+        ${rv.subjects.length > 5 ? `<div class="next-move-more">他 ${rv.subjects.length - 5}科目</div>` : ''}
+      </div>` : ''}
+
+    ${!b.reliable ? `<div class="review-note">学習した日が ${REVIEW_BASELINE_DAYS}日で ${b.days}日ぶんしかないため、直近平均との比較はまだ出していません。</div>` : ''}
+  `;
+}
+
 // ==================== インサイトのセクション折りたたみ ====================
 const INSIGHT_GROUP_KEY = 'medfocus_insight_groups';
 const INSIGHT_GROUP_DEFAULTS = { overview: true, breaks: true, goal: false, qb: false, method: false, life: false, trend: false, sessions: false };
@@ -9403,7 +9696,9 @@ function ensureAppLayout() {
   }
 }
 
-registerRoute('/',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderDashboard();});
+registerRoute('/',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();
+  // 前の日を見たまま別ページへ行っても、戻ってきたら今日から始める
+  dashboardReviewOffset=0;renderSidebar();renderDashboard();});
 registerRoute('/study',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderStudy();});
 
 registerRoute('/insights',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderInsights();});

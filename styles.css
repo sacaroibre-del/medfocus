@@ -2751,3 +2751,121 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 @media (max-width: 640px) {
   .next-move-meta { margin-left: 28px; width: 100%; }
 }
+
+/* ==================== その日の勉強分析 ==================== */
+.review-card { margin-bottom: var(--space-md); }
+.review-nav { display: flex; align-items: center; gap: 8px; }
+.review-nav-btn {
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+}
+.review-nav-btn:disabled { opacity: .3; cursor: default; }
+.review-nav-date {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  min-width: 60px;
+  text-align: center;
+}
+.review-empty {
+  padding: var(--space-lg) 0;
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-tertiary);
+}
+.review-stats {
+  display: grid;
+  /* 1fr のままだと中身の最小幅にひきずられて列がそろわない */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: var(--space-md);
+}
+.review-stat {
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+.review-stat-label { font-size: 11px; font-weight: 700; color: var(--color-text-tertiary); margin-bottom: 2px; }
+.review-stat-value { font-size: 1.15rem; font-weight: 800; line-height: 1.2; }
+.review-stat-sub { font-size: 11px; color: var(--color-text-secondary); margin-top: 3px; line-height: 1.5; }
+.review-delta { font-weight: 700; margin-left: 4px; white-space: nowrap; }
+.review-delta.up { color: #10b981; }
+.review-delta.down { color: #ef4444; }
+.review-delta.flat { color: var(--color-text-tertiary); }
+.review-span {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: var(--space-md);
+}
+.review-label {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  margin-bottom: 6px;
+}
+.review-bar {
+  display: flex;
+  height: 10px;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  background: var(--color-bg-elevated);
+  margin-bottom: 8px;
+}
+.review-bar-seg { height: 100%; }
+.review-legend {
+  display: flex; flex-wrap: wrap; gap: 4px 14px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  margin-bottom: var(--space-md);
+}
+.review-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.review-legend-item i { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+.review-legend-pct { color: var(--color-text-tertiary); }
+.review-output {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-bottom: var(--space-md);
+}
+.review-output-item {
+  flex: 1 1 140px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.review-output-value { font-size: 1.15rem; font-weight: 800; line-height: 1.2; }
+.review-output-label { font-size: 11px; color: var(--color-text-secondary); line-height: 1.5; }
+.review-output-base { color: var(--color-text-tertiary); }
+.review-subjects { display: flex; flex-direction: column; gap: 6px; }
+.review-subject { display: flex; align-items: center; gap: 8px; font-size: var(--font-size-xs); }
+.review-subject-name {
+  display: inline-flex; align-items: center; gap: 6px;
+  width: 30%; min-width: 88px;
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.review-subject-name i { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.review-subject-bar {
+  flex: 1;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  overflow: hidden;
+}
+.review-subject-bar > span { display: block; height: 100%; border-radius: var(--radius-full); }
+.review-subject-min { color: var(--color-text-secondary); min-width: 62px; text-align: right; }
+.review-note {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  margin-top: var(--space-sm);
+  line-height: 1.6;
+}
+@media (max-width: 640px) {
+  .review-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
