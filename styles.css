@@ -1068,40 +1068,232 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .session-location { color: var(--color-text-tertiary); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* DOW Bar Chart (CSS-only) */
+/* 曜日別学習時間。2カラムの相方（学習バランス）のほうが背が高く、
+   グラフを 120px 固定にしているとカード下半分がまるごと空く。
+   カードを縦フレックスにして、グラフ側に余りを吸わせる。 */
+.dow-card {
+  display: flex;
+  flex-direction: column;
+}
 .dow-chart {
   display: flex;
   gap: var(--space-sm);
   align-items: flex-end;
-  height: 120px;
-  padding-top: var(--space-md);
+  flex: 1;
+  min-height: 160px;
+  padding-top: var(--space-lg);
 }
 .dow-bar-wrap {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-xs);
   height: 100%;
   justify-content: flex-end;
+  min-width: 0;
 }
 .dow-bar {
   width: 100%;
-  max-width: 40px;
-  border-radius: 4px 4px 0 0;
+  max-width: 48px;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
   background: linear-gradient(180deg, rgba(78,205,196,0.8), rgba(59,130,246,0.6));
   transition: height 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
 }
+.dow-bar-wrap.is-top .dow-bar {
+  background: linear-gradient(180deg, var(--color-accent-teal), rgba(59,130,246,0.85));
+  box-shadow: 0 0 16px rgba(78,205,196,0.25);
+}
+.dow-bar-wrap.is-top .dow-bar-value,
+.dow-bar-wrap.is-top .dow-bar-label {
+  color: var(--color-accent-teal);
+}
+.dow-bar-wrap.is-empty .dow-bar {
+  background: var(--color-bg-elevated);
+}
+.dow-bar-wrap.is-empty .dow-bar-value {
+  color: var(--color-text-tertiary);
+}
 .dow-bar-label {
-  font-size: 10px;
-  font-weight: 600;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
   color: var(--color-text-tertiary);
 }
 .dow-bar-value {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
   color: var(--color-text-secondary);
   text-align: center;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.dow-foot {
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+
+/* 科目別 平均集中度。★は 1〜5 の尺度なので 0 基点で引くと差が潰れる。
+   バーは 1 基点、全体平均の位置に縦線を出す（--focus-marker）。 */
+.focus-rank {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+}
+.focus-rank-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+}
+.focus-rank-name {
+  width: 132px;
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focus-rank-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 10px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+}
+/* 平均線はバーの上に重なる。灰色のままだと塗りの色に埋もれるので、
+   カード地の色で「切り欠き」として抜き、細い縁だけ付ける。
+   これなら塗りの上でも空トラックの上でも同じように読める。 */
+.focus-rank-track::after {
+  content: '';
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  left: var(--focus-marker, 50%);
+  width: 2px;
+  border-radius: 1px;
+  background: var(--color-bg-card);
+  box-shadow: 0 0 0 1px var(--color-text-tertiary);
+  opacity: 0.85;
+}
+.focus-rank-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.focus-rank-value {
+  width: 44px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.focus-rank-count {
+  width: 34px;
+  flex-shrink: 0;
+  text-align: right;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.focus-rank-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+}
+.focus-rank-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.focus-rank-legend i {
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--color-bg-card);
+  box-shadow: 0 0 0 1px var(--color-text-tertiary);
+}
+
+/* 学習バランス（目的別の内訳）。平均値だけだと配分が読めないので比率バーを足す。 */
+.balance-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+}
+.balance-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+.balance-row-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+.balance-row-name {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+.balance-row-name i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.balance-row-share {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+.balance-row-track {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  overflow: hidden;
+}
+.balance-row-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.balance-row-meta {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.balance-chart-wrap {
+  position: relative;
+  height: 220px;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.insight-empty-note {
+  text-align: center;
+  color: var(--color-text-tertiary);
+  font-size: var(--font-size-sm);
+  padding: var(--space-xl);
 }
 
 /* Location stats */

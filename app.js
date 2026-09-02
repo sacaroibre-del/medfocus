@@ -891,6 +891,7 @@ function showToast(msg){
   t._timer = setTimeout(()=>{ t.classList.remove('show'); }, 2800);
 }
 
+
 // ==================== HELPERS ====================
 // ユーザーが自由入力できる文字列（メモ・自由入力の科目名・試験名・プロフィール）を
 // テンプレートリテラルで HTML に埋める前に必ず通す。" を潰さないと
@@ -7546,15 +7547,27 @@ async function renderInsights(){
     }
   }
 
-  const performanceHtml = Object.entries(purposeStats).map(([p, stat]) => {
-    if(stat.count === 0) return '';
-    const avgFoc = (stat.focSum / stat.count).toFixed(1);
-    const avgDur = Math.round(stat.dur / stat.count);
-    return `<div style="display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.05); font-size:0.9rem;">
-      <span style="color:var(--color-text-secondary)">${purposeLabels[p] || p}</span>
-      <span>平均 ${avgDur}分 / ${avgFoc}★</span>
-    </div>`;
-  }).join('');
+  // 「平均◯分 / ◯★」だけだと、その目的にどれだけ時間を割いたかが読めない。
+  // 総時間に占める比率をバーで出して、多い順に並べる。
+  const purposeColors = { cbt: '#4ECDC4', regular_exam: '#F1948A', assignment: '#45B7D1', other: '#94a3b8' };
+  const purposeTotalDur = Object.values(purposeStats).reduce((a, st) => a + st.dur, 0);
+  const performanceHtml = Object.entries(purposeStats)
+    .filter(([, stat]) => stat.count > 0)
+    .sort((a, b) => b[1].dur - a[1].dur)
+    .map(([p, stat]) => {
+      const avgFoc = (stat.focSum / stat.count).toFixed(1);
+      const avgDur = Math.round(stat.dur / stat.count);
+      const share = purposeTotalDur > 0 ? stat.dur / purposeTotalDur * 100 : 0;
+      const color = purposeColors[p] || '#94a3b8';
+      return `<div class="balance-row" title="${esc(purposeLabels[p] || p)}：計 ${formatMinutes(stat.dur)}／${stat.count}件">
+        <div class="balance-row-head">
+          <span class="balance-row-name"><i style="background:${color}"></i>${esc(purposeLabels[p] || p)}</span>
+          <span class="balance-row-share">${share.toFixed(0)}%</span>
+        </div>
+        <div class="balance-row-track"><div class="balance-row-fill" style="width:${share.toFixed(1)}%;background:${color}"></div></div>
+        <div class="balance-row-meta">計 ${formatMinutes(stat.dur)}・${stat.count}件／1回あたり ${avgDur}分・★${avgFoc}</div>
+      </div>`;
+    }).join('');
 
   // ===== Phase 1: QB正答率分析 =====
   // 正答率は qb_progress の現在値（＝過去すべての累積）から出すので、
@@ -9085,57 +9098,76 @@ async function renderInsights(){
         <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
         <div><div class="section-title">科目別 平均集中度</div><div class="section-subtitle">集中しやすい科目・難しい科目を把握しよう</div></div>
       </div>
-      ${sortedSubjectFocus.length > 0 ? `
-        <div style="display:flex;flex-direction:column;gap:10px;margin-top:var(--space-sm)">
+      ${sortedSubjectFocus.length > 0 ? (() => {
+        // ★ は 1〜5 の尺度なので、バーは 0 基点ではなく 1 基点で引く。
+        // 0 基点だと 3.7 も 4.8 もほぼ満タンに見えて差が読めない。
+        // さらに全体平均の位置に線を引いて、どの科目が自分の普段より
+        // 上か下かを見れるようにする。
+        const focusScalePct = v => Math.max(0, Math.min(100, (v - 1) / 4 * 100));
+        const overallAvg = focusLogs.length > 0
+          ? focusLogs.reduce((a, l) => a + Number(l.focus_level), 0) / focusLogs.length
+          : 0;
+        const markerPct = focusScalePct(overallAvg);
+        return `
+        <div class="focus-rank" style="--focus-marker:${markerPct.toFixed(1)}%">
           ${sortedSubjectFocus.map(([name, avg, cnt]) => {
-            const pct = Math.round(avg / 5 * 100);
-            const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#f7dc6f' : '#ff6b6b';
-            return `<div style="display:flex;align-items:center;gap:10px">
-              <div style="width:110px;font-size:0.75rem;color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${name}</div>
-              <div style="flex:1;background:var(--color-bg-elevated);border-radius:4px;height:10px;overflow:hidden">
-                <div style="width:${pct}%;height:100%;background:${color};border-radius:4px;transition:width 0.6s ease"></div>
+            // #f7dc6f はライトモードだと白地に沈むので、中位帯だけ濃いアンバーにする
+            const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#d99e0b' : '#ff6b6b';
+            const diff = avg - overallAvg;
+            const diffLabel = Math.abs(diff) < 0.05 ? '平均並み' : `平均より ${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}`;
+            return `<div class="focus-rank-row" title="${esc(name)}：平均 ★${avg.toFixed(1)}、${cnt}件、${diffLabel}">
+              <div class="focus-rank-name">${esc(name)}</div>
+              <div class="focus-rank-track">
+                <div class="focus-rank-fill" style="width:${focusScalePct(avg).toFixed(1)}%;background:${color}"></div>
               </div>
-              <div style="width:40px;text-align:right;font-size:0.78rem;font-weight:700;color:${color};flex-shrink:0">★${avg.toFixed(1)}</div>
-              <div style="width:28px;text-align:right;font-size:0.68rem;color:var(--color-text-tertiary);flex-shrink:0">${cnt}件</div>
+              <div class="focus-rank-value" style="color:${color}">★${avg.toFixed(1)}</div>
+              <div class="focus-rank-count">${cnt}件</div>
             </div>`;
           }).join('')}
         </div>
-        <div style="display:flex;gap:16px;margin-top:var(--space-md);font-size:0.72rem;color:var(--color-text-tertiary)">
-          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#4ecdc4;display:inline-block"></span>★4.5+</span>
-          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#45b7d1;display:inline-block"></span>★3.5+</span>
-          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#f7dc6f;display:inline-block"></span>★2.5+</span>
-          <span style="display:flex;align-items:center;gap:4px"><span style="width:10px;height:10px;border-radius:2px;background:#ff6b6b;display:inline-block"></span>★2.5未満</span>
-        </div>
-      ` : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">集中度データなし（セッション記録時に★を評価してください）</p>'}
+        <div class="focus-rank-foot">
+          <span class="focus-rank-legend"><i></i>縦線は全体平均 ★${overallAvg.toFixed(1)}</span>
+          <span>バーは ★1〜★5 の範囲</span>
+        </div>`;
+      })() : '<p class="insight-empty-note">集中度データなし（セッション記録時に★を評価してください）</p>'}
     </div>
 
     <!-- DOW Chart + Session List -->
     <div class="insights-grid animate-slide-up" style="animation-delay:.25s">
-      <div class="card" style="overflow:hidden">
+      <div class="card dow-card">
         <div class="section-header">
           <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.calendar}</div>
-          <div><div class="section-title">曜日別学習時間</div><div class="section-subtitle">曜日ごとの傾向</div></div>
+          <div><div class="section-title">曜日別学習時間</div><div class="section-subtitle">${(() => {
+            const total = dowMinutes.reduce((a, b) => a + b, 0);
+            if (total <= 0) return '曜日ごとの傾向';
+            const top = dowMinutes.indexOf(Math.max(...dowMinutes));
+            const bottom = dowMinutes.indexOf(Math.min(...dowMinutes));
+            return `${dowNames[top]}曜がいちばん多く、${dowNames[bottom]}曜がいちばん少ない`;
+          })()}</div></div>
         </div>
         <div class="dow-chart">
-          ${[1,2,3,4,5,6,0].map(d => `
-            <div class="dow-bar-wrap">
-              <div class="dow-bar-value">${dowMinutes[d] > 0 ? formatMinutes(dowMinutes[d]) : ''}</div>
+          ${[1,2,3,4,5,6,0].map(d => {
+            const isTop = dowMinutes[d] > 0 && dowMinutes[d] === maxDowMin;
+            return `
+            <div class="dow-bar-wrap${isTop ? ' is-top' : ''}${dowMinutes[d] === 0 ? ' is-empty' : ''}" title="${dowNames[d]}曜：${formatMinutes(dowMinutes[d])} / ${dowCounts[d]}件">
+              <div class="dow-bar-value">${dowMinutes[d] > 0 ? formatMinutes(dowMinutes[d]) : '—'}</div>
               <div class="dow-bar" style="height:${Math.max(2, Math.round(dowMinutes[d]/maxDowMin*100))}%"></div>
               <div class="dow-bar-label">${dowNames[d]}</div>
-            </div>
-          `).join('')}
+            </div>`;
+          }).join('')}
         </div>
+        <div class="dow-foot">棒の高さは最多の曜日を100%とした相対値／数字は合計時間</div>
       </div>
       <div class="card">
         <div class="section-header">
           <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.chart}</div>
           <div><div class="section-title">学習バランスとパフォーマンス</div><div class="section-subtitle">目的別の内訳</div></div>
         </div>
-        <div style="margin-top:16px;">
-          ${performanceHtml || '<div style="color:var(--color-text-tertiary); font-size:0.9rem;">データがありません</div>'}
+        <div class="balance-list">
+          ${performanceHtml || '<p class="insight-empty-note">データがありません</p>'}
           ${balanceAlertHtml}
         </div>
-        <div style="margin-top:24px; position:relative; height:200px;">
+        <div class="balance-chart-wrap">
           <canvas id="insightBalanceChart"></canvas>
         </div>
       </div>
@@ -9247,7 +9279,7 @@ async function renderInsights(){
             options: {
               responsive: true, maintainAspectRatio: false,
               scales: {
-                x: { stacked: true, grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+                x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: true, maxTicksLimit: 8, maxRotation: 0, minRotation: 0 } },
                 y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' }, ticks: { font: { size: 9 } } }
               },
               plugins: { 
@@ -9275,7 +9307,7 @@ async function renderInsights(){
           options: {
             responsive: true, maintainAspectRatio: true,
             scales: {
-              x: { grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+              x: { grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0, minRotation: 0 } },
               y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' }, ticks: { font: { size: 9 }, callback: v => v + 'm' } }
             },
             plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8', borderColor: 'rgba(78,205,196,0.3)', borderWidth: 1, cornerRadius: 8 } },
@@ -9314,7 +9346,7 @@ async function renderInsights(){
           options: {
             responsive: true, maintainAspectRatio: false,
             scales: {
-              x: { grid: { display: false }, ticks: { font: { size: 9 }, maxRotation: 45 } },
+              x: { grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0, minRotation: 0 } },
               y: {
                 beginAtZero: true,
                 max: Math.max(10, sleepMaxHours + 1),
