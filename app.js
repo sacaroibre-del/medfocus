@@ -581,6 +581,17 @@ function normalizeSubjectName(name){
 // 期間と科目で絞ってまとめて設定できるようにする。
 const bulkActivity = { open: false, period: 'all', subject: '', onlyUnclassified: true };
 
+// 「最近の学習ログ」は7日固定だったため、まとめて設定で古いログを変えても
+// 画面上は直近1週間しか出ず、反映されたかを確認できなかった。表示範囲を
+// 選べるようにする。件数が増えると描画が重くなるので上限を設ける。
+const STUDY_LOG_RANGES = [
+  { v: '7',   l: '7日',   days: 7 },
+  { v: '30',  l: '30日',  days: 30 },
+  { v: 'all', l: '全期間', days: null }
+];
+const STUDY_LOG_RENDER_CAP = 300;
+let studyLogRange = '7';
+
 function bulkActivityTargets(logs) {
   const today = getLogicalDate(new Date());
   let from = null;
@@ -3525,6 +3536,12 @@ async function renderDashboard(){
 // --- Study ---
 // 一括設定パネルのイベント。renderStudy の描画後に毎回張り直す。
 function bindBulkActivityEvents(logs) {
+  document.getElementById('study-log-range-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    studyLogRange = chip.dataset.range;
+    renderStudy();
+  });
   document.getElementById('bulk-activity-toggle')?.addEventListener('click', () => {
     bulkActivity.open = !bulkActivity.open;
     renderStudy();
@@ -3568,12 +3585,34 @@ async function renderStudy(){
   
   const logicalToday = getLogicalDate(new Date());
   const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s,category:c.name})));
-  const logsByDay={};
-  for(let i=0;i<7;i++){
-    const d=new Date(logicalToday); d.setDate(logicalToday.getDate()-i);
-    const key=d.toLocaleDateString('ja-JP',{month:'short',day:'numeric',weekday:'short'});
-    const ds=new Date(d);ds.setHours(3,0,0,0);const de=new Date(d);de.setHours(26,59,59,999);
-    logsByDay[key]=logs.filter(l=>{const t=new Date(l.started_at);return t>=ds&&t<=de;});}
+  const logRangeDef = STUDY_LOG_RANGES.find(r => r.v === studyLogRange) || STUDY_LOG_RANGES[0];
+  let logFromKey = null;
+  if (logRangeDef.days) {
+    const f = new Date(logicalToday); f.setDate(f.getDate() - (logRangeDef.days - 1));
+    logFromKey = toLocalDateKey(f);
+  }
+  const rangedLogs = logs.filter(l => {
+    const r = getLogRange(l);
+    if (isNaN(r.start)) return false;
+    return !logFromKey || toLocalDateKey(getLogicalDate(r.start)) >= logFromKey;
+  });
+  const shownLogs = rangedLogs.slice(0, STUDY_LOG_RENDER_CAP);
+  // 日ごとに束ねる。年をまたぐと月日だけでは同じ見出しに混ざるので、
+  // 今年以外は年も出す。
+  const dayGroups = [];
+  const dayIndex = {};
+  shownLogs.forEach(l => {
+    const d = getLogicalDate(getLogRange(l).start);
+    const key = toLocalDateKey(d);
+    if (!dayIndex[key]) {
+      const opts = d.getFullYear() === logicalToday.getFullYear()
+        ? { month:'short', day:'numeric', weekday:'short' }
+        : { year:'numeric', month:'short', day:'numeric', weekday:'short' };
+      dayIndex[key] = { label: d.toLocaleDateString('ja-JP', opts), logs: [] };
+      dayGroups.push(dayIndex[key]);
+    }
+    dayIndex[key].logs.push(l);
+  });
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
@@ -3732,9 +3771,14 @@ async function renderStudy(){
         ` : ''}
       </div>
       <div class="study-log-card card animate-slide-up" style="animation-delay:.1s">
-        <div class="card-header">
-          <div class="card-title">${IC.list}最近の学習ログ</div>
-          <button class="filter-reset-btn" id="bulk-activity-toggle">${bulkActivity.open ? '閉じる' : '活動をまとめて設定'}</button>
+        <div class="card-header study-log-header">
+          <div class="card-title">${IC.list}学習ログ</div>
+          <div class="study-log-header-actions">
+            <div class="filter-chips" id="study-log-range-chips">
+              ${STUDY_LOG_RANGES.map(r => `<button class="filter-chip ${studyLogRange === r.v ? 'active' : ''}" data-range="${r.v}">${r.l}</button>`).join('')}
+            </div>
+            <button class="filter-reset-btn" id="bulk-activity-toggle">${bulkActivity.open ? '閉じる' : '活動をまとめて設定'}</button>
+          </div>
         </div>
         ${(() => {
           if (!bulkActivity.open) {
@@ -3764,7 +3808,11 @@ async function renderStudy(){
                 <label class="bulk-check"><input type="checkbox" id="bulk-unclassified" ${bulkActivity.onlyUnclassified ? 'checked' : ''}> 未分類のログだけ</label>
               </div>
               <div class="bulk-summary">
-                対象 <strong>${targets.length}件</strong>（計 ${formatMinutes(targetMin)}）
+                対象 <strong>${targets.length}件</strong>（計 ${formatMinutes(targetMin)}）${(() => {
+                  if (!targets.length) return '';
+                  const keys = targets.map(l => toLocalDateKey(getLogicalDate(getLogRange(l).start))).sort();
+                  return `<span class="bulk-scope">対象の期間 ${keys[0]} 〜 ${keys[keys.length - 1]}</span>`;
+                })()}
                 <span class="bulk-scope">読み込み済みの学習ログ ${logs.length}件${
                   logs.length ? `／${toLocalDateKey(getLogicalDate(getLogRange(logs[logs.length - 1]).start))} 〜 ${toLocalDateKey(getLogicalDate(getLogRange(logs[0]).start))}` : ''
                 }</span>
@@ -3778,8 +3826,8 @@ async function renderStudy(){
               <div class="bulk-note">選んだ活動を対象の${targets.length}件すべてに設定します。元に戻すにはもう一度まとめて設定するか、各ログの「編集」から個別に直してください。</div>
             </div>`;
         })()}
-        <div class="study-log-list">${Object.entries(logsByDay).map(([day,logs])=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
-          return`<div class="study-log-day"><div class="study-log-day-header">${day} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subject_name);
+        <div class="study-log-list">${dayGroups.map(({label,logs})=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
+          return`<div class="study-log-day"><div class="study-log-day-header">${label} <span class="day-total">(計 ${formatMinutes(tot)})</span></div>${logs.map(l=>{const sub=allSubjects.find(s=>s.id===l.subject_name);
             // Compute real start/end times
             let realStart, realEnd;
             if(l.ended_at) {
@@ -3807,7 +3855,10 @@ async function renderStudy(){
                 <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
-            </div>`;}).join('')}</div>`;}).join('')}</div></div>
+            </div>`;}).join('')}</div>`;}).join('')}
+          ${rangedLogs.length === 0 ? `<div class="study-log-empty">${logRangeDef.days ? `直近${logRangeDef.days}日の記録はありません。` : '記録がありません。'}</div>` : ''}
+          ${rangedLogs.length > shownLogs.length ? `<div class="study-log-more">表示は新しい順に ${shownLogs.length}件までです（該当 ${rangedLogs.length}件）。まとめて設定は表示件数に関わらず対象すべてに反映されます。</div>` : ''}
+        </div></div>
     </div>
     
     <div class="study-check-card card animate-slide-up" style="animation-delay:.2s;margin-top:var(--space-lg);">

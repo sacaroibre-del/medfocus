@@ -2630,3 +2630,20 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   font-weight: 500;
   color: var(--color-text-tertiary);
 }
+
+/* 学習ログの表示範囲 */
+.study-log-header { flex-wrap: wrap; gap: 8px; }
+.study-log-header-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.study-log-empty,
+.study-log-more {
+  padding: var(--space-md);
+  text-align: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
