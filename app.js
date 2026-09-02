@@ -2568,6 +2568,9 @@ function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLab
 
 
 
+// ダッシュボードは「今日どう動くか」が決まるものだけを置く。
+// 科目別学習時間・QB進捗サマリー・集中度と環境分析は、インサイトの
+// 科目分布／場所別の分析／時間帯×曜日／教材進捗トラッカーと重複するため外した。
 async function renderDashboard(){
 
   const ct=document.getElementById('page-container');
@@ -2781,6 +2784,17 @@ async function renderDashboard(){
   const pacer = buildExamPacer(examCountdowns, getQBProgress(), getVideoProgress(),
                                logs, getDailyProgressDeltas());
 
+  // 「今日の一手」用。インサイトで使っている計算をそのまま持ってくる。
+  const dashTargetRound = getPacerTargetRound();
+  const dashUnit = buildUnitCost(logs);
+  const dashPipeline = buildPipeline(getQBProgress(), getVideoProgress());
+  const dashBaseline = buildIOBaseline(dashUnit, dashPipeline.rows, getQBProgress(),
+                                       dashTargetRound, getIOVideoPlan(), getIOVideoSkip());
+  const dashBudget = buildTimeBudget(examCountdowns, dashBaseline, logs, logicalToday);
+  const dashSubjects = buildSubjectBudget(getQBProgress(), dashUnit, dashTargetRound);
+  const dashLag = buildVideoQbLag(logs, logicalToday);
+  const dashPending = [...dashLag.pending].sort((a, b) => b.ageDays - a.ageDays);
+
   // Format hours for ring display
   const todayH = (todayMin / 60).toFixed(1);
   const goalH = (goalMin / 60).toFixed(1);
@@ -2930,21 +2944,50 @@ async function renderDashboard(){
       `}
     </div>`}
 
-    <!-- Mini Stats -->
-    <div class="mini-stats-row animate-slide-up" style="animation-delay:.1s">
-      <div class="mini-stat">
-        <div class="mini-stat-value" style="color:var(--color-accent-teal)">${Math.floor(totalMinutes/60)}<span style="font-size:.75rem;font-weight:500;color:var(--color-text-secondary)">h</span></div>
-        <div class="mini-stat-label">総学習時間</div>
+    <!-- 今日の一手 -->
+    ${(dashSubjects.hasData || dashPending.length > 0 || dashBudget.hasData) ? `
+    <div class="card next-move-card animate-slide-up" style="animation-delay:.1s">
+      <div class="card-header">
+        <div class="card-title">${IC.target}今日の一手</div>
+        <a href="/insights" data-route="/insights" class="next-move-link">インサイトで詳しく →</a>
       </div>
-      <div class="mini-stat">
-        <div class="mini-stat-value" style="color:var(--color-accent-blue)">${formatMinutes(avgMin)}</div>
-        <div class="mini-stat-label">1日平均</div>
-      </div>
-      <div class="mini-stat">
-        <div class="mini-stat-value" style="color:var(--color-accent-green)">${overall}<span style="font-size:.75rem;font-weight:500;color:var(--color-text-secondary)">%</span></div>
-        <div class="mini-stat-label">総合進捗率</div>
-      </div>
+
+      ${dashBudget.hasData ? `
+        <div class="next-move-budget ${dashBudget.onTrack ? 'ok' : 'ng'}">
+          ${dashBudget.exam.name} まで あと <strong>${dashBudget.daysLeft}日</strong>：${dashBudget.onTrack
+            ? `このペースなら間に合います（${formatMinutes(Math.abs(dashBudget.diffMin))} の余裕）`
+            : `<strong>1日あたり ${formatMinutes(Math.ceil(dashBudget.shortfallPerDay))} 足りません</strong>`}
+        </div>
+      ` : ''}
+
+      ${dashSubjects.hasData ? `
+        <div class="next-move-label">優先したい科目</div>
+        <div class="next-move-list">
+          ${dashSubjects.rows.slice(0, 3).map((r, i) => `
+            <div class="next-move-item">
+              <span class="next-move-rank">${i + 1}</span>
+              <span class="next-move-name">${r.name}</span>
+              <span class="next-move-meta">残り ${r.remaining.toLocaleString()}問・${formatMinutes(Math.round(r.remainMin))}${r.accuracy !== null ? `・正答率 ${r.accuracy.toFixed(0)}%` : ''}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+
+      ${dashPending.length > 0 ? `
+        <div class="next-move-label">動画を見たままQBに入っていない</div>
+        <div class="next-move-list">
+          ${dashPending.slice(0, 3).map(x => `
+            <div class="next-move-item">
+              <span class="next-move-rank warn">!</span>
+              <span class="next-move-name">${x.subject}</span>
+              <span class="next-move-meta">${x.videoDay} に視聴・${x.ageDays}日前</span>
+            </div>
+          `).join('')}
+          ${dashPending.length > 3 ? `<div class="next-move-more">他 ${dashPending.length - 3}件</div>` : ''}
+        </div>
+      ` : ''}
     </div>
+    ` : ''}
 
     <!-- Study Trend Chart -->
     <div class="card animate-slide-up" style="animation-delay:.15s">
@@ -2988,106 +3031,6 @@ async function renderDashboard(){
       </div>
     </div>
 
-    <!-- Bottom Grid -->
-    <div class="dashboard-bottom" style="margin-top:var(--space-xl)">
-      <div class="card animate-slide-up" style="animation-delay:.25s"><div class="card-header"><div class="card-title">${IC.clock}科目別学習時間</div><span style="font-size:0.75rem;color:var(--color-text-tertiary)">${sortedSubjectTime.length}科目</span></div>
-        <div class="category-progress-list">
-          ${sortedSubjectTime.length > 0 ? (() => {
-            const top10 = sortedSubjectTime.slice(0, 10);
-            const rest = sortedSubjectTime.slice(10);
-            const renderItem = (s) => `
-              <div class="category-progress-item">
-                <div class="category-progress-header">
-                  <span class="category-progress-name" style="position:relative;display:inline-flex;align-items:center;">
-                    <input type="color" class="subject-color-picker" data-subject="${s.name}" value="${s.color}" style="position:absolute;opacity:0;width:16px;height:16px;left:0;cursor:pointer;z-index:2;"/>
-                    <span class="dot subject-color-dot" style="background:${s.color};width:10px;height:10px;border-radius:50%;margin-right:8px;z-index:1;"></span>
-                    ${s.name}
-                  </span>
-                  <span class="category-progress-value">${formatMinutes(s.minutes)}</span>
-                </div>
-                <div class="progress-bar">
-                  <div class="progress-bar-fill" style="width:0%; background:${s.color}" data-width="${Math.round((s.minutes / maxSubMinutes) * 100)}"></div>
-                </div>
-              </div>`;
-            return top10.map(renderItem).join('') + (rest.length > 0 ? `
-              <details class="subject-expand-details">
-                <summary class="subject-expand-btn">
-                  ${IC._s('<polyline points="6 9 12 15 18 9"/>')} 他 ${rest.length}科目を表示
-                </summary>
-                <div class="subject-expand-content">
-                  ${rest.map(renderItem).join('')}
-                </div>
-              </details>` : '');
-          })() : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-md)">まだ学習記録がありません</p>'}
-        </div>
-      </div>
-
-      <!-- Environment & Analytics -->
-      <div style="display:flex; flex-direction:column; gap:var(--space-md);">
-        <div class="card animate-slide-up" style="animation-delay:.3s"><div class="card-header"><div class="card-title">${IC.book}QB進捗サマリー</div></div>
-          <div style="padding:var(--space-md);padding-top:0;">
-            ${(()=>{
-              const qb=getQBProgress();
-              const vid=getVideoProgress();
-              // 周をまたいで合算すると母数が周の数だけ増えて達成率が意味を失うため、
-              // 周ごとに1本ずつ棒を並べる。
-              return subjectCategories.filter(c=>c.id.startsWith('cat-vol')).map(cat=>{
-                const agg=volRoundAggregate(qb,vid,cat);
-                return`<div style="margin-bottom:14px;">
-                  <div style="font-weight:600;font-size:0.85rem;margin-bottom:6px;">${cat.name}</div>
-                  ${agg.rounds.length===0
-                    ? '<div style="font-size:0.72rem;color:var(--color-text-tertiary);">未登録</div>'
-                    : agg.rounds.map(r=>`
-                      <div style="margin-bottom:7px;">
-                        <div style="display:flex;justify-content:space-between;align-items:baseline;font-size:0.75rem;margin-bottom:3px;">
-                          <span style="color:var(--color-text-secondary);font-weight:600;">${r.round}周目</span>
-                          <span style="font-weight:700;font-size:0.82rem;color:${roundBarColor(r.pct)};">${r.total>0?r.pct+'%':'--'}</span>
-                        </div>
-                        <div style="height:8px;background:var(--color-bg-elevated);border-radius:4px;overflow:hidden;margin-bottom:2px;">
-                          <div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:4px;transition:width 0.5s;"></div>
-                        </div>
-                        <div style="font-size:0.68rem;color:var(--color-text-tertiary);">${r.done}/${r.total}問 ・ 正答率 ${r.accPct!==null?r.accPct+'%':'---'}</div>
-                      </div>`).join('')}
-                </div>`;
-              }).join('');
-            })()}
-          </div>
-        </div>
-
-        <div class="card animate-slide-up" style="animation-delay:.35s"><div class="card-header"><div class="card-title">${IC.target}集中度と環境分析</div></div>
-          <div style="padding:var(--space-md); padding-top:0;">
-            <div style="display:flex; justify-content:space-between; margin-bottom:var(--space-sm);">
-              <span style="color:var(--color-text-secondary); font-size:0.9rem;">平均集中度:</span>
-              <span style="font-weight:bold; font-size:1.1rem;">
-                ${avgFocus !== '-' ? `${avgFocus} / 5.0` : 'データなし'}
-              </span>
-            </div>
-            ${bestLocation ? `
-              <div style="margin-bottom:var(--space-md);">
-                <span style="color:var(--color-text-secondary); font-size:0.9rem;">頻出の場所:</span>
-                <span style="font-weight:bold;">${bestLocation.loc} (平均集中度 ${bestLocation.avg})</span>
-              </div>
-              <div style="display:grid; gap:8px;">
-                ${sortedLocations.map(stat => `
-                  <div style="display:flex; align-items:center; background:rgba(255,255,255,0.03); padding:8px 12px; border-radius:8px;">
-                    <div style="flex:1;">${stat.loc}</div>
-                    <div style="font-size:0.9rem; margin-right:12px; color:var(--color-text-secondary);">${stat.count}回</div>
-                    <div style="font-weight:bold;">${stat.avg}★</div>
-                  </div>
-                `).join('')}
-              </div>
-            ` : '<p style="text-align:center; color:var(--color-text-tertiary);">データなし</p>'}
-          </div>
-
-          <div style="padding:var(--space-md); border-top:1px solid var(--color-border);">
-            <div style="font-weight:bold; font-size:0.9rem; margin-bottom:12px;">${IC.clock}時間帯別のパフォーマンス</div>
-            <div class="chart-container" style="min-height:180px; position:relative;">
-              <canvas id="todLevelChart"></canvas>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
   `;
 
   // --- Animate ring ---
@@ -3205,104 +3148,7 @@ async function renderDashboard(){
     renderTrendChart(dashboardPeriod);
     
 
-    // --- Render TOD Hourly Level Chart --- 
-    if (typeof Chart !== 'undefined') {
-      const todCanvas = document.getElementById('todLevelChart');
-      if (todCanvas) {
-        destroyChart('todLevelChart');
-        // Re-order to start from 5 AM: [5,6,7...,23,0,1,2,3,4]
-        const todOrder = [];
-        for(let i=5; i<24; i++) todOrder.push(i);
-        for(let i=0; i<5; i++) todOrder.push(i);
-        
-        const todLabels = todOrder.map(h => `${h}時`);
-        const todMinData = todOrder.map(h => hourlyStats[h].min);
-        const todFocusData = todOrder.map(h => hourlyStats[h].countF > 0 ? (hourlyStats[h].sumF / hourlyStats[h].countF).toFixed(1) : 0);
-        
-        chartInstances['todLevelChart'] = new Chart(todCanvas, {
-          type: 'bar',
-          data: {
-            labels: todLabels,
-            datasets: [
-              {
-                label: '学習時間(分)',
-                data: todMinData,
-                backgroundColor: 'rgba(78, 205, 196, 0.5)',
-                borderColor: '#4ECDC4',
-                borderWidth: 1,
-                borderRadius: 2,
-                order: 2,
-                yAxisID: 'y'
-              },
-              {
-                label: '平均集中度',
-                data: todFocusData,
-                type: 'line',
-                borderColor: '#FF6B6B',
-                backgroundColor: '#FF6B6B',
-                borderWidth: 2,
-                pointRadius: 2,
-                pointBackgroundColor: '#FF6B6B',
-                tension: 0.3,
-                order: 1,
-                yAxisID: 'yFocus'
-              }
-            ]
-          },
-          options: {
-            // Standard vertical bars for timeline feel
-            responsive: true,
-            maintainAspectRatio: false,
-            scales: {
-              y: { 
-                display: true, 
-                grid: { color: 'rgba(148,163,184,0.06)' },
-                ticks: { font: { size: 9 }, callback: (v) => v + 'm' }
-              },
-              x: { 
-                display: true, 
-                grid: { display: false }, 
-                ticks: { 
-                  font: { size: 8 }, 
-                  maxRotation: 0, 
-                  autoSkip: false,
-                  callback: function(val, index) {
-                    // Show only every 3 hours or key times to save space on mobile
-                    const hr = todOrder[index];
-                    return (hr % 3 === 0 || hr === 5) ? this.getLabelForValue(val) : '';
-                  }
-                } 
-              },
-              yFocus: {
-                position: 'right',
-                min: 0, max: 5,
-                display: false,
-                grid: { display: false }
-              }
-            },
-            plugins: {
-              legend: { display: true, position: 'bottom', labels: { boxWidth: 10, font: { size: 9 } } },
-              tooltip: {
-                mode: 'index',
-                intersect: false,
-                callbacks: {
-                  title: (items) => {
-                    const hr = todOrder[items[0].dataIndex];
-                    const nextHr = (hr + 1) % 24;
-                    return `${hr}:00 〜 ${nextHr}:00 の活動`;
-                  },
-                  label: (ctx) => {
-                    const label = ctx.dataset.label || '';
-                    if (label.includes('集中度')) return `${label}: ${ctx.parsed.y}★`;
-                    return `${label}: ${ctx.parsed.y}分`;
-                  }
-                }
-              }
-            }
-          }
-        });
-      }
-    }
+    // 時間帯別のパフォーマンスのグラフはインサイトへ移したので、ここでは描かない
     
     // Animate progress bars
     const fills = document.querySelectorAll('.progress-bar-fill');

@@ -2697,3 +2697,57 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   color: var(--color-text-tertiary);
   line-height: 1.6;
 }
+
+/* ダッシュボードの「今日の一手」 */
+.next-move-card { margin-bottom: var(--space-md); }
+.next-move-link {
+  font-size: var(--font-size-xs);
+  color: var(--color-accent-teal);
+  font-weight: 600;
+}
+.next-move-budget {
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  margin-bottom: var(--space-md);
+}
+.next-move-budget.ok { background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.25); }
+.next-move-budget.ng { background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.25); }
+.next-move-label {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+  margin-bottom: 6px;
+}
+.next-move-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: var(--space-md); }
+.next-move-list:last-child { margin-bottom: 0; }
+.next-move-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-elevated);
+}
+.next-move-rank {
+  flex-shrink: 0;
+  width: 20px; height: 20px;
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--gradient-primary);
+  color: var(--color-bg-primary);
+  font-size: 11px; font-weight: 800;
+}
+.next-move-rank.warn { background: #f59e0b; color: #1a1a1a; }
+.next-move-name { font-weight: 700; font-size: var(--font-size-sm); }
+.next-move-meta {
+  margin-left: auto;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+.next-move-more { font-size: var(--font-size-xs); color: var(--color-text-tertiary); padding-left: 4px; }
+@media (max-width: 640px) {
+  .next-move-meta { margin-left: 28px; width: 100%; }
+}
