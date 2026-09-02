@@ -7640,1571 +7640,1708 @@ async function renderInsights(){
     : { cls: 'change-positive', txt: 'バランスが取れています' };
 
   // --- Build HTML ---
+  // 各セクションはこの d だけを見る。集計結果をここで1つにまとめて渡す。
+  const d = {
+    DONUT_COLORS, IDEAL_SLEEP_HOURS, acc, accTrend, allLocations, allNighter, allNighterCount,
+    avgFocus, avgSessionMin, backlog, backlogDated, balanceAlertHtml, bestEnv, bestSleepSlot,
+    breakStats, chronoColor, chronoIconSvg, chronoName, chronoTotal30, comeback,
+    cooldownWarning, dailyAvgChange, donutR, donutSVG, donutTotal, dowCounts, dowMinutes,
+    dowNames, focusChangeVal, focusLogs, goalHistory, hasAccData, hasSleepData, hasSleepStats,
+    heatmapHTML, intraStats, io, ioBaseline, ioCorrected, ioDiff, ioThin, ioVerdict,
+    lastWeekAvgStart, lastWeekLag, lastWeekSleepAvg, lateNightAlert, lateNightDiff, logs,
+    maxDowMin, maxLocMin, medAcc, medHours, minutesFromBase5AMToTimeStr, morningPct, nightPct,
+    oldestBacklog, paceCV, paceColor, paceIconSvg, paceName, performanceHtml, pipeline,
+    presetLabels, qbQuality, reviewMethod, reviewStats, rhythmLabel, rhythmStatus, roundGain,
+    roundGains, sameDayMix, scatterPoints, sessionCount, sessionLen, shortCooldownDays,
+    sleepAvgHours, sleepDailyData, sleepDebtHours, sleepHoursArr, sleepMaxHours, sleepMinHours,
+    sleepSlotCompare, sortedLocations, sortedSubjectFocus, sortedSubjects, startTimeDiff,
+    streakActive, studyDays, studyStreak, subjectBudget, subjectMix, thisWeekAvgFocus,
+    thisWeekAvgStart, thisWeekDailyAvg, thisWeekLag, thisWeekLateNight, thisWeekSleepAvg,
+    timeBudget, totalMin, trendData, trendDataAssig, trendDataCBT, trendDataExam,
+    trendDataOther, trendLabels, unitCost, videoLag, wakeStabilitySD, wakeStabilityStatus,
+  };
+
   ct.innerHTML = `
-    <div class="page-header">
-      <h1 class="page-title">インサイト</h1>
-      <p class="page-subtitle">学習データを分析して最適な勉強法を見つけよう</p>
-    </div>
+    ${insightsFilterPanelHTML(d)}
 
-    <!-- Filter Bar -->
-    <div class="insights-filter-bar animate-slide-up">
-      <div class="filter-row">
-        <div class="filter-group">
-          <span class="filter-label">期間</span>
-          <div class="filter-chips" id="filter-preset-chips">
-            ${['all','today','week','month','lastmonth','custom'].map(p =>
-              `<button class="filter-chip ${insightFilters.preset===p?'active':''}" data-preset="${p}">${presetLabels[p]}</button>`
-            ).join('')}
-          </div>
+    ${insightsOverviewHTML(d)}
+    ${insightsBreaksHTML(d)}
+    ${insightsGoalHTML(d)}
+    ${insightsQbHTML(d)}
+    ${insightsMethodHTML(d)}
+    ${insightsLifeHTML(d)}
+    ${insightsTrendHTML(d)}
+    ${insightsSessionsHTML(d)}
+  `;
+
+  drawInsightCharts(ct, d);
+  wireInsightFilters(ct, d);
+}
+
+// フィルタ（期間・活動・目的・場所・時間帯・集中度・長さ）
+function insightsFilterPanelHTML(d) {
+  const { allLocations, presetLabels } = d;
+  return `
+  <div class="page-header">
+    <h1 class="page-title">インサイト</h1>
+    <p class="page-subtitle">学習データを分析して最適な勉強法を見つけよう</p>
+  </div>
+
+  <!-- Filter Bar -->
+  <div class="insights-filter-bar animate-slide-up">
+    <div class="filter-row">
+      <div class="filter-group">
+        <span class="filter-label">期間</span>
+        <div class="filter-chips" id="filter-preset-chips">
+          ${['all','today','week','month','lastmonth','custom'].map(p =>
+            `<button class="filter-chip ${insightFilters.preset===p?'active':''}" data-preset="${p}">${presetLabels[p]}</button>`
+          ).join('')}
         </div>
-      </div>
-      <div class="filter-row" id="custom-date-row" style="display:${insightFilters.preset==='custom'?'flex':'none'}">
-        <span class="filter-label">日付</span>
-        <input type="date" class="filter-date-input" id="filter-date-from" value="${insightFilters.dateFrom}">
-        <span class="filter-sep">〜</span>
-        <input type="date" class="filter-date-input" id="filter-date-to" value="${insightFilters.dateTo}">
-      </div>
-      <div class="filter-row">
-        <div class="filter-group">
-          <span class="filter-label">活動</span>
-          <div class="filter-chips" id="filter-activity-chips">
-            ${[{v:'',l:'全て'}].concat(ACTIVITIES.map(a=>({v:a.v,l:a.l}))).concat([{v:'unclassified',l:'未分類'}]).map(a =>
-              `<button class="filter-chip ${insightFilters.activity===a.v?'active':''}" data-activity="${a.v}">${a.l}</button>`
-            ).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="filter-row">
-        <div class="filter-group">
-          <span class="filter-label">目的</span>
-          <div class="filter-chips" id="filter-purpose-chips">
-            ${[{v:'',l:'全て'},{v:'cbt',l:'CBT'},{v:'regular_exam',l:'定期試験'},{v:'assignment',l:'課題・実習'},{v:'other',l:'その他'}].map(p =>
-              `<button class="filter-chip ${insightFilters.purpose===p.v?'active':''}" data-purpose="${p.v}">${p.l}</button>`
-            ).join('')}
-          </div>
-        </div>
-        <div class="filter-group">
-          <span class="filter-label">場所</span>
-          <select class="filter-select" id="filter-location">
-            <option value="">全て</option>
-            ${allLocations.map(l => `<option value="${esc(l)}" ${insightFilters.location===l?'selected':''}>${esc(l)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="filter-group">
-          <span class="filter-label">時間帯</span>
-          <div class="filter-chips" id="filter-timeslot-chips">
-            ${[{v:'',l:'全て'},{v:'morning',l:'朝'},{v:'afternoon',l:'昼'},{v:'evening',l:'夜'},{v:'night',l:'深夜'}].map(t =>
-              `<button class="filter-chip ${insightFilters.timeSlot===t.v?'active':''}" data-slot="${t.v}">${t.l}</button>`
-            ).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="filter-row">
-        <div class="filter-group">
-          <span class="filter-label">集中度</span>
-          <div class="filter-chips" id="filter-focus-chips">
-            ${[{v:'',l:'全て'},{v:'3',l:'★3+'},{v:'4',l:'★4+'},{v:'5',l:'★5'}].map(f =>
-              `<button class="filter-chip ${insightFilters.focusLevel===f.v?'active':''}" data-focus="${f.v}">${f.l}</button>`
-            ).join('')}
-          </div>
-        </div>
-        <div class="filter-group">
-          <span class="filter-label">時間</span>
-          <div class="filter-chips" id="filter-session-chips">
-            ${[{v:'',l:'全て'},{v:'short',l:'〜30分'},{v:'medium',l:'30-60分'},{v:'long',l:'60分〜'}].map(s =>
-              `<button class="filter-chip ${insightFilters.sessionLength===s.v?'active':''}" data-len="${s.v}">${s.l}</button>`
-            ).join('')}
-          </div>
-        </div>
-      </div>
-      <div class="filter-actions">
-        <button class="filter-reset-btn" id="insight-expand-all">すべて開く</button>
-        <button class="filter-reset-btn" id="insight-collapse-all">すべて閉じる</button>
-        <button class="filter-reset-btn" id="filter-reset">リセット</button>
       </div>
     </div>
-
-    ${insightGroupOpenHTML('overview', '概要', '期間全体のサマリー', insightIcons.summary, 'var(--color-accent-teal)')}
-    <!-- Summary Cards -->
-    <div class="insight-summary-grid animate-slide-up" style="animation-delay:.1s">
-      <div class="insight-summary-card">
-        <div class="insight-summary-value" style="color:var(--color-accent-teal)">${Math.floor(totalMin/60)}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">h${totalMin%60>0?' '+totalMin%60+'m':''}</span></div>
-        <div class="insight-summary-label">総学習時間</div>
-        <div class="insight-summary-sub">${sessionCount}セッション</div>
-      </div>
-      <div class="insight-summary-card">
-        <div class="insight-summary-value" style="color:var(--color-accent-blue)">${studyDays}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
-        <div class="insight-summary-label">学習日数</div>
-        <div class="insight-summary-sub">平均 ${formatMinutes(studyDays>0?Math.round(totalMin/studyDays):0)}/日</div>
-      </div>
-      <div class="insight-summary-card">
-        <div class="insight-summary-value" style="color:var(--color-accent-purple)">${avgFocus !== '-' ? avgFocus : '-'}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">${avgFocus !== '-' ? '/5' : ''}</span></div>
-        <div class="insight-summary-label">平均集中度</div>
-        <div class="insight-summary-sub">${focusLogs.length}件のデータ</div>
-      </div>
-      <div class="insight-summary-card">
-        <div class="insight-summary-value" style="color:var(--color-accent-green)">${formatMinutes(avgSessionMin)}</div>
-        <div class="insight-summary-label">平均セッション</div>
-        <div class="insight-summary-sub">${sortedSubjects.length}科目</div>
-      </div>
-      <div class="insight-summary-card">
-        <div class="insight-summary-value" style="color:${streakActive ? '#f97316' : 'var(--color-text-secondary)'}">${studyStreak}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
-        <div class="insight-summary-label">連続学習</div>
-        <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
+    <div class="filter-row" id="custom-date-row" style="display:${insightFilters.preset==='custom'?'flex':'none'}">
+      <span class="filter-label">日付</span>
+      <input type="date" class="filter-date-input" id="filter-date-from" value="${insightFilters.dateFrom}">
+      <span class="filter-sep">〜</span>
+      <input type="date" class="filter-date-input" id="filter-date-to" value="${insightFilters.dateTo}">
+    </div>
+    <div class="filter-row">
+      <div class="filter-group">
+        <span class="filter-label">活動</span>
+        <div class="filter-chips" id="filter-activity-chips">
+          ${[{v:'',l:'全て'}].concat(ACTIVITIES.map(a=>({v:a.v,l:a.l}))).concat([{v:'unclassified',l:'未分類'}]).map(a =>
+            `<button class="filter-chip ${insightFilters.activity===a.v?'active':''}" data-activity="${a.v}">${a.l}</button>`
+          ).join('')}
+        </div>
       </div>
     </div>
-    ${insightGroupCloseHTML}
-
-    ${insightGroupOpenHTML('breaks', '休憩の取り方', 'セッション内の一時停止と、セッション間の空き時間', insightIcons.clock, 'var(--color-accent-orange)', breakStats.hasData ? breakStats.count + '件' : '')}
-    <!-- Section I-1: セッション内の休憩 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.105s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
-        <div><div class="section-title">セッション内の休憩</div><div class="section-subtitle">タイマーを止めていた時間と、記録に残らなかった空き時間</div></div>
+    <div class="filter-row">
+      <div class="filter-group">
+        <span class="filter-label">目的</span>
+        <div class="filter-chips" id="filter-purpose-chips">
+          ${[{v:'',l:'全て'},{v:'cbt',l:'CBT'},{v:'regular_exam',l:'定期試験'},{v:'assignment',l:'課題・実習'},{v:'other',l:'その他'}].map(p =>
+            `<button class="filter-chip ${insightFilters.purpose===p.v?'active':''}" data-purpose="${p.v}">${p.l}</button>`
+          ).join('')}
+        </div>
       </div>
+      <div class="filter-group">
+        <span class="filter-label">場所</span>
+        <select class="filter-select" id="filter-location">
+          <option value="">全て</option>
+          ${allLocations.map(l => `<option value="${esc(l)}" ${insightFilters.location===l?'selected':''}>${esc(l)}</option>`).join('')}
+        </select>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">時間帯</span>
+        <div class="filter-chips" id="filter-timeslot-chips">
+          ${[{v:'',l:'全て'},{v:'morning',l:'朝'},{v:'afternoon',l:'昼'},{v:'evening',l:'夜'},{v:'night',l:'深夜'}].map(t =>
+            `<button class="filter-chip ${insightFilters.timeSlot===t.v?'active':''}" data-slot="${t.v}">${t.l}</button>`
+          ).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="filter-row">
+      <div class="filter-group">
+        <span class="filter-label">集中度</span>
+        <div class="filter-chips" id="filter-focus-chips">
+          ${[{v:'',l:'全て'},{v:'3',l:'★3+'},{v:'4',l:'★4+'},{v:'5',l:'★5'}].map(f =>
+            `<button class="filter-chip ${insightFilters.focusLevel===f.v?'active':''}" data-focus="${f.v}">${f.l}</button>`
+          ).join('')}
+        </div>
+      </div>
+      <div class="filter-group">
+        <span class="filter-label">時間</span>
+        <div class="filter-chips" id="filter-session-chips">
+          ${[{v:'',l:'全て'},{v:'short',l:'〜30分'},{v:'medium',l:'30-60分'},{v:'long',l:'60分〜'}].map(s =>
+            `<button class="filter-chip ${insightFilters.sessionLength===s.v?'active':''}" data-len="${s.v}">${s.l}</button>`
+          ).join('')}
+        </div>
+      </div>
+    </div>
+    <div class="filter-actions">
+      <button class="filter-reset-btn" id="insight-expand-all">すべて開く</button>
+      <button class="filter-reset-btn" id="insight-collapse-all">すべて閉じる</button>
+      <button class="filter-reset-btn" id="filter-reset">リセット</button>
+    </div>
+  </div>
+`;
+}
 
-      ${!intraStats.hasData ? `
-        <div class="data-collecting-msg">
-          タイマーの一時停止を挟んだセッションが貯まると、ここに内訳が出ます。<br>
-          対象セッション ${intraStats.sessionCount}件 / 一時停止 ${intraStats.pauseCount}件
-        </div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.timer} 1セッションの一時停止</div>
-            <div class="rhythm-stat-value">${intraStats.pausePerSession}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
-            <div class="rhythm-stat-change change-neutral">${intraStats.pausedSessions}/${intraStats.sessionCount}セッションで停止している</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.clock} 一時停止の長さ</div>
-            <div class="rhythm-stat-value">${intraStats.avgPauseMin !== null ? intraStats.avgPauseMin : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
-            <div class="rhythm-stat-change change-neutral">${intraStats.medianPauseMin !== null ? `中央値 ${intraStats.medianPauseMin}分 / 最長 ${intraStats.longestPauseMin}分` : 'データなし'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.book} セッション内の空き時間</div>
-            <div class="rhythm-stat-value">${intraStats.avgOverheadMin !== null ? formatMinutes(intraStats.avgOverheadMin) : '--'}</div>
-            <div class="rhythm-stat-change change-neutral">1セッションあたり（計 ${formatMinutes(intraStats.overheadTotalMin)}）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.list} 分析できたセッション</div>
-            <div class="rhythm-stat-value">${intraStats.coverage}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change change-neutral">${intraStats.sessionCount}/${sessionCount}件（開始・終了が揃った記録）</div>
-          </div>
-        </div>
+// 概要：期間全体のサマリー
+function insightsOverviewHTML(d) {
+  const { avgFocus, avgSessionMin, focusLogs, sessionCount, sortedSubjects, streakActive, studyDays,
+    studyStreak, totalMin } = d;
+  return `
+  ${insightGroupOpenHTML('overview', '概要', '期間全体のサマリー', insightIcons.summary, 'var(--color-accent-teal)')}
+  <!-- Summary Cards -->
+  <div class="insight-summary-grid animate-slide-up" style="animation-delay:.1s">
+    <div class="insight-summary-card">
+      <div class="insight-summary-value" style="color:var(--color-accent-teal)">${Math.floor(totalMin/60)}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">h${totalMin%60>0?' '+totalMin%60+'m':''}</span></div>
+      <div class="insight-summary-label">総学習時間</div>
+      <div class="insight-summary-sub">${sessionCount}セッション</div>
+    </div>
+    <div class="insight-summary-card">
+      <div class="insight-summary-value" style="color:var(--color-accent-blue)">${studyDays}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
+      <div class="insight-summary-label">学習日数</div>
+      <div class="insight-summary-sub">平均 ${formatMinutes(studyDays>0?Math.round(totalMin/studyDays):0)}/日</div>
+    </div>
+    <div class="insight-summary-card">
+      <div class="insight-summary-value" style="color:var(--color-accent-purple)">${avgFocus !== '-' ? avgFocus : '-'}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">${avgFocus !== '-' ? '/5' : ''}</span></div>
+      <div class="insight-summary-label">平均集中度</div>
+      <div class="insight-summary-sub">${focusLogs.length}件のデータ</div>
+    </div>
+    <div class="insight-summary-card">
+      <div class="insight-summary-value" style="color:var(--color-accent-green)">${formatMinutes(avgSessionMin)}</div>
+      <div class="insight-summary-label">平均セッション</div>
+      <div class="insight-summary-sub">${sortedSubjects.length}科目</div>
+    </div>
+    <div class="insight-summary-card">
+      <div class="insight-summary-value" style="color:${streakActive ? '#f97316' : 'var(--color-text-secondary)'}">${studyStreak}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
+      <div class="insight-summary-label">連続学習</div>
+      <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
+    </div>
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
 
-        <div class="break-verdict break-verdict-muted">
-          <div>「セッション内の空き時間」は <strong>終了時刻 − 開始時刻 − 実学習時間</strong> の逆算です。一時停止のほか、ポモドーロ／試験シミュレーションの休憩フェーズや、保存画面を開いたままだった時間もここに入ります。一時停止として記録されたのは合計 ${formatMinutes(intraStats.totalPauseMin)} でした。</div>
-        </div>
-
-        <div class="break-subtitle">一時停止の回数 × そのセッションの質</div>
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-run">
-            <div>一時停止</div><div style="text-align:right">セッション</div><div style="text-align:right">平均集中度</div><div style="text-align:right">学習時間</div>
-          </div>
-          ${intraStats.pauseBins.map(b => `
-            <div class="break-row break-row-run">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
-              <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-              <div class="break-row-num">${b.avgDur !== null ? formatMinutes(b.avgDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-            </div>
-          `).join('')}
-        </div>
-        ${intraStats.overheadExcluded > 0 ? `<div class="break-note">${intraStats.overheadExcluded}件は空き時間が${MAX_OVERHEAD_MIN}分を超えるか計算が合わないため、逆算の集計から除いています（保存画面の開きっぱなし、時間の手入力など）。</div>` : ''}
-      `}
+// 休憩の取り方
+function insightsBreaksHTML(d) {
+  const { avgFocus, breakStats, intraStats, sessionCount } = d;
+  return `
+  ${insightGroupOpenHTML('breaks', '休憩の取り方', 'セッション内の一時停止と、セッション間の空き時間', insightIcons.clock, 'var(--color-accent-orange)', breakStats.hasData ? breakStats.count + '件' : '')}
+  <!-- Section I-1: セッション内の休憩 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.105s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
+      <div><div class="section-title">セッション内の休憩</div><div class="section-subtitle">タイマーを止めていた時間と、記録に残らなかった空き時間</div></div>
     </div>
 
-    <!-- Section I-2: セッション間の休憩 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.clock}</div>
-        <div><div class="section-title">セッション間の休憩</div><div class="section-subtitle">前の記録の終了〜次の記録の開始を休憩として推定（${BREAK_MAX_MIN}分を超える空きは中断とみなして除外）</div></div>
+    ${!intraStats.hasData ? `
+      <div class="data-collecting-msg">
+        タイマーの一時停止を挟んだセッションが貯まると、ここに内訳が出ます。<br>
+        対象セッション ${intraStats.sessionCount}件 / 一時停止 ${intraStats.pauseCount}件
+      </div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 1セッションの一時停止</div>
+          <div class="rhythm-stat-value">${intraStats.pausePerSession}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+          <div class="rhythm-stat-change change-neutral">${intraStats.pausedSessions}/${intraStats.sessionCount}セッションで停止している</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.clock} 一時停止の長さ</div>
+          <div class="rhythm-stat-value">${intraStats.avgPauseMin !== null ? intraStats.avgPauseMin : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+          <div class="rhythm-stat-change change-neutral">${intraStats.medianPauseMin !== null ? `中央値 ${intraStats.medianPauseMin}分 / 最長 ${intraStats.longestPauseMin}分` : 'データなし'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} セッション内の空き時間</div>
+          <div class="rhythm-stat-value">${intraStats.avgOverheadMin !== null ? formatMinutes(intraStats.avgOverheadMin) : '--'}</div>
+          <div class="rhythm-stat-change change-neutral">1セッションあたり（計 ${formatMinutes(intraStats.overheadTotalMin)}）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.list} 分析できたセッション</div>
+          <div class="rhythm-stat-value">${intraStats.coverage}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change change-neutral">${intraStats.sessionCount}/${sessionCount}件（開始・終了が揃った記録）</div>
+        </div>
       </div>
 
-      ${!breakStats.hasData ? `
-        <div class="data-collecting-msg">
-          同じ日に2回以上セッションを記録すると、その間隔から休憩の傾向を分析します。<br>
-          現在の休憩データ: ${breakStats.count}件（3件以上で表示されます）
-        </div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.timer} 平均休憩時間</div>
-            <div class="rhythm-stat-value">${breakStats.avgBreak}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
-            <div class="rhythm-stat-change change-neutral">中央値 ${breakStats.medianBreak}分 / 最長 ${breakStats.longestBreak}分</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.clock} 1日あたりの休憩</div>
-            <div class="rhythm-stat-value">${breakStats.perDay}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
-            <div class="rhythm-stat-change change-neutral">2セッション以上の${breakStats.activeDays}日が対象</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.target} 学習密度</div>
-            <div class="rhythm-stat-value">${breakStats.density !== null ? breakStats.density : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change ${breakStats.density >= 80 ? 'change-positive' : breakStats.density >= 65 ? 'change-neutral' : 'change-warning'}">机に向かった時間のうち実学習（セッション内 ${formatMinutes(breakStats.totalIntra)} ＋ セッション間 ${formatMinutes(breakStats.totalBreak)}）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.book} 休憩前の連続学習</div>
-            <div class="rhythm-stat-value">${formatMinutes(breakStats.avgRunBeforeBreak)}</div>
-            <div class="rhythm-stat-change change-neutral">この長さ続けたところで休憩している</div>
-          </div>
-        </div>
+      <div class="break-verdict break-verdict-muted">
+        <div>「セッション内の空き時間」は <strong>終了時刻 − 開始時刻 − 実学習時間</strong> の逆算です。一時停止のほか、ポモドーロ／試験シミュレーションの休憩フェーズや、保存画面を開いたままだった時間もここに入ります。一時停止として記録されたのは合計 ${formatMinutes(intraStats.totalPauseMin)} でした。</div>
+      </div>
 
-        ${breakStats.bestBin ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div><strong>${breakStats.bestBin.label}</strong>の休憩をはさんだあとが、いちばん集中して戻れています（休憩明け 平均 ★${breakStats.bestBin.avgNextFocus.toFixed(1)} / ${breakStats.bestBin.focusCount}回）${
-              breakStats.worstBin && breakStats.worstBin.key !== breakStats.bestBin.key
-                ? `。いっぽう <strong>${breakStats.worstBin.label}</strong> のあとは ★${breakStats.worstBin.avgNextFocus.toFixed(1)} まで落ちています。`
-                : '。'
-            }</div>
-          </div>
-        ` : `
-          <div class="break-verdict break-verdict-muted">
-            <div>休憩明けのセッションで集中度（★）を記録すると、どの長さの休憩がいちばん効いているかを判定できます。（各区分3件以上で判定）</div>
-          </div>
-        `}
-
-        <div class="break-table">
-          <div class="break-row break-row-head">
-            <div>休憩の長さ</div><div>回数の分布</div><div style="text-align:right">回数</div><div style="text-align:right">休憩明け集中</div><div style="text-align:right">次の学習時間</div>
-          </div>
-          ${breakStats.bins.map(b => {
-            const isBest = breakStats.bestBin && b.key === breakStats.bestBin.key;
-            return `<div class="break-row ${isBest ? 'is-best' : ''}">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-bar-wrap"><div class="break-bar-fill" style="width:${b.share}%"></div></div>
-              <div class="break-row-num">${b.count}回<span class="break-row-share">${b.share}%</span></div>
-              <div class="break-row-num">${b.avgNextFocus !== null ? '★' + b.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-              <div class="break-row-num">${b.avgNextDur !== null ? formatMinutes(b.avgNextDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-            </div>`;
-          }).join('')}
+      <div class="break-subtitle">一時停止の回数 × そのセッションの質</div>
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-run">
+          <div>一時停止</div><div style="text-align:right">セッション</div><div style="text-align:right">平均集中度</div><div style="text-align:right">学習時間</div>
         </div>
-
-        <div class="break-subtitle">続けて勉強した時間 × 休憩明けの集中度</div>
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-run">
-            <div>連続学習</div><div style="text-align:right">回数</div><div style="text-align:right">平均休憩</div><div style="text-align:right">休憩明け集中</div>
+        ${intraStats.pauseBins.map(b => `
+          <div class="break-row break-row-run">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
+            <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            <div class="break-row-num">${b.avgDur !== null ? formatMinutes(b.avgDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
           </div>
-          ${breakStats.runBins.map(r => `
-            <div class="break-row break-row-run">
-              <div class="break-row-label">${r.label}</div>
-              <div class="break-row-num">${r.count}回</div>
-              <div class="break-row-num">${r.avgBreak !== null ? r.avgBreak + '分' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-              <div class="break-row-num">${r.avgNextFocus !== null ? '★' + r.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="break-note">セッションを記録し忘れた時間は休憩として数えられます。タイマーの停止／再開が実態に近いほど精度が上がります。</div>
-      `}
+        `).join('')}
+      </div>
+      ${intraStats.overheadExcluded > 0 ? `<div class="break-note">${intraStats.overheadExcluded}件は空き時間が${MAX_OVERHEAD_MIN}分を超えるか計算が合わないため、逆算の集計から除いています（保存画面の開きっぱなし、時間の手入力など）。</div>` : ''}
+    `}
+  </div>
+
+  <!-- Section I-2: セッション間の休憩 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.clock}</div>
+      <div><div class="section-title">セッション間の休憩</div><div class="section-subtitle">前の記録の終了〜次の記録の開始を休憩として推定（${BREAK_MAX_MIN}分を超える空きは中断とみなして除外）</div></div>
     </div>
-    ${insightGroupCloseHTML}
 
-    ${insightGroupOpenHTML('goal', '目標と実績', '曜日ごとに目標が実態に合っているか', insightIcons.target, 'var(--color-accent-green)')}
-    <!-- Section N: 試験までの時間の逆算 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.111s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${IC.timer}</div>
-        <div><div class="section-title">試験までに間に合うか</div><div class="section-subtitle">残りの教材に要る時間と、確保できそうな時間を比べる</div></div>
+    ${!breakStats.hasData ? `
+      <div class="data-collecting-msg">
+        同じ日に2回以上セッションを記録すると、その間隔から休憩の傾向を分析します。<br>
+        現在の休憩データ: ${breakStats.count}件（3件以上で表示されます）
       </div>
-      ${!timeBudget.hasData ? `
-        <div class="data-collecting-msg">${
-          timeBudget.reason === 'no-exam'
-            ? 'カウントダウンに試験日を登録すると、残りの教材が間に合うかを時間で判定します。'
-            : '教材の登録と、動画の本数・問題数の記録が貯まると判定できます。'
-        }</div>
-      ` : `
-        <div class="budget-verdict ${timeBudget.onTrack ? 'ok' : 'ng'}">
-          <div class="budget-verdict-main">${timeBudget.onTrack
-            ? `このペースなら間に合う計算です（${formatMinutes(Math.abs(timeBudget.diffMin))} の余裕）`
-            : `このペースだと <strong>${formatMinutes(Math.abs(timeBudget.diffMin))} 足りません</strong>`}</div>
-          <div class="budget-verdict-sub">${esc(timeBudget.exam.name)} まで あと ${timeBudget.daysLeft}日${
-            timeBudget.onTrack ? '' : ` ／ 1日あたり <strong>${formatMinutes(Math.ceil(timeBudget.shortfallPerDay))}</strong> 上積みが必要`
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 平均休憩時間</div>
+          <div class="rhythm-stat-value">${breakStats.avgBreak}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+          <div class="rhythm-stat-change change-neutral">中央値 ${breakStats.medianBreak}分 / 最長 ${breakStats.longestBreak}分</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.clock} 1日あたりの休憩</div>
+          <div class="rhythm-stat-value">${breakStats.perDay}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+          <div class="rhythm-stat-change change-neutral">2セッション以上の${breakStats.activeDays}日が対象</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} 学習密度</div>
+          <div class="rhythm-stat-value">${breakStats.density !== null ? breakStats.density : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change ${breakStats.density >= 80 ? 'change-positive' : breakStats.density >= 65 ? 'change-neutral' : 'change-warning'}">机に向かった時間のうち実学習（セッション内 ${formatMinutes(breakStats.totalIntra)} ＋ セッション間 ${formatMinutes(breakStats.totalBreak)}）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} 休憩前の連続学習</div>
+          <div class="rhythm-stat-value">${formatMinutes(breakStats.avgRunBeforeBreak)}</div>
+          <div class="rhythm-stat-change change-neutral">この長さ続けたところで休憩している</div>
+        </div>
+      </div>
+
+      ${breakStats.bestBin ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div><strong>${breakStats.bestBin.label}</strong>の休憩をはさんだあとが、いちばん集中して戻れています（休憩明け 平均 ★${breakStats.bestBin.avgNextFocus.toFixed(1)} / ${breakStats.bestBin.focusCount}回）${
+            breakStats.worstBin && breakStats.worstBin.key !== breakStats.bestBin.key
+              ? `。いっぽう <strong>${breakStats.worstBin.label}</strong> のあとは ★${breakStats.worstBin.avgNextFocus.toFixed(1)} まで落ちています。`
+              : '。'
           }</div>
         </div>
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.book} 残りに要る時間</div>
-            <div class="rhythm-stat-value">${Math.round(timeBudget.requiredMin / 60)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">時間</span></div>
-            <div class="rhythm-stat-change change-neutral">動画 ${formatMinutes(timeBudget.videoMin)} ＋ QB ${formatMinutes(timeBudget.qbMin)}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.clock} 確保できそうな時間</div>
-            <div class="rhythm-stat-value">${Math.round(timeBudget.availableMin / 60)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">時間</span></div>
-            <div class="rhythm-stat-change change-neutral">直近${timeBudget.avgDays}日の平均 ${formatMinutes(Math.round(timeBudget.avgPerDay))}/日 × ${timeBudget.daysLeft}日</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.target} 必要な1日あたり</div>
-            <div class="rhythm-stat-value">${formatMinutes(Math.ceil(timeBudget.neededPerDay))}</div>
-            <div class="rhythm-stat-change ${timeBudget.onTrack ? 'change-positive' : 'change-warning'}">いまの平均は ${formatMinutes(Math.round(timeBudget.avgPerDay))}/日</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.chart} 到達率</div>
-            <div class="rhythm-stat-value">${timeBudget.coverage === null ? '--' : Math.round(timeBudget.coverage)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change change-neutral">${timeBudget.avgDays}日中 ${timeBudget.avgStudyDays}日が学習日</div>
-          </div>
-        </div>
-        <div class="break-note">1日平均はオフ日（バイト・旅行）も母数に含めた実績値です。足りない場合は、上積みするほかに「見る予定の講義動画の本数を減らす」「QBの目標周回を下げる」でも埋められます（どちらもインプット/アウトプット比率のカードと試験ペーサーの設定です）。</div>
-      `}
-    </div>
-
-    <!-- Section J: 目標達成率（曜日別） -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.112s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target}</div>
-        <div><div class="section-title">曜日別の目標達成率</div><div class="section-subtitle">直近${goalHistory.days}日（今日を除く）／目標はその日に有効だったものを使用</div></div>
-      </div>
-
-      ${!goalHistory.hasData ? `
-        <div class="data-collecting-msg">学習記録が貯まると、曜日ごとの目標と実績の差が出ます。</div>
       ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.check} 目標を達成した日</div>
-            <div class="rhythm-stat-value">${goalHistory.metDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
-            <div class="rhythm-stat-change change-neutral">学習しなかった日 ${goalHistory.offDays}日</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.chart} 達成率（全日）</div>
-            <div class="rhythm-stat-value">${goalHistory.rate !== null ? goalHistory.rate : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change change-neutral">目標の合計に対する実績の合計</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.target} 達成率（学習した日）</div>
-            <div class="rhythm-stat-value">${goalHistory.rateStudied !== null ? goalHistory.rateStudied : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change ${goalHistory.rateStudied >= 100 ? 'change-positive' : goalHistory.rateStudied >= 80 ? 'change-neutral' : 'change-warning'}">バイト・旅行の日に薄められない値</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.calendar} 学習した日</div>
-            <div class="rhythm-stat-value">${goalHistory.days - goalHistory.offDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
-            <div class="rhythm-stat-change change-neutral">残りはオフ日として扱う</div>
-          </div>
+        <div class="break-verdict break-verdict-muted">
+          <div>休憩明けのセッションで集中度（★）を記録すると、どの長さの休憩がいちばん効いているかを判定できます。（各区分3件以上で判定）</div>
         </div>
-
-        ${goalHistory.mismatched.length > 0 ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.warn}</span>
-            <div>${goalHistory.mismatched.map(m =>
-              `<strong>${m.label}曜</strong>は ${m.days}日中 ${m.offDays}日が学習なしで、達成率 ${m.rate}%。目標 ${formatMinutes(m.avgGoal)} は実態に合っていない可能性があります${m.medianStudied > 0 ? `（学習した日の中央値は ${formatMinutes(m.medianStudied)}）` : ''}。`
-            ).join('<br>')}</div>
-          </div>
-        ` : ''}
-
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-wide">
-            <div>曜日</div><div style="text-align:right">目標</div><div style="text-align:right">実績平均</div><div style="text-align:right">オフ日</div><div style="text-align:right">達成率</div>
-          </div>
-          ${goalHistory.dow.map(d => `
-            <div class="break-row break-row-wide ${d.rate !== null && d.rate >= 100 ? 'is-best' : ''}">
-              <div class="break-row-label">${d.label}曜</div>
-              <div class="break-row-num">${d.avgGoal > 0 ? formatMinutes(d.avgGoal) : '<span style="color:var(--color-text-tertiary)">なし</span>'}</div>
-              <div class="break-row-num">${formatMinutes(d.avgActual)}</div>
-              <div class="break-row-num">${d.offDays}/${d.days}</div>
-              <div class="break-row-num">${d.rate !== null ? d.rate + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="break-note">実績は学習ログから、目標は「その日の上書き→保存済みスナップショット→<strong>その日に有効だった曜日別テンプレート</strong>」の順に引いています。目標を変えた日より前は、それまでの目標で評価します（設定画面で「さかのぼって適用」にした場合を除く）。ただし目標の履歴を持ち始める前の期間は、いちばん古い記録の目標で評価しています。</div>
       `}
-    </div>
-    ${insightGroupCloseHTML}
 
-    ${insightGroupOpenHTML('qb', '演習・QB分析', '正答率、解くスピード、解き直しの間隔、教材の消化バランス', insightIcons.target, 'var(--color-accent-green)')}
-    <!-- Section D: QB正答率と弱点科目 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target || insightIcons.focus}</div>
-        <div><div class="section-title">QB正答率と弱点科目</div><div class="section-subtitle">全周回の累積から算出（期間フィルタの影響を受けません）</div></div>
-      </div>
-
-      ${!hasAccData ? `
-        <div class="data-collecting-msg">
-          教材進捗トラッカーで各周回の「正答」数を入力すると、ここに弱点科目が表示されます。
-          <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
+      <div class="break-table">
+        <div class="break-row break-row-head">
+          <div>休憩の長さ</div><div>回数の分布</div><div style="text-align:right">回数</div><div style="text-align:right">休憩明け集中</div><div style="text-align:right">次の学習時間</div>
         </div>
-      ` : `
-        <div class="acc-summary-grid">
-          <div class="acc-summary-item">
-            <div class="acc-summary-label">総解答数</div>
-            <div class="acc-summary-value">${acc.totalDone.toLocaleString()}<span class="acc-unit">問</span></div>
-          </div>
-          <div class="acc-summary-item">
-            <div class="acc-summary-label">総正答数</div>
-            <div class="acc-summary-value">${acc.totalCorrect.toLocaleString()}<span class="acc-unit">問</span></div>
-          </div>
-          <div class="acc-summary-item">
-            <div class="acc-summary-label">全体正答率</div>
-            <div class="acc-summary-value" style="color:${accColor(acc.totalAcc || 0)}">${acc.totalAcc !== null ? acc.totalAcc.toFixed(1) : '-'}<span class="acc-unit">%</span></div>
-          </div>
-          <div class="acc-summary-item">
-            <div class="acc-summary-label">分析対象</div>
-            <div class="acc-summary-value">${acc.ranked.length}<span class="acc-unit">科目</span></div>
-          </div>
-        </div>
-
-        ${acc.unfilledRounds > 0 ? `
-          <div class="acc-warn-box">
-            ${IC.warn} <strong>正答数が未入力の周回が ${acc.unfilledRounds} 件</strong>（計 ${acc.unfilledDone.toLocaleString()}問）あり、集計から除外しています。
-            <div class="acc-warn-sub">対象: ${acc.unfilledSubjects.slice(0, 6).join('、')}${acc.unfilledSubjects.length > 6 ? ` 他${acc.unfilledSubjects.length - 6}科目` : ''}</div>
-            <div style="margin-top:8px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーで入力する →</a></div>
-          </div>
-        ` : ''}
-
-        ${acc.ranked.length > 0 ? `
-          <div class="acc-rank-head">正答率の低い順（${ACC_MIN_SAMPLE}問以上を解いた科目）</div>
-          <div class="acc-rank-list">
-            ${acc.ranked.map(s => `
-              <div class="acc-rank-row">
-                <div class="acc-rank-name" title="${s.name}">${s.name}</div>
-                <div class="acc-rank-bar"><div style="width:${Math.max(2, s.acc)}%;background:${accColor(s.acc)}"></div></div>
-                <div class="acc-rank-pct" style="color:${accColor(s.acc)}">${s.acc.toFixed(0)}%</div>
-                <div class="acc-rank-n">${s.correct}/${s.done}</div>
-              </div>
-            `).join('')}
-          </div>
-        ` : `<div class="data-collecting-msg">${ACC_MIN_SAMPLE}問以上を解いた科目がまだありません。</div>`}
-
-        ${acc.thin.length > 0 ? `
-          <div class="acc-thin-note">データ不足（${ACC_MIN_SAMPLE}問未満のため順位づけから除外）: ${acc.thin.map(s => `${s.name}(${s.done}問)`).join('、')}</div>
-        ` : ''}
-      `}
-    </div>
-
-    <!-- Section E: 投下時間 × 正答率 -->
-    ${scatterPoints.length >= 3 ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.115s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.trend}</div>
-        <div><div class="section-title">投下時間 × 正答率</div><div class="section-subtitle">時間をかけた分だけ伸びているかを確認する</div></div>
-      </div>
-      <div class="acc-scatter-wrap"><canvas id="insightAccScatter"></canvas></div>
-      <div class="acc-quad-legend">
-        <span><i style="background:#10b981"></i>左上: 短時間で得点源</span>
-        <span><i style="background:#3b82f6"></i>右上: 時間なりに伸びている</span>
-        <span><i style="background:#64748b"></i>左下: これから伸ばす余地</span>
-        <span><i style="background:#ef4444"></i>右下: 時間の割に伸びていない</span>
-      </div>
-      ${reviewMethod.length > 0 ? `
-        <div class="acc-review-box">
-          <div class="acc-review-head">${IC.warn} 学習方法の見直し候補（時間・正答率とも中央値と比較）</div>
-          ${reviewMethod.slice(0, 5).map(p => `
-            <div class="acc-review-row">
-              <span class="acc-review-name">${p.name}</span>
-              <span class="acc-review-stat">${p.x.toFixed(1)}h 投下 / 正答率 <strong style="color:${accColor(p.y)}">${p.y.toFixed(0)}%</strong></span>
-            </div>
-          `).join('')}
-          <div class="acc-review-note">中央値: ${medHours.toFixed(1)}h ・ 正答率 ${medAcc.toFixed(0)}%</div>
-        </div>
-      ` : `<div class="acc-review-note" style="margin-top:12px">時間の割に正答率が低い科目はありません。</div>`}
-    </div>
-    ` : ''}
-
-    <!-- Section F: 周回別の伸び -->
-    ${acc.rounds.length > 0 ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.118s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.summary}</div>
-        <div><div class="section-title">周回別の伸び</div><div class="section-subtitle">解き直すたびにどれだけ上がっているか</div></div>
-      </div>
-      <div class="round-tile-row">
-        ${acc.rounds.map((r, i) => {
-          const prev = i > 0 ? acc.rounds[i-1] : null;
-          const delta = prev ? r.acc - prev.acc : null;
-          return `<div class="round-tile">
-            <div class="round-tile-label">${r.round}周目</div>
-            <div class="round-tile-value" style="color:${accColor(r.acc)}">${r.acc.toFixed(0)}<span class="acc-unit">%</span></div>
-            <div class="round-tile-sub">${r.correct.toLocaleString()}/${r.done.toLocaleString()}問 ・ ${r.subjects}科目</div>
-            ${delta !== null ? `<div class="round-tile-delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)}pt</div>` : '<div class="round-tile-delta neutral">基準</div>'}
+        ${breakStats.bins.map(b => {
+          const isBest = breakStats.bestBin && b.key === breakStats.bestBin.key;
+          return `<div class="break-row ${isBest ? 'is-best' : ''}">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-bar-wrap"><div class="break-bar-fill" style="width:${b.share}%"></div></div>
+            <div class="break-row-num">${b.count}回<span class="break-row-share">${b.share}%</span></div>
+            <div class="break-row-num">${b.avgNextFocus !== null ? '★' + b.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            <div class="break-row-num">${b.avgNextDur !== null ? formatMinutes(b.avgNextDur) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
           </div>`;
         }).join('')}
       </div>
-      ${roundGains.length > 0 ? `
-        <div class="acc-rank-head" style="margin-top:16px">科目別の伸び（2周目以降の記録がある科目）</div>
-        <div class="gain-list">
-          ${roundGains.map(g => `
-            <div class="gain-row">
-              <span class="gain-name">${g.name}</span>
-              <span class="gain-track">
-                <span style="color:${accColor(g.from.acc)}">${g.from.acc.toFixed(0)}%</span>
-                <span class="gain-arrow">→</span>
-                <span style="color:${accColor(g.to.acc)}">${g.to.acc.toFixed(0)}%</span>
-              </span>
-              <span class="gain-delta ${g.gain >= 0 ? 'up' : 'down'}">${g.gain >= 0 ? '+' : ''}${g.gain.toFixed(1)}pt</span>
+
+      <div class="break-subtitle">続けて勉強した時間 × 休憩明けの集中度</div>
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-run">
+          <div>連続学習</div><div style="text-align:right">回数</div><div style="text-align:right">平均休憩</div><div style="text-align:right">休憩明け集中</div>
+        </div>
+        ${breakStats.runBins.map(r => `
+          <div class="break-row break-row-run">
+            <div class="break-row-label">${r.label}</div>
+            <div class="break-row-num">${r.count}回</div>
+            <div class="break-row-num">${r.avgBreak !== null ? r.avgBreak + '分' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            <div class="break-row-num">${r.avgNextFocus !== null ? '★' + r.avgNextFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-note">セッションを記録し忘れた時間は休憩として数えられます。タイマーの停止／再開が実態に近いほど精度が上がります。</div>
+    `}
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
+
+// 目標と実績
+function insightsGoalHTML(d) {
+  const { goalHistory, timeBudget } = d;
+  return `
+  ${insightGroupOpenHTML('goal', '目標と実績', '曜日ごとに目標が実態に合っているか', insightIcons.target, 'var(--color-accent-green)')}
+  <!-- Section N: 試験までの時間の逆算 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.111s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${IC.timer}</div>
+      <div><div class="section-title">試験までに間に合うか</div><div class="section-subtitle">残りの教材に要る時間と、確保できそうな時間を比べる</div></div>
+    </div>
+    ${!timeBudget.hasData ? `
+      <div class="data-collecting-msg">${
+        timeBudget.reason === 'no-exam'
+          ? 'カウントダウンに試験日を登録すると、残りの教材が間に合うかを時間で判定します。'
+          : '教材の登録と、動画の本数・問題数の記録が貯まると判定できます。'
+      }</div>
+    ` : `
+      <div class="budget-verdict ${timeBudget.onTrack ? 'ok' : 'ng'}">
+        <div class="budget-verdict-main">${timeBudget.onTrack
+          ? `このペースなら間に合う計算です（${formatMinutes(Math.abs(timeBudget.diffMin))} の余裕）`
+          : `このペースだと <strong>${formatMinutes(Math.abs(timeBudget.diffMin))} 足りません</strong>`}</div>
+        <div class="budget-verdict-sub">${esc(timeBudget.exam.name)} まで あと ${timeBudget.daysLeft}日${
+          timeBudget.onTrack ? '' : ` ／ 1日あたり <strong>${formatMinutes(Math.ceil(timeBudget.shortfallPerDay))}</strong> 上積みが必要`
+        }</div>
+      </div>
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} 残りに要る時間</div>
+          <div class="rhythm-stat-value">${Math.round(timeBudget.requiredMin / 60)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">時間</span></div>
+          <div class="rhythm-stat-change change-neutral">動画 ${formatMinutes(timeBudget.videoMin)} ＋ QB ${formatMinutes(timeBudget.qbMin)}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.clock} 確保できそうな時間</div>
+          <div class="rhythm-stat-value">${Math.round(timeBudget.availableMin / 60)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">時間</span></div>
+          <div class="rhythm-stat-change change-neutral">直近${timeBudget.avgDays}日の平均 ${formatMinutes(Math.round(timeBudget.avgPerDay))}/日 × ${timeBudget.daysLeft}日</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} 必要な1日あたり</div>
+          <div class="rhythm-stat-value">${formatMinutes(Math.ceil(timeBudget.neededPerDay))}</div>
+          <div class="rhythm-stat-change ${timeBudget.onTrack ? 'change-positive' : 'change-warning'}">いまの平均は ${formatMinutes(Math.round(timeBudget.avgPerDay))}/日</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.chart} 到達率</div>
+          <div class="rhythm-stat-value">${timeBudget.coverage === null ? '--' : Math.round(timeBudget.coverage)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change change-neutral">${timeBudget.avgDays}日中 ${timeBudget.avgStudyDays}日が学習日</div>
+        </div>
+      </div>
+      <div class="break-note">1日平均はオフ日（バイト・旅行）も母数に含めた実績値です。足りない場合は、上積みするほかに「見る予定の講義動画の本数を減らす」「QBの目標周回を下げる」でも埋められます（どちらもインプット/アウトプット比率のカードと試験ペーサーの設定です）。</div>
+    `}
+  </div>
+
+  <!-- Section J: 目標達成率（曜日別） -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.112s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target}</div>
+      <div><div class="section-title">曜日別の目標達成率</div><div class="section-subtitle">直近${goalHistory.days}日（今日を除く）／目標はその日に有効だったものを使用</div></div>
+    </div>
+
+    ${!goalHistory.hasData ? `
+      <div class="data-collecting-msg">学習記録が貯まると、曜日ごとの目標と実績の差が出ます。</div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.check} 目標を達成した日</div>
+          <div class="rhythm-stat-value">${goalHistory.metDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
+          <div class="rhythm-stat-change change-neutral">学習しなかった日 ${goalHistory.offDays}日</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.chart} 達成率（全日）</div>
+          <div class="rhythm-stat-value">${goalHistory.rate !== null ? goalHistory.rate : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change change-neutral">目標の合計に対する実績の合計</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} 達成率（学習した日）</div>
+          <div class="rhythm-stat-value">${goalHistory.rateStudied !== null ? goalHistory.rateStudied : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change ${goalHistory.rateStudied >= 100 ? 'change-positive' : goalHistory.rateStudied >= 80 ? 'change-neutral' : 'change-warning'}">バイト・旅行の日に薄められない値</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.calendar} 学習した日</div>
+          <div class="rhythm-stat-value">${goalHistory.days - goalHistory.offDays}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">/${goalHistory.days}日</span></div>
+          <div class="rhythm-stat-change change-neutral">残りはオフ日として扱う</div>
+        </div>
+      </div>
+
+      ${goalHistory.mismatched.length > 0 ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.warn}</span>
+          <div>${goalHistory.mismatched.map(m =>
+            `<strong>${m.label}曜</strong>は ${m.days}日中 ${m.offDays}日が学習なしで、達成率 ${m.rate}%。目標 ${formatMinutes(m.avgGoal)} は実態に合っていない可能性があります${m.medianStudied > 0 ? `（学習した日の中央値は ${formatMinutes(m.medianStudied)}）` : ''}。`
+          ).join('<br>')}</div>
+        </div>
+      ` : ''}
+
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-wide">
+          <div>曜日</div><div style="text-align:right">目標</div><div style="text-align:right">実績平均</div><div style="text-align:right">オフ日</div><div style="text-align:right">達成率</div>
+        </div>
+        ${goalHistory.dow.map(d => `
+          <div class="break-row break-row-wide ${d.rate !== null && d.rate >= 100 ? 'is-best' : ''}">
+            <div class="break-row-label">${d.label}曜</div>
+            <div class="break-row-num">${d.avgGoal > 0 ? formatMinutes(d.avgGoal) : '<span style="color:var(--color-text-tertiary)">なし</span>'}</div>
+            <div class="break-row-num">${formatMinutes(d.avgActual)}</div>
+            <div class="break-row-num">${d.offDays}/${d.days}</div>
+            <div class="break-row-num">${d.rate !== null ? d.rate + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-note">実績は学習ログから、目標は「その日の上書き→保存済みスナップショット→<strong>その日に有効だった曜日別テンプレート</strong>」の順に引いています。目標を変えた日より前は、それまでの目標で評価します（設定画面で「さかのぼって適用」にした場合を除く）。ただし目標の履歴を持ち始める前の期間は、いちばん古い記録の目標で評価しています。</div>
+    `}
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
+
+// 演習・QB分析
+// 演習・QB分析。カードが11枚あるので、内容のまとまりで4つに分けている。
+function insightsQbHTML(d) {
+  return `
+  ${insightGroupOpenHTML('qb', '演習・QB分析', '正答率、解くスピード、解き直しの間隔、教材の消化バランス', insightIcons.target, 'var(--color-accent-green)')}
+  ${insightsQbAccuracyHTML(d)}
+  ${insightsQbPipelineHTML(d)}
+  ${insightsQbProgressHTML(d)}
+  ${insightsQbQualityHTML(d)}
+  ${insightGroupCloseHTML}
+`;
+}
+
+// 正答率の現在地：弱点科目、投下時間との関係、周回ごとの伸び
+function insightsQbAccuracyHTML(d) {
+  const { acc, hasAccData, medAcc, medHours, reviewMethod, roundGains, scatterPoints } = d;
+  return `
+  <!-- Section D: QB正答率と弱点科目 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.target || insightIcons.focus}</div>
+      <div><div class="section-title">QB正答率と弱点科目</div><div class="section-subtitle">全周回の累積から算出（期間フィルタの影響を受けません）</div></div>
+    </div>
+
+    ${!hasAccData ? `
+      <div class="data-collecting-msg">
+        教材進捗トラッカーで各周回の「正答」数を入力すると、ここに弱点科目が表示されます。
+        <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
+      </div>
+    ` : `
+      <div class="acc-summary-grid">
+        <div class="acc-summary-item">
+          <div class="acc-summary-label">総解答数</div>
+          <div class="acc-summary-value">${acc.totalDone.toLocaleString()}<span class="acc-unit">問</span></div>
+        </div>
+        <div class="acc-summary-item">
+          <div class="acc-summary-label">総正答数</div>
+          <div class="acc-summary-value">${acc.totalCorrect.toLocaleString()}<span class="acc-unit">問</span></div>
+        </div>
+        <div class="acc-summary-item">
+          <div class="acc-summary-label">全体正答率</div>
+          <div class="acc-summary-value" style="color:${accColor(acc.totalAcc || 0)}">${acc.totalAcc !== null ? acc.totalAcc.toFixed(1) : '-'}<span class="acc-unit">%</span></div>
+        </div>
+        <div class="acc-summary-item">
+          <div class="acc-summary-label">分析対象</div>
+          <div class="acc-summary-value">${acc.ranked.length}<span class="acc-unit">科目</span></div>
+        </div>
+      </div>
+
+      ${acc.unfilledRounds > 0 ? `
+        <div class="acc-warn-box">
+          ${IC.warn} <strong>正答数が未入力の周回が ${acc.unfilledRounds} 件</strong>（計 ${acc.unfilledDone.toLocaleString()}問）あり、集計から除外しています。
+          <div class="acc-warn-sub">対象: ${acc.unfilledSubjects.slice(0, 6).join('、')}${acc.unfilledSubjects.length > 6 ? ` 他${acc.unfilledSubjects.length - 6}科目` : ''}</div>
+          <div style="margin-top:8px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーで入力する →</a></div>
+        </div>
+      ` : ''}
+
+      ${acc.ranked.length > 0 ? `
+        <div class="acc-rank-head">正答率の低い順（${ACC_MIN_SAMPLE}問以上を解いた科目）</div>
+        <div class="acc-rank-list">
+          ${acc.ranked.map(s => `
+            <div class="acc-rank-row">
+              <div class="acc-rank-name" title="${s.name}">${s.name}</div>
+              <div class="acc-rank-bar"><div style="width:${Math.max(2, s.acc)}%;background:${accColor(s.acc)}"></div></div>
+              <div class="acc-rank-pct" style="color:${accColor(s.acc)}">${s.acc.toFixed(0)}%</div>
+              <div class="acc-rank-n">${s.correct}/${s.done}</div>
             </div>
           `).join('')}
         </div>
-      ` : `<div class="acc-thin-note">同じ科目で2周目以降を記録すると、ここに伸びが表示されます。</div>`}
+      ` : `<div class="data-collecting-msg">${ACC_MIN_SAMPLE}問以上を解いた科目がまだありません。</div>`}
+
+      ${acc.thin.length > 0 ? `
+        <div class="acc-thin-note">データ不足（${ACC_MIN_SAMPLE}問未満のため順位づけから除外）: ${acc.thin.map(s => `${s.name}(${s.done}問)`).join('、')}</div>
+      ` : ''}
+    `}
+  </div>
+
+  <!-- Section E: 投下時間 × 正答率 -->
+  ${scatterPoints.length >= 3 ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.115s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.trend}</div>
+      <div><div class="section-title">投下時間 × 正答率</div><div class="section-subtitle">時間をかけた分だけ伸びているかを確認する</div></div>
     </div>
-    ` : ''}
-
-    <!-- Section G: 学習パイプラインと未回収在庫 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.list}</div>
-        <div><div class="section-title">学習パイプライン</div><div class="section-subtitle">講義動画からQBまで、科目がどこまで進んでいるか</div></div>
+    <div class="acc-scatter-wrap"><canvas id="insightAccScatter"></canvas></div>
+    <div class="acc-quad-legend">
+      <span><i style="background:#10b981"></i>左上: 短時間で得点源</span>
+      <span><i style="background:#3b82f6"></i>右上: 時間なりに伸びている</span>
+      <span><i style="background:#64748b"></i>左下: これから伸ばす余地</span>
+      <span><i style="background:#ef4444"></i>右下: 時間の割に伸びていない</span>
+    </div>
+    ${reviewMethod.length > 0 ? `
+      <div class="acc-review-box">
+        <div class="acc-review-head">${IC.warn} 学習方法の見直し候補（時間・正答率とも中央値と比較）</div>
+        ${reviewMethod.slice(0, 5).map(p => `
+          <div class="acc-review-row">
+            <span class="acc-review-name">${p.name}</span>
+            <span class="acc-review-stat">${p.x.toFixed(1)}h 投下 / 正答率 <strong style="color:${accColor(p.y)}">${p.y.toFixed(0)}%</strong></span>
+          </div>
+        `).join('')}
+        <div class="acc-review-note">中央値: ${medHours.toFixed(1)}h ・ 正答率 ${medAcc.toFixed(0)}%</div>
       </div>
+    ` : `<div class="acc-review-note" style="margin-top:12px">時間の割に正答率が低い科目はありません。</div>`}
+  </div>
+  ` : ''}
 
-      ${pipeline.total === 0 ? `
-        <div class="data-collecting-msg">
-          教材進捗トラッカーで動画の本数とQBの問題数を登録すると、ここにパイプラインが表示されます。
-          <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
-        </div>
-      ` : `
-        <div class="funnel-caption">登録済み ${pipeline.total} 科目が、いまどの段階にあるか</div>
-        <div class="stage-stack">
-          ${pipeline.stages.filter(s => s.count > 0).map(s =>
-            `<div class="stage-seg" style="width:${(s.count / pipeline.total) * 100}%;background:${s.color}"
-                  title="${s.label}: ${s.count}科目"></div>`
-          ).join('')}
-        </div>
-        <div class="funnel-list">
-          ${pipeline.stages.map(s => {
-            const pct = pipeline.total > 0 ? (s.count / pipeline.total) * 100 : 0;
-            return `<div class="funnel-row ${s.count === 0 ? 'is-empty' : ''}">
-              <div class="funnel-label"><i class="stage-dot" style="background:${s.color}"></i>${s.label}</div>
-              <div class="funnel-bar"><div style="width:${s.count > 0 ? Math.max(1.5, pct) : 0}%;background:${s.color}"></div></div>
-              <div class="funnel-count">${s.count}<span class="funnel-of">科目</span></div>
-              <div class="funnel-drop">${pct > 0 ? pct.toFixed(0) + '%' : ''}</div>
-            </div>`;
-          }).join('')}
-        </div>
-        ${pipeline.awaitingQB > 0 ? `
-          <div class="funnel-highlight">
-            動画を進めたのに QB に<strong>まだ一度も</strong>入っていない科目が <strong>${pipeline.awaitingQB}</strong> 科目あります。
+  <!-- Section F: 周回別の伸び -->
+  ${acc.rounds.length > 0 ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.118s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.summary}</div>
+      <div><div class="section-title">周回別の伸び</div><div class="section-subtitle">解き直すたびにどれだけ上がっているか</div></div>
+    </div>
+    <div class="round-tile-row">
+      ${acc.rounds.map((r, i) => {
+        const prev = i > 0 ? acc.rounds[i-1] : null;
+        const delta = prev ? r.acc - prev.acc : null;
+        return `<div class="round-tile">
+          <div class="round-tile-label">${r.round}周目</div>
+          <div class="round-tile-value" style="color:${accColor(r.acc)}">${r.acc.toFixed(0)}<span class="acc-unit">%</span></div>
+          <div class="round-tile-sub">${r.correct.toLocaleString()}/${r.done.toLocaleString()}問 ・ ${r.subjects}科目</div>
+          ${delta !== null ? `<div class="round-tile-delta ${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)}pt</div>` : '<div class="round-tile-delta neutral">基準</div>'}
+        </div>`;
+      }).join('')}
+    </div>
+    ${roundGains.length > 0 ? `
+      <div class="acc-rank-head" style="margin-top:16px">科目別の伸び（2周目以降の記録がある科目）</div>
+      <div class="gain-list">
+        ${roundGains.map(g => `
+          <div class="gain-row">
+            <span class="gain-name">${g.name}</span>
+            <span class="gain-track">
+              <span style="color:${accColor(g.from.acc)}">${g.from.acc.toFixed(0)}%</span>
+              <span class="gain-arrow">→</span>
+              <span style="color:${accColor(g.to.acc)}">${g.to.acc.toFixed(0)}%</span>
+            </span>
+            <span class="gain-delta ${g.gain >= 0 ? 'up' : 'down'}">${g.gain >= 0 ? '+' : ''}${g.gain.toFixed(1)}pt</span>
           </div>
-        ` : ''}
+        `).join('')}
+      </div>
+    ` : `<div class="acc-thin-note">同じ科目で2周目以降を記録すると、ここに伸びが表示されます。</div>`}
+  </div>
+  ` : ''}
 
-        <div class="backlog-block">
-          <div class="backlog-head">
-            <span class="backlog-title">未回収の在庫</span>
-            <span class="backlog-sub">QB1周目が動画より${BACKLOG_MIN_GAP}pt以上遅れている科目（着手済みでも遅れていれば対象）</span>
-          </div>
-          ${backlog.length === 0 ? `
-            <div class="backlog-ok">${IC.check} 未回収の科目はありません。動画とQBのペースが揃っています。</div>
-          ` : `
-            <div class="backlog-summary">
-              <div class="backlog-stat">
-                <div class="backlog-stat-value" style="color:${backlog.length >= 5 ? '#ef4444' : '#f59e0b'}">${backlog.length}</div>
-                <div class="backlog-stat-label">消化待ちの科目</div>
-              </div>
-              <div class="backlog-stat">
-                <div class="backlog-stat-value">${oldestBacklog ? oldestBacklog.daysSince : '--'}<span class="acc-unit">${oldestBacklog ? '日前' : ''}</span></div>
-                <div class="backlog-stat-label">${oldestBacklog ? '最古: ' + oldestBacklog.name : '最終視聴日は記録待ち'}</div>
-              </div>
-              <div class="backlog-stat">
-                <div class="backlog-stat-value">${Math.round(backlog.reduce((s,b)=>s+b.gap,0)/backlog.length)}<span class="acc-unit">pt</span></div>
-                <div class="backlog-stat-label">平均ギャップ</div>
-              </div>
-            </div>
-            <div class="backlog-list">
-              ${backlog.map(b => `
-                <div class="backlog-row">
-                  <span class="backlog-name">${b.name}</span>
-                  <span class="backlog-track">
-                    <span class="backlog-vid">動画 ${b.videoPct.toFixed(0)}%</span>
-                    <span class="gain-arrow">→</span>
-                    <span class="backlog-qb">QB ${b.qb1Pct === null ? '未着手' : b.qb1Pct.toFixed(0) + '%'}</span>
-                  </span>
-                  <span class="backlog-gap" style="color:${b.gap >= 40 ? '#ef4444' : '#f59e0b'}">+${b.gap.toFixed(0)}pt</span>
-                  <span class="backlog-days">${b.daysSince !== null ? b.daysSince + '日前' : '—'}</span>
-                </div>
-              `).join('')}
-            </div>
-            <div class="backlog-note">
-              見た講義は、QBで回収するまでは資産ではなく負債です。古い順に潰していきましょう。
-              ${backlog.length > backlogDated.length ? `<br>※ ${backlog.length - backlogDated.length}科目は「講義動画」として記録した学習ログが無いため、経過日数を表示できません。` : ''}
-            </div>
-          `}
-        </div>
-      `}
+`;
+}
+
+// 教材の消化：パイプラインと未回収在庫、動画→QBのラグ、I/O比率
+function insightsQbPipelineHTML(d) {
+  const { acc, backlog, backlogDated, io, ioBaseline, ioCorrected, ioDiff, ioThin, ioVerdict,
+    oldestBacklog, pipeline, presetLabels, unitCost, videoLag } = d;
+  return `
+  <!-- Section G: 学習パイプラインと未回収在庫 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.list}</div>
+      <div><div class="section-title">学習パイプライン</div><div class="section-subtitle">講義動画からQBまで、科目がどこまで進んでいるか</div></div>
     </div>
 
-    <!-- Section S: 動画→QBのラグ -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.122s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.trend}</div>
-        <div><div class="section-title">動画からQBまでのラグ</div><div class="section-subtitle">講義動画を見てから、その科目の問題演習に入るまで何日かかっているか</div></div>
+    ${pipeline.total === 0 ? `
+      <div class="data-collecting-msg">
+        教材進捗トラッカーで動画の本数とQBの問題数を登録すると、ここにパイプラインが表示されます。
+        <div style="margin-top:10px"><a href="/qb" data-route="/qb" class="acc-link">教材進捗トラッカーを開く →</a></div>
       </div>
-
-      ${!videoLag.hasData ? `
-        <div class="data-collecting-msg">
-          講義動画と問題演習の記録が同じ科目で貯まると、回収までの日数を測れます。<br>
-          現在 動画の日 ${videoLag.count + videoLag.pendingCount}件（うち回収済み ${videoLag.count}件）
+    ` : `
+      <div class="funnel-caption">登録済み ${pipeline.total} 科目が、いまどの段階にあるか</div>
+      <div class="stage-stack">
+        ${pipeline.stages.filter(s => s.count > 0).map(s =>
+          `<div class="stage-seg" style="width:${(s.count / pipeline.total) * 100}%;background:${s.color}"
+                title="${s.label}: ${s.count}科目"></div>`
+        ).join('')}
+      </div>
+      <div class="funnel-list">
+        ${pipeline.stages.map(s => {
+          const pct = pipeline.total > 0 ? (s.count / pipeline.total) * 100 : 0;
+          return `<div class="funnel-row ${s.count === 0 ? 'is-empty' : ''}">
+            <div class="funnel-label"><i class="stage-dot" style="background:${s.color}"></i>${s.label}</div>
+            <div class="funnel-bar"><div style="width:${s.count > 0 ? Math.max(1.5, pct) : 0}%;background:${s.color}"></div></div>
+            <div class="funnel-count">${s.count}<span class="funnel-of">科目</span></div>
+            <div class="funnel-drop">${pct > 0 ? pct.toFixed(0) + '%' : ''}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      ${pipeline.awaitingQB > 0 ? `
+        <div class="funnel-highlight">
+          動画を進めたのに QB に<strong>まだ一度も</strong>入っていない科目が <strong>${pipeline.awaitingQB}</strong> 科目あります。
         </div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.calendar} 回収までの日数</div>
-            <div class="rhythm-stat-value">${videoLag.medianLag}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
-            <div class="rhythm-stat-change change-neutral">中央値（対象 ${videoLag.count}件）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.check} 同日に回収した割合</div>
-            <div class="rhythm-stat-value">${videoLag.sameDayRate}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change ${videoLag.sameDayRate >= 50 ? 'change-positive' : 'change-neutral'}">見たその日にQBまで通した日</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.warn} まだ回収していない</div>
-            <div class="rhythm-stat-value">${videoLag.pendingCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日ぶん</span></div>
-            <div class="rhythm-stat-change ${videoLag.pendingCount > 0 ? 'change-warning' : 'change-positive'}">${videoLag.oldestPending !== null ? `最古 ${videoLag.oldestPending}日前` : '滞留なし'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高いラグ</div>
-            <div class="rhythm-stat-value">${videoLag.bestBin ? videoLag.bestBin.label : '--'}</div>
-            <div class="rhythm-stat-change ${videoLag.bestBin ? 'change-positive' : 'change-neutral'}">${videoLag.bestBin ? `正答率 ${videoLag.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
-          </div>
+      ` : ''}
+
+      <div class="backlog-block">
+        <div class="backlog-head">
+          <span class="backlog-title">未回収の在庫</span>
+          <span class="backlog-sub">QB1周目が動画より${BACKLOG_MIN_GAP}pt以上遅れている科目（着手済みでも遅れていれば対象）</span>
         </div>
-
-        ${videoLag.bestBin && videoLag.worstBin && videoLag.bestBin.label !== videoLag.worstBin.label ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div>動画から <strong>${videoLag.bestBin.label}</strong> でQBに入ったときの正答率が ${videoLag.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${videoLag.worstBin.label}</strong> では ${videoLag.worstBin.accuracy.toFixed(0)}% でした（差 ${(videoLag.bestBin.accuracy - videoLag.worstBin.accuracy).toFixed(0)}pt）。</div>
-          </div>
-        ` : ''}
-
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-run">
-            <div>回収までの日数</div><div style="text-align:right">件数</div><div style="text-align:right">割合</div><div style="text-align:right">正答率</div>
-          </div>
-          ${videoLag.bins.map(b => `
-            <div class="break-row break-row-run ${videoLag.bestBin && b.label === videoLag.bestBin.label ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-row-num">${b.count}件</div>
-              <div class="break-row-num">${b.share}%</div>
-              <div class="break-row-num">${b.accuracy !== null && b.reliable ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+        ${backlog.length === 0 ? `
+          <div class="backlog-ok">${IC.check} 未回収の科目はありません。動画とQBのペースが揃っています。</div>
+        ` : `
+          <div class="backlog-summary">
+            <div class="backlog-stat">
+              <div class="backlog-stat-value" style="color:${backlog.length >= 5 ? '#ef4444' : '#f59e0b'}">${backlog.length}</div>
+              <div class="backlog-stat-label">消化待ちの科目</div>
             </div>
-          `).join('')}
-        </div>
-
-        ${videoLag.pending.length > 0 ? `
-          <div class="break-subtitle">まだQBに入っていない動画</div>
-          <div class="break-table">
-            ${[...videoLag.pending].sort((a,b)=>b.ageDays-a.ageDays).slice(0, 8).map(x => `
-              <div class="break-row break-row-run">
-                <div class="break-row-label">${x.subject}</div>
-                <div class="break-row-num">${x.videoDay}</div>
-                <div class="break-row-num"></div>
-                <div class="break-row-num" style="color:${x.ageDays >= 30 ? '#ef4444' : '#f59e0b'}">${x.ageDays}日前</div>
+            <div class="backlog-stat">
+              <div class="backlog-stat-value">${oldestBacklog ? oldestBacklog.daysSince : '--'}<span class="acc-unit">${oldestBacklog ? '日前' : ''}</span></div>
+              <div class="backlog-stat-label">${oldestBacklog ? '最古: ' + oldestBacklog.name : '最終視聴日は記録待ち'}</div>
+            </div>
+            <div class="backlog-stat">
+              <div class="backlog-stat-value">${Math.round(backlog.reduce((s,b)=>s+b.gap,0)/backlog.length)}<span class="acc-unit">pt</span></div>
+              <div class="backlog-stat-label">平均ギャップ</div>
+            </div>
+          </div>
+          <div class="backlog-list">
+            ${backlog.map(b => `
+              <div class="backlog-row">
+                <span class="backlog-name">${b.name}</span>
+                <span class="backlog-track">
+                  <span class="backlog-vid">動画 ${b.videoPct.toFixed(0)}%</span>
+                  <span class="gain-arrow">→</span>
+                  <span class="backlog-qb">QB ${b.qb1Pct === null ? '未着手' : b.qb1Pct.toFixed(0) + '%'}</span>
+                </span>
+                <span class="backlog-gap" style="color:${b.gap >= 40 ? '#ef4444' : '#f59e0b'}">+${b.gap.toFixed(0)}pt</span>
+                <span class="backlog-days">${b.daysSince !== null ? b.daysSince + '日前' : '—'}</span>
               </div>
             `).join('')}
           </div>
-          ${videoLag.pending.length > 8 ? `<div class="break-note">他 ${videoLag.pending.length - 8}件</div>` : ''}
-        ` : ''}
-
-        <div class="break-note">「動画を見た日」ごとに、その科目のQBを次にやった日を探して日数を出しています。1つのQBの日が複数の動画の日を受け止めることがあるため、正答率の集計では同じ科目・同じ日を二重に数えないようにしています。学習パイプラインの「未回収」が溜まっている量を見るのに対し、こちらは回収の速さを見る指標です。</div>
-      `}
-    </div>
-
-    <!-- Section H: インプット / アウトプット比率 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.125s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.summary}</div>
-        <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">教材の構成から引いた基準線と比べる（${presetLabels[insightFilters.preset]}）</div></div>
-      </div>
-
-      ${ioBaseline.videoTotal > 0 ? `
-        ${(() => {
-          const skip = new Set(getIOVideoSkip());
-          const withVideo = (ioBaseline.videoRows || []).filter(r => (r.videoTotal || 0) > 0);
-          if (!withVideo.length) return '';
-          const registered = withVideo.reduce((s, r) => s + r.videoTotal, 0);
-          return `
-            <div class="io-plan-row">
-              <span class="io-plan-label">見る予定の講義動画</span>
-              <input type="number" class="io-plan-input" id="io-video-plan" min="1" max="${ioBaseline.videoTotal}" value="${ioBaseline.videoPlanned}">
-              <span class="io-plan-sub">本 / 対象 ${ioBaseline.videoTotal}本（登録 ${registered}本${ioBaseline.skippedVideoTotal > 0 ? ` − 見ない科目 ${ioBaseline.skippedVideoTotal}本` : ''}）</span>
-              ${getIOVideoPlan() !== null ? '<button class="filter-reset-btn" id="io-video-plan-reset">本数の指定を消す</button>' : ''}
-            </div>
-            <div class="io-skip-row">
-              <span class="io-plan-label">動画を見ない科目</span>
-              <div class="io-skip-chips" id="io-video-skip-chips">
-                ${withVideo.map(r => `<button class="io-skip-chip ${skip.has(r.id) ? 'off' : ''}" data-subject="${r.id}" title="${skip.has(r.id) ? 'クリックで「見る」に戻す' : 'クリックで「見ない」にする'}">${r.name}<span class="io-skip-count">${r.videoTotal}本</span></button>`).join('')}
-              </div>
-              ${skip.size ? '<button class="filter-reset-btn" id="io-video-skip-reset">全科目見る前提に戻す</button>' : ''}
-            </div>
-            <div class="io-skip-note">灰色にした科目の動画は、基準線と「試験までに間に合うか」の必要時間から外れます。QBの問題数はそのまま残ります（動画を見ないだけで問題は解くため）。</div>
-          `;
-        })()}
-      ` : ''}
-
-      ${!io.hasData ? `
-        <div class="data-collecting-msg">
-          学習を記録するときに「活動の種類」を選ぶと、講義動画と問題演習の時間配分がここに出ます。
-          ${io.unclassified > 0 ? `<div class="acc-thin-note" style="margin-top:8px">この期間には活動が未分類のログが ${formatMinutes(io.unclassified)} 分あります（比率の計算から除外）。</div>` : ''}
-        </div>
-      ` : `
-        ${ioVerdict ? `
-          <div class="io-verdict-line">
-            <span class="io-verdict-big ${ioVerdict.cls}">${ioThin ? '判定不可' : (ioDiff >= 0 ? '+' : '') + ioDiff.toFixed(0) + 'pt'}</span>
-            <span class="io-verdict-cap">${ioVerdict.txt}</span>
-          </div>
-        ` : `
-          <div class="io-ratio-line">
-            <span class="io-ratio-big">${io.ratio === null ? '—' : '1 : ' + io.ratio.toFixed(1)}</span>
-            <span class="io-ratio-cap">講義動画 : 問題演習</span>
+          <div class="backlog-note">
+            見た講義は、QBで回収するまでは資産ではなく負債です。古い順に潰していきましょう。
+            ${backlog.length > backlogDated.length ? `<br>※ ${backlog.length - backlogDated.length}科目は「講義動画」として記録した学習ログが無いため、経過日数を表示できません。` : ''}
           </div>
         `}
+      </div>
+    `}
+  </div>
 
-        ${(() => {
-          const rawShare = io.core > 0 ? (io.video / io.core) * 100 : 0;
-          const share = ioCorrected !== null ? ioCorrected : rawShare;
-          const seg = (pct, cls) => `<div class="io-seg ${cls}" style="width:${pct}%">${pct >= 14 ? pct.toFixed(0) + '%' : ''}</div>`;
-          return `
-            <div class="io-compare">
-              <div class="io-cmp-head">
-                <span class="io-cmp-label">${ioCorrected !== null ? '教材基準で補正した配分' : '時間の配分'}</span>
-                <span class="io-cmp-sub">実際の時間 動画 ${formatMinutes(io.video)} / 問題演習 ${formatMinutes(io.qb)}</span>
-              </div>
-              <div class="io-cmp-bar">
-                ${seg(share, 'io-video')}${seg(100 - share, 'io-qb')}
-                ${ioCorrected !== null ? '<div class="io-cmp-center"></div>' : ''}
-              </div>
-              ${ioCorrected !== null ? `
-                <div class="io-scale">
-                  <span>← 講義動画に偏り</span>
-                  <span class="io-scale-mid">均衡 50%</span>
-                  <span>問題演習に偏り →</span>
-                </div>
-              ` : ''}
-            </div>
-            <div class="io-legend">
-              <span><i class="io-video"></i>講義動画</span>
-              <span><i class="io-qb"></i>問題演習</span>
-              ${io.excluded > 0 ? `<span><i class="io-other"></i>比率対象外 ${formatMinutes(io.excluded)}${io.unclassified > 0 ? `（うち未分類 ${formatMinutes(io.unclassified)}）` : ''}</span>` : ''}
-            </div>
-          `;
-        })()}
-        ${(() => {
-          // 動画1本と1問では所要時間が違うので、時間比を 50:50 と比べても意味がない。
-          // 教材を1周終えたら必然的にそうなる比率を基準線として並べ、そこからのズレだけを見る。
-          if (!ioBaseline.hasData) {
-            return `<div class="break-note">動画の本数と問題数の記録が貯まると、「この教材をやりきると時間配分は必然的に◯:◯になる」という基準線を引いて比べられます。単価の算出には 動画${UNIT_MIN_VIDEOS}本・${UNIT_MIN_QUESTIONS}問ぶんが必要です（現在 動画 ${unitCost.videoSamples}本 / ${unitCost.questionSamples}問）。</div>`;
-          }
-          const plan = ioBaseline.plan;
-          return `
-            <div class="break-note">
-              基準線は 実測の単価（動画1本 ${unitCost.minPerVideo.toFixed(0)}分 / 1問 ${unitCost.minPerQuestion.toFixed(1)}分）× こなす総量（動画 ${ioBaseline.videoPlanned}本${ioBaseline.videoPlanned < ioBaseline.videoTotal ? `（登録 ${ioBaseline.videoTotal}本のうち見る予定のぶん）` : ''} / QB ${plan.total.toLocaleString()}問）から算出しています。
-              QBは<strong>1〜${QB_FULL_ROUNDS}周目は全問（${plan.base.toLocaleString()}問）、${QB_FULL_ROUNDS + 1}周目以降は間違えたことのある問題のみ</strong>として数えました${
-                ioBaseline.targetRound <= QB_FULL_ROUNDS ? `（現在の目標は${ioBaseline.targetRound}周目までなので全問ぶんのみ）` : ''
-              }。${
-                ioBaseline.targetRound > QB_FULL_ROUNDS
-                  ? (plan.hasWrongEstimate
-                      ? `誤答の集合は問題単位で持っていないため、1周目の誤答率 ${plan.wrongRate.toFixed(0)}%（約${plan.wrongEver.toLocaleString()}問）で代用しています${plan.withWrongData < plan.subjects ? `。正答数が未入力の ${plan.subjects - plan.withWrongData}科目は全問やる前提に倒しています` : ''}。`
-                      : '正答数がまだ入力されていないため、3周目以降も全問やる前提で多めに見積もっています。教材進捗トラッカーで正答数を入れると精度が上がります。')
-                  : ''
-              }
-              目標周回は試験ペーサーの設定を使っています。残りを終えるには 動画 ${formatMinutes(Math.round(ioBaseline.remainVideoMin))} / QB ${formatMinutes(Math.round(ioBaseline.remainQbMin))} が必要です。
-              グラフは講義動画と問題演習それぞれを「教材が要求する割合」で割って正規化しているので、<strong>教材どおりの配分なら 50:50</strong> になります（素の時間比は 動画 ${io.videoShare === null ? '--' : io.videoShare.toFixed(0)}% : QB ${io.videoShare === null ? '--' : (100 - io.videoShare).toFixed(0)}%、教材の基準は 動画 ${ioBaseline.videoShare.toFixed(0)}%）。
-            </div>
-          `;
-        })()}
-        ${ioBaseline.progress.gap !== null ? `
-          <div class="break-verdict ${ioBaseline.progress.gap > 20 ? '' : 'break-verdict-muted'}">
-            ${ioBaseline.progress.gap > 20 ? `<span class="break-verdict-mark">${IC.warn}</span>` : ''}
-            <div>進捗で見ると 動画 <strong>${ioBaseline.progress.videoPct.toFixed(0)}%</strong> / QB1周目 <strong>${ioBaseline.progress.qbPct.toFixed(0)}%</strong>（差 ${ioBaseline.progress.gap.toFixed(0)}pt）。${
-              ioBaseline.progress.gap > 20
-                ? '見た講義に対してQBでの回収が追いついていません。'
-                : '消化の進み方は揃っています。'
-            }時間ではなく消化率で比べているので、単位あたりの所要時間の違いに影響されません。</div>
-          </div>
-        ` : ''}
-      `}
+  <!-- Section S: 動画→QBのラグ -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.122s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.trend}</div>
+      <div><div class="section-title">動画からQBまでのラグ</div><div class="section-subtitle">講義動画を見てから、その科目の問題演習に入るまで何日かかっているか</div></div>
     </div>
 
-    <!-- Section O: 正答率の推移 -->
-    ${accTrend.hasData ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.126s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
-        <div><div class="section-title">正答率の推移</div><div class="section-subtitle">週ごとの通算正答率。上がっているか、頭打ちか</div></div>
+    ${!videoLag.hasData ? `
+      <div class="data-collecting-msg">
+        講義動画と問題演習の記録が同じ科目で貯まると、回収までの日数を測れます。<br>
+        現在 動画の日 ${videoLag.count + videoLag.pendingCount}件（うち回収済み ${videoLag.count}件）
       </div>
-      ${accTrend.trend ? `
-        <div class="break-verdict ${accTrend.trend.diff >= 3 ? '' : 'break-verdict-muted'}">
-          ${accTrend.trend.diff >= 3 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
-          <div>期間の前半 ${accTrend.trend.first.toFixed(0)}% に対し、後半は ${accTrend.trend.last.toFixed(0)}%。${
-            accTrend.trend.diff >= 3 ? `<strong>${accTrend.trend.diff.toFixed(0)}pt 伸びています。</strong>`
-            : accTrend.trend.diff <= -3 ? `<strong>${Math.abs(accTrend.trend.diff).toFixed(0)}pt 下がっています。</strong>解く範囲が難しくなっているか、詰め込みで雑になっている可能性があります。`
-            : '横ばいです。同じやり方を続けても伸びにくいかもしれません。'
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.calendar} 回収までの日数</div>
+          <div class="rhythm-stat-value">${videoLag.medianLag}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
+          <div class="rhythm-stat-change change-neutral">中央値（対象 ${videoLag.count}件）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.check} 同日に回収した割合</div>
+          <div class="rhythm-stat-value">${videoLag.sameDayRate}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change ${videoLag.sameDayRate >= 50 ? 'change-positive' : 'change-neutral'}">見たその日にQBまで通した日</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.warn} まだ回収していない</div>
+          <div class="rhythm-stat-value">${videoLag.pendingCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日ぶん</span></div>
+          <div class="rhythm-stat-change ${videoLag.pendingCount > 0 ? 'change-warning' : 'change-positive'}">${videoLag.oldestPending !== null ? `最古 ${videoLag.oldestPending}日前` : '滞留なし'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.target} 正答率が高いラグ</div>
+          <div class="rhythm-stat-value">${videoLag.bestBin ? videoLag.bestBin.label : '--'}</div>
+          <div class="rhythm-stat-change ${videoLag.bestBin ? 'change-positive' : 'change-neutral'}">${videoLag.bestBin ? `正答率 ${videoLag.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+        </div>
+      </div>
+
+      ${videoLag.bestBin && videoLag.worstBin && videoLag.bestBin.label !== videoLag.worstBin.label ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div>動画から <strong>${videoLag.bestBin.label}</strong> でQBに入ったときの正答率が ${videoLag.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${videoLag.worstBin.label}</strong> では ${videoLag.worstBin.accuracy.toFixed(0)}% でした（差 ${(videoLag.bestBin.accuracy - videoLag.worstBin.accuracy).toFixed(0)}pt）。</div>
+        </div>
+      ` : ''}
+
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-run">
+          <div>回収までの日数</div><div style="text-align:right">件数</div><div style="text-align:right">割合</div><div style="text-align:right">正答率</div>
+        </div>
+        ${videoLag.bins.map(b => `
+          <div class="break-row break-row-run ${videoLag.bestBin && b.label === videoLag.bestBin.label ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-row-num">${b.count}件</div>
+            <div class="break-row-num">${b.share}%</div>
+            <div class="break-row-num">${b.accuracy !== null && b.reliable ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      ${videoLag.pending.length > 0 ? `
+        <div class="break-subtitle">まだQBに入っていない動画</div>
+        <div class="break-table">
+          ${[...videoLag.pending].sort((a,b)=>b.ageDays-a.ageDays).slice(0, 8).map(x => `
+            <div class="break-row break-row-run">
+              <div class="break-row-label">${x.subject}</div>
+              <div class="break-row-num">${x.videoDay}</div>
+              <div class="break-row-num"></div>
+              <div class="break-row-num" style="color:${x.ageDays >= 30 ? '#ef4444' : '#f59e0b'}">${x.ageDays}日前</div>
+            </div>
+          `).join('')}
+        </div>
+        ${videoLag.pending.length > 8 ? `<div class="break-note">他 ${videoLag.pending.length - 8}件</div>` : ''}
+      ` : ''}
+
+      <div class="break-note">「動画を見た日」ごとに、その科目のQBを次にやった日を探して日数を出しています。1つのQBの日が複数の動画の日を受け止めることがあるため、正答率の集計では同じ科目・同じ日を二重に数えないようにしています。学習パイプラインの「未回収」が溜まっている量を見るのに対し、こちらは回収の速さを見る指標です。</div>
+    `}
+  </div>
+
+  <!-- Section H: インプット / アウトプット比率 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.125s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.summary}</div>
+      <div><div class="section-title">インプットとアウトプットの比率</div><div class="section-subtitle">教材の構成から引いた基準線と比べる（${presetLabels[insightFilters.preset]}）</div></div>
+    </div>
+
+    ${ioBaseline.videoTotal > 0 ? `
+      ${(() => {
+        const skip = new Set(getIOVideoSkip());
+        const withVideo = (ioBaseline.videoRows || []).filter(r => (r.videoTotal || 0) > 0);
+        if (!withVideo.length) return '';
+        const registered = withVideo.reduce((s, r) => s + r.videoTotal, 0);
+        return `
+          <div class="io-plan-row">
+            <span class="io-plan-label">見る予定の講義動画</span>
+            <input type="number" class="io-plan-input" id="io-video-plan" min="1" max="${ioBaseline.videoTotal}" value="${ioBaseline.videoPlanned}">
+            <span class="io-plan-sub">本 / 対象 ${ioBaseline.videoTotal}本（登録 ${registered}本${ioBaseline.skippedVideoTotal > 0 ? ` − 見ない科目 ${ioBaseline.skippedVideoTotal}本` : ''}）</span>
+            ${getIOVideoPlan() !== null ? '<button class="filter-reset-btn" id="io-video-plan-reset">本数の指定を消す</button>' : ''}
+          </div>
+          <div class="io-skip-row">
+            <span class="io-plan-label">動画を見ない科目</span>
+            <div class="io-skip-chips" id="io-video-skip-chips">
+              ${withVideo.map(r => `<button class="io-skip-chip ${skip.has(r.id) ? 'off' : ''}" data-subject="${r.id}" title="${skip.has(r.id) ? 'クリックで「見る」に戻す' : 'クリックで「見ない」にする'}">${r.name}<span class="io-skip-count">${r.videoTotal}本</span></button>`).join('')}
+            </div>
+            ${skip.size ? '<button class="filter-reset-btn" id="io-video-skip-reset">全科目見る前提に戻す</button>' : ''}
+          </div>
+          <div class="io-skip-note">灰色にした科目の動画は、基準線と「試験までに間に合うか」の必要時間から外れます。QBの問題数はそのまま残ります（動画を見ないだけで問題は解くため）。</div>
+        `;
+      })()}
+    ` : ''}
+
+    ${!io.hasData ? `
+      <div class="data-collecting-msg">
+        学習を記録するときに「活動の種類」を選ぶと、講義動画と問題演習の時間配分がここに出ます。
+        ${io.unclassified > 0 ? `<div class="acc-thin-note" style="margin-top:8px">この期間には活動が未分類のログが ${formatMinutes(io.unclassified)} 分あります（比率の計算から除外）。</div>` : ''}
+      </div>
+    ` : `
+      ${ioVerdict ? `
+        <div class="io-verdict-line">
+          <span class="io-verdict-big ${ioVerdict.cls}">${ioThin ? '判定不可' : (ioDiff >= 0 ? '+' : '') + ioDiff.toFixed(0) + 'pt'}</span>
+          <span class="io-verdict-cap">${ioVerdict.txt}</span>
+        </div>
+      ` : `
+        <div class="io-ratio-line">
+          <span class="io-ratio-big">${io.ratio === null ? '—' : '1 : ' + io.ratio.toFixed(1)}</span>
+          <span class="io-ratio-cap">講義動画 : 問題演習</span>
+        </div>
+      `}
+
+      ${(() => {
+        const rawShare = io.core > 0 ? (io.video / io.core) * 100 : 0;
+        const share = ioCorrected !== null ? ioCorrected : rawShare;
+        const seg = (pct, cls) => `<div class="io-seg ${cls}" style="width:${pct}%">${pct >= 14 ? pct.toFixed(0) + '%' : ''}</div>`;
+        return `
+          <div class="io-compare">
+            <div class="io-cmp-head">
+              <span class="io-cmp-label">${ioCorrected !== null ? '教材基準で補正した配分' : '時間の配分'}</span>
+              <span class="io-cmp-sub">実際の時間 動画 ${formatMinutes(io.video)} / 問題演習 ${formatMinutes(io.qb)}</span>
+            </div>
+            <div class="io-cmp-bar">
+              ${seg(share, 'io-video')}${seg(100 - share, 'io-qb')}
+              ${ioCorrected !== null ? '<div class="io-cmp-center"></div>' : ''}
+            </div>
+            ${ioCorrected !== null ? `
+              <div class="io-scale">
+                <span>← 講義動画に偏り</span>
+                <span class="io-scale-mid">均衡 50%</span>
+                <span>問題演習に偏り →</span>
+              </div>
+            ` : ''}
+          </div>
+          <div class="io-legend">
+            <span><i class="io-video"></i>講義動画</span>
+            <span><i class="io-qb"></i>問題演習</span>
+            ${io.excluded > 0 ? `<span><i class="io-other"></i>比率対象外 ${formatMinutes(io.excluded)}${io.unclassified > 0 ? `（うち未分類 ${formatMinutes(io.unclassified)}）` : ''}</span>` : ''}
+          </div>
+        `;
+      })()}
+      ${(() => {
+        // 動画1本と1問では所要時間が違うので、時間比を 50:50 と比べても意味がない。
+        // 教材を1周終えたら必然的にそうなる比率を基準線として並べ、そこからのズレだけを見る。
+        if (!ioBaseline.hasData) {
+          return `<div class="break-note">動画の本数と問題数の記録が貯まると、「この教材をやりきると時間配分は必然的に◯:◯になる」という基準線を引いて比べられます。単価の算出には 動画${UNIT_MIN_VIDEOS}本・${UNIT_MIN_QUESTIONS}問ぶんが必要です（現在 動画 ${unitCost.videoSamples}本 / ${unitCost.questionSamples}問）。</div>`;
+        }
+        const plan = ioBaseline.plan;
+        return `
+          <div class="break-note">
+            基準線は 実測の単価（動画1本 ${unitCost.minPerVideo.toFixed(0)}分 / 1問 ${unitCost.minPerQuestion.toFixed(1)}分）× こなす総量（動画 ${ioBaseline.videoPlanned}本${ioBaseline.videoPlanned < ioBaseline.videoTotal ? `（登録 ${ioBaseline.videoTotal}本のうち見る予定のぶん）` : ''} / QB ${plan.total.toLocaleString()}問）から算出しています。
+            QBは<strong>1〜${QB_FULL_ROUNDS}周目は全問（${plan.base.toLocaleString()}問）、${QB_FULL_ROUNDS + 1}周目以降は間違えたことのある問題のみ</strong>として数えました${
+              ioBaseline.targetRound <= QB_FULL_ROUNDS ? `（現在の目標は${ioBaseline.targetRound}周目までなので全問ぶんのみ）` : ''
+            }。${
+              ioBaseline.targetRound > QB_FULL_ROUNDS
+                ? (plan.hasWrongEstimate
+                    ? `誤答の集合は問題単位で持っていないため、1周目の誤答率 ${plan.wrongRate.toFixed(0)}%（約${plan.wrongEver.toLocaleString()}問）で代用しています${plan.withWrongData < plan.subjects ? `。正答数が未入力の ${plan.subjects - plan.withWrongData}科目は全問やる前提に倒しています` : ''}。`
+                    : '正答数がまだ入力されていないため、3周目以降も全問やる前提で多めに見積もっています。教材進捗トラッカーで正答数を入れると精度が上がります。')
+                : ''
+            }
+            目標周回は試験ペーサーの設定を使っています。残りを終えるには 動画 ${formatMinutes(Math.round(ioBaseline.remainVideoMin))} / QB ${formatMinutes(Math.round(ioBaseline.remainQbMin))} が必要です。
+            グラフは講義動画と問題演習それぞれを「教材が要求する割合」で割って正規化しているので、<strong>教材どおりの配分なら 50:50</strong> になります（素の時間比は 動画 ${io.videoShare === null ? '--' : io.videoShare.toFixed(0)}% : QB ${io.videoShare === null ? '--' : (100 - io.videoShare).toFixed(0)}%、教材の基準は 動画 ${ioBaseline.videoShare.toFixed(0)}%）。
+          </div>
+        `;
+      })()}
+      ${ioBaseline.progress.gap !== null ? `
+        <div class="break-verdict ${ioBaseline.progress.gap > 20 ? '' : 'break-verdict-muted'}">
+          ${ioBaseline.progress.gap > 20 ? `<span class="break-verdict-mark">${IC.warn}</span>` : ''}
+          <div>進捗で見ると 動画 <strong>${ioBaseline.progress.videoPct.toFixed(0)}%</strong> / QB1周目 <strong>${ioBaseline.progress.qbPct.toFixed(0)}%</strong>（差 ${ioBaseline.progress.gap.toFixed(0)}pt）。${
+            ioBaseline.progress.gap > 20
+              ? '見た講義に対してQBでの回収が追いついていません。'
+              : '消化の進み方は揃っています。'
+          }時間ではなく消化率で比べているので、単位あたりの所要時間の違いに影響されません。</div>
+        </div>
+      ` : ''}
+    `}
+  </div>
+
+`;
+}
+
+// 伸びと配分：正答率の推移、どの科目にあと何時間
+function insightsQbProgressHTML(d) {
+  const { acc, accTrend, subjectBudget } = d;
+  return `
+  <!-- Section O: 正答率の推移 -->
+  ${accTrend.hasData ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.126s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
+      <div><div class="section-title">正答率の推移</div><div class="section-subtitle">週ごとの通算正答率。上がっているか、頭打ちか</div></div>
+    </div>
+    ${accTrend.trend ? `
+      <div class="break-verdict ${accTrend.trend.diff >= 3 ? '' : 'break-verdict-muted'}">
+        ${accTrend.trend.diff >= 3 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
+        <div>期間の前半 ${accTrend.trend.first.toFixed(0)}% に対し、後半は ${accTrend.trend.last.toFixed(0)}%。${
+          accTrend.trend.diff >= 3 ? `<strong>${accTrend.trend.diff.toFixed(0)}pt 伸びています。</strong>`
+          : accTrend.trend.diff <= -3 ? `<strong>${Math.abs(accTrend.trend.diff).toFixed(0)}pt 下がっています。</strong>解く範囲が難しくなっているか、詰め込みで雑になっている可能性があります。`
+          : '横ばいです。同じやり方を続けても伸びにくいかもしれません。'
+        }</div>
+      </div>
+    ` : ''}
+    <div class="acc-trend">
+      ${accTrend.buckets.map(b => `
+        <div class="acc-trend-col" title="${b.label}の週：${b.solved}問">
+          <div class="acc-trend-val">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : ''}</div>
+          <div class="acc-trend-bar-wrap">
+            <div class="acc-trend-bar ${b.reliable ? '' : 'is-thin'}" style="height:${b.accuracy === null ? 0 : Math.max(2, b.accuracy)}%"></div>
+          </div>
+          <div class="acc-trend-label">${b.label}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="break-note">各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
+  </div>
+  ` : ''}
+
+  <!-- Section P: 弱点科目にあと何時間 -->
+  ${subjectBudget.hasData ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.127s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.target}</div>
+      <div><div class="section-title">どの科目にあと何時間</div><div class="section-subtitle">残り時間 × 誤答率で、効きそうな順に並べています</div></div>
+    </div>
+    <div class="break-table">
+      <div class="break-row break-row-head break-row-wide">
+        <div>科目</div><div style="text-align:right">残り</div><div style="text-align:right">必要時間</div><div style="text-align:right">正答率</div><div style="text-align:right">優先度</div>
+      </div>
+      ${subjectBudget.rows.slice(0, 10).map((r, i) => `
+        <div class="break-row break-row-wide ${i === 0 ? 'is-best' : ''}">
+          <div class="break-row-label">${r.name}</div>
+          <div class="break-row-num">${r.remaining.toLocaleString()}問</div>
+          <div class="break-row-num">${formatMinutes(Math.round(r.remainMin))}</div>
+          <div class="break-row-num">${r.accuracy === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : r.accuracy.toFixed(0) + '%'}</div>
+          <div class="break-row-num">${r.impact === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : formatMinutes(Math.round(r.impact))}</div>
+        </div>
+      `).join('')}
+    </div>
+    <div class="break-note">優先度は「残り時間 × 誤答率」＝ その科目にかかる時間のうち、まだ落としている問題に相当するぶんです。正答率の低さだけで並べると残量の少ない科目が上に来てしまうため、量も掛けています。残り全部で ${formatMinutes(Math.round(subjectBudget.totalRemainMin))}${subjectBudget.rows.length > 10 ? `（表示は上位10科目、全${subjectBudget.rows.length}科目）` : ''}。</div>
+  </div>
+  ` : ''}
+
+`;
+}
+
+// 解き方の質：条件別の正答率、解くスピード、解き直しの間隔
+function insightsQbQualityHTML(d) {
+  const { avgFocus, qbQuality, reviewStats, roundGain, sessionCount } = d;
+  return `
+  <!-- Section K: 演習の質（条件別） -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.128s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.focus}</div>
+      <div><div class="section-title">条件別の正答率</div><div class="section-subtitle">セッションごとの解答記録から、いつ・どんな状態で解いた問題がよく当たっているか</div></div>
+    </div>
+
+    ${!qbQuality.hasData ? `
+      <div class="data-collecting-msg">
+        問題演習のセッションで「解いた数」と「正答数」を記録すると、時間帯・集中度・休憩明けごとの正答率が出ます。<br>
+        現在 ${qbQuality.sessionCount}セッション / ${qbQuality.solved}問（${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問以上で表示）
+      </div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} 通算正答率</div>
+          <div class="rhythm-stat-value">${qbQuality.accuracy.toFixed(0)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
+          <div class="rhythm-stat-change change-neutral">${qbQuality.correct} / ${qbQuality.solved}問</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 1問あたりの時間</div>
+          <div class="rhythm-stat-value">${qbQuality.minPerQ !== null ? qbQuality.minPerQ.toFixed(1) : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
+          <div class="rhythm-stat-change change-neutral">${qbQuality.medianMinPerQ !== null ? `中央値 ${qbQuality.medianMinPerQ.toFixed(1)}分` : ''}（解説を読む時間を含む）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} ★と成績の対応</div>
+          <div class="rhythm-stat-value">${qbQuality.calibration ? (qbQuality.calibration.diff >= 0 ? '+' : '') + qbQuality.calibration.diff.toFixed(0) + 'pt' : '--'}</div>
+          <div class="rhythm-stat-change ${!qbQuality.calibration ? 'change-neutral' : qbQuality.calibration.diff >= 5 ? 'change-positive' : 'change-warning'}">${qbQuality.calibration ? '★4以上 と ★2以下 の正答率差' : '★の記録が貯まると判定できます'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.list} 対象セッション</div>
+          <div class="rhythm-stat-value">${qbQuality.sessionCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">件</span></div>
+          <div class="rhythm-stat-change change-neutral">記録全体の${qbQuality.coverage}%</div>
+        </div>
+      </div>
+
+      ${qbQuality.bestSlot && qbQuality.worstSlot && qbQuality.bestSlot.label !== qbQuality.worstSlot.label ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div><strong>${qbQuality.bestSlot.label}</strong>に解いた問題の正答率が ${qbQuality.bestSlot.accuracy.toFixed(0)}% でいちばん高く、<strong>${qbQuality.worstSlot.label}</strong>は ${qbQuality.worstSlot.accuracy.toFixed(0)}% でした（差 ${(qbQuality.bestSlot.accuracy - qbQuality.worstSlot.accuracy).toFixed(0)}pt）。</div>
+        </div>
+      ` : ''}
+
+      ${qbQuality.calibration && qbQuality.calibration.diff < 5 ? `
+        <div class="break-verdict break-verdict-muted">
+          <div>★4以上をつけた回の正答率 ${qbQuality.calibration.hi.toFixed(0)}% に対し、★2以下の回は ${qbQuality.calibration.lo.toFixed(0)}%。<strong>体感の集中度と実際の成績がほとんど対応していません。</strong>★を基準に調子を判断するより、正答率そのものを見たほうが確かです。</div>
+        </div>
+      ` : ''}
+
+      <div class="break-subtitle">時間帯別</div>
+      ${qbAccTable(qbQuality.bySlot)}
+
+      <div class="break-subtitle">集中度別</div>
+      ${qbAccTable(qbQuality.byFocus)}
+
+      <div class="break-subtitle">休憩をはさんだか</div>
+      ${qbAccTable(qbQuality.byBreak)}
+
+      <div class="break-note">正答率はセッションごとの率を平均せず、解答数で重み付けした通算（総正答 ÷ 総解答）です。灰色の行は ${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問に届いておらず、参考値どまりです。</div>
+    `}
+  </div>
+
+  <!-- Section L: 解くスピードと正答率 -->
+  ${qbQuality.hasData ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.timer}</div>
+      <div><div class="section-title">解くスピードと正答率</div><div class="section-subtitle">速く解いた回で雑になっていないか</div></div>
+    </div>
+    <div class="break-table">
+      <div class="break-row break-row-head break-row-run">
+        <div>1問あたり</div><div style="text-align:right">セッション</div><div style="text-align:right">解答数</div><div style="text-align:right">正答率</div>
+      </div>
+      ${qbQuality.bySpeed.map(b => `
+        <div class="break-row break-row-run ${b.reliable ? '' : 'is-thin'}">
+          <div class="break-row-label">${b.label}</div>
+          <div class="break-row-num">${b.sessions}件</div>
+          <div class="break-row-num">${b.solved}問</div>
+          <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+        </div>
+      `).join('')}
+    </div>
+    ${(() => {
+      const rel = qbQuality.bySpeed.filter(b => b.reliable && b.accuracy !== null);
+      if (rel.length < 2) return '<div class="break-note">区分ごとの母数が揃うと、速さと正確さのトレードオフを判定できます。</div>';
+      const fastest = rel[0], slowest = rel[rel.length - 1];
+      const d = slowest.accuracy - fastest.accuracy;
+      return d >= 10
+        ? `<div class="break-verdict"><span class="break-verdict-mark">${IC.warn}</span><div><strong>${fastest.label}</strong>で解いた回の正答率は ${fastest.accuracy.toFixed(0)}%、<strong>${slowest.label}</strong>では ${slowest.accuracy.toFixed(0)}%。速く解いた回ほど正答率が ${d.toFixed(0)}pt 低く、雑になっている可能性があります。</div></div>`
+        : `<div class="break-verdict break-verdict-muted"><div>${fastest.label} で ${fastest.accuracy.toFixed(0)}%、${slowest.label} で ${slowest.accuracy.toFixed(0)}%。速さによる正答率の差は ${Math.abs(d).toFixed(0)}pt で、大きな崩れはありません。</div></div>`;
+    })()}
+  </div>
+  ` : ''}
+
+  <!-- Section M: 解き直しの間隔 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.132s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.calendar}</div>
+      <div><div class="section-title">解き直しの間隔</div><div class="section-subtitle">同じ科目に前回触れてから何日空けたか（活動が「復習」でなくても数えます）</div></div>
+    </div>
+
+    ${!reviewStats.hasData ? `
+      <div class="data-collecting-msg">同じ科目を2回以上やった記録が貯まると、間隔ごとの正答率が出ます。</div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.calendar} 解き直しの間隔</div>
+          <div class="rhythm-stat-value">${reviewStats.medianGap}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
+          <div class="rhythm-stat-change change-neutral">中央値（平均 ${reviewStats.avgGap}日）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.list} 解き直した回数</div>
+          <div class="rhythm-stat-value">${reviewStats.revisitCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+          <div class="rhythm-stat-change change-neutral">${reviewStats.subjectCount}科目が対象</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.target} いちばん当たった間隔</div>
+          <div class="rhythm-stat-value">${reviewStats.bestBin ? reviewStats.bestBin.label : '--'}</div>
+          <div class="rhythm-stat-change ${reviewStats.bestBin ? 'change-positive' : 'change-neutral'}">${reviewStats.bestBin ? `正答率 ${reviewStats.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.warn} ${REVIEW_STALE_DAYS}日以上あいた科目</div>
+          <div class="rhythm-stat-value">${reviewStats.stale.length}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
+          <div class="rhythm-stat-change ${reviewStats.stale.length > 0 ? 'change-warning' : 'change-positive'}">${reviewStats.stale.length > 0 ? `最長 ${reviewStats.stale[0].daysSince}日` : '放置なし'}</div>
+        </div>
+      </div>
+
+      ${reviewStats.bestBin && reviewStats.worstBin && reviewStats.bestBin.label !== reviewStats.worstBin.label ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div><strong>${reviewStats.bestBin.label}</strong>空けて解き直したときの正答率が ${reviewStats.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${reviewStats.worstBin.label}</strong>では ${reviewStats.worstBin.accuracy.toFixed(0)}% まで落ちています。</div>
+        </div>
+      ` : ''}
+
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-run">
+          <div>前回からの間隔</div><div style="text-align:right">回数</div><div style="text-align:right">正答率</div><div style="text-align:right">平均集中度</div>
+        </div>
+        ${reviewStats.bins.map(b => `
+          <div class="break-row break-row-run ${reviewStats.bestBin && b.label === reviewStats.bestBin.label ? 'is-best' : b.reliable ? '' : 'is-thin'}">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-row-num">${b.count}回</div>
+            <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      ${reviewStats.stale.length > 0 ? `
+        <div class="break-subtitle">しばらく触れていない科目</div>
+        <div class="break-table">
+          ${reviewStats.stale.slice(0, 8).map(x => `
+            <div class="break-row break-row-run">
+              <div class="break-row-label">${x.subject}</div>
+              <div class="break-row-num">${x.visitCount}回</div>
+              <div class="break-row-num"></div>
+              <div class="break-row-num" style="color:${x.daysSince >= 30 ? '#ef4444' : '#f59e0b'}">${x.daysSince}日前</div>
+            </div>
+          `).join('')}
+        </div>
+        ${reviewStats.stale.length > 8 ? `<div class="break-note">他 ${reviewStats.stale.length - 8}科目</div>` : ''}
+      ` : ''}
+
+      ${roundGain.hasData ? `
+        <div class="break-subtitle">間隔別の「1周目→2周目」の伸び幅</div>
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>解き直しの間隔</div><div style="text-align:right">科目</div><div style="text-align:right">平均の伸び</div><div style="text-align:right"></div>
+          </div>
+          ${roundGain.bins.map(b => `
+            <div class="break-row break-row-run ${b.count === 0 ? 'is-thin' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}科目</div>
+              <div class="break-row-num" style="color:${b.avgGain === null ? 'var(--color-text-tertiary)' : b.avgGain >= 10 ? '#10b981' : b.avgGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${b.avgGain === null ? '-' : (b.avgGain >= 0 ? '+' : '') + b.avgGain.toFixed(0) + 'pt'}</div>
+              <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">周回の切り替わった日は記録していないため、間隔は「その科目を触った日の間隔の中央値」で代用した近似です。科目数が少ないうちは参考程度に見てください。</div>
+      ` : ''}
+      <div class="break-note">粒度は科目単位（「2C 循環器を3日前にやった」まで）で、問題単位ではありません。厳密な忘却曲線ではなく、解き直しの間隔の傾向として読んでください。</div>
+    `}
+  </div>
+`;
+}
+
+
+// 勉強の進め方
+function insightsMethodHTML(d) {
+  const { avgFocus, sameDayMix, sessionCount, sessionLen, subjectMix } = d;
+  return `
+  ${insightGroupOpenHTML('method', '勉強の進め方', '科目の混ぜ方、動画とQBの通し方、セッションの長さ', insightIcons.focus, 'var(--color-accent-purple)')}
+  <!-- Section T: 科目の混ぜ方 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.subject}</div>
+      <div><div class="section-title">科目の混ぜ方</div><div class="section-subtitle">1科目に集中した日と、複数科目を混ぜた日の違い</div></div>
+    </div>
+    ${!subjectMix.hasData ? `
+      <div class="data-collecting-msg">学習した日が5日以上たまると、科目の混ぜ方による違いが出ます。</div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.subject} 1日あたりの科目数</div>
+          <div class="rhythm-stat-value">${subjectMix.avgSubjects.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
+          <div class="rhythm-stat-change change-neutral">対象 ${subjectMix.dayCount}日</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 1日あたりの切り替え</div>
+          <div class="rhythm-stat-value">${subjectMix.avgSwitches.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
+          <div class="rhythm-stat-change change-neutral">連続するセッションで科目が変わった回数</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい組み方</div>
+          <div class="rhythm-stat-value">${subjectMix.bestFocus ? subjectMix.bestFocus.label : '--'}</div>
+          <div class="rhythm-stat-change ${subjectMix.bestFocus ? 'change-positive' : 'change-neutral'}">${subjectMix.bestFocus ? `平均 ★${subjectMix.bestFocus.avgFocus.toFixed(1)}` : 'データが貯まると判定できます'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い組み方</div>
+          <div class="rhythm-stat-value">${subjectMix.bestAcc ? subjectMix.bestAcc.label : '--'}</div>
+          <div class="rhythm-stat-change ${subjectMix.bestAcc ? 'change-positive' : 'change-neutral'}">${subjectMix.bestAcc ? `正答率 ${subjectMix.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+        </div>
+      </div>
+      ${subjectMix.bestAcc && subjectMix.worstAcc && subjectMix.bestAcc.label !== subjectMix.worstAcc.label ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div><strong>${subjectMix.bestAcc.label}</strong>の日の正答率が ${subjectMix.bestAcc.accuracy.toFixed(0)}% で、<strong>${subjectMix.worstAcc.label}</strong>の日は ${subjectMix.worstAcc.accuracy.toFixed(0)}%（差 ${(subjectMix.bestAcc.accuracy - subjectMix.worstAcc.accuracy).toFixed(0)}pt）。</div>
+        </div>
+      ` : ''}
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-wide">
+          <div>その日の科目数</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
+        </div>
+        ${subjectMix.bins.map(b => `
+          <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : subjectMix.bestAcc && b.label === subjectMix.bestAcc.label ? 'is-best' : ''}">
+            <div class="break-row-label">${b.label}</div>
+            <div class="break-row-num">${b.count}日</div>
+            <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}</div>
+            <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
+            <div class="break-row-num">${b.accuracy === null || b.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-note">1科目に絞る（ブロック）ほうが集中しやすい一方、複数科目を混ぜる（インターリーブ）ほうが定着しやすいとされます。どちらが自分に効いているかは、集中度と正答率の両方を見て判断してください。日数の少ない行は参考値です。</div>
+    `}
+  </div>
+
+  <!-- Section U: 動画とQBを同じ日にやるか -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.134s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.summary}</div>
+      <div><div class="section-title">動画とQBの通し方</div><div class="section-subtitle">同じ日にQBまで通しているか、日を分けているか</div></div>
+    </div>
+    ${!sameDayMix.hasData ? `
+      <div class="data-collecting-msg">活動の種類が入った記録が5日以上たまると比較できます。</div>
+    ` : `
+      ${sameDayMix.sameDayRate !== null ? `
+        <div class="break-verdict ${sameDayMix.sameDayRate >= 50 ? '' : 'break-verdict-muted'}">
+          ${sameDayMix.sameDayRate >= 50 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
+          <div>動画を見た科目のうち <strong>${sameDayMix.sameDayRate}%</strong> は同じ日にQBまで通しています（${sameDayMix.sameDayCollected}/${sameDayMix.videoSubjectDays}件）。${
+            sameDayMix.sameDayRate >= 50 ? '見たその日に回収できています。' : '見た日と解く日が離れがちです。'
           }</div>
         </div>
       ` : ''}
-      <div class="acc-trend">
-        ${accTrend.buckets.map(b => `
-          <div class="acc-trend-col" title="${b.label}の週：${b.solved}問">
-            <div class="acc-trend-val">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : ''}</div>
-            <div class="acc-trend-bar-wrap">
-              <div class="acc-trend-bar ${b.reliable ? '' : 'is-thin'}" style="height:${b.accuracy === null ? 0 : Math.max(2, b.accuracy)}%"></div>
-            </div>
-            <div class="acc-trend-label">${b.label}</div>
-          </div>
-        `).join('')}
-      </div>
-      <div class="break-note">各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
-    </div>
-    ` : ''}
-
-    <!-- Section P: 弱点科目にあと何時間 -->
-    ${subjectBudget.hasData ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.127s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.target}</div>
-        <div><div class="section-title">どの科目にあと何時間</div><div class="section-subtitle">残り時間 × 誤答率で、効きそうな順に並べています</div></div>
-      </div>
       <div class="break-table">
         <div class="break-row break-row-head break-row-wide">
-          <div>科目</div><div style="text-align:right">残り</div><div style="text-align:right">必要時間</div><div style="text-align:right">正答率</div><div style="text-align:right">優先度</div>
+          <div>その日の組み合わせ</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
         </div>
-        ${subjectBudget.rows.slice(0, 10).map((r, i) => `
-          <div class="break-row break-row-wide ${i === 0 ? 'is-best' : ''}">
-            <div class="break-row-label">${r.name}</div>
-            <div class="break-row-num">${r.remaining.toLocaleString()}問</div>
-            <div class="break-row-num">${formatMinutes(Math.round(r.remainMin))}</div>
-            <div class="break-row-num">${r.accuracy === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : r.accuracy.toFixed(0) + '%'}</div>
-            <div class="break-row-num">${r.impact === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : formatMinutes(Math.round(r.impact))}</div>
+        ${sameDayMix.groups.map(g => `
+          <div class="break-row break-row-wide ${g.count === 0 ? 'is-thin' : g.key === 'both' ? 'is-best' : ''}">
+            <div class="break-row-label">${g.label}</div>
+            <div class="break-row-num">${g.count}日<span class="break-row-share">${g.share}%</span></div>
+            <div class="break-row-num">${g.avgMin === null ? '-' : formatMinutes(Math.round(g.avgMin))}</div>
+            <div class="break-row-num">${g.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + g.avgFocus.toFixed(1)}</div>
+            <div class="break-row-num">${g.accuracy === null || g.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : g.accuracy.toFixed(0) + '%'}</div>
           </div>
         `).join('')}
       </div>
-      <div class="break-note">優先度は「残り時間 × 誤答率」＝ その科目にかかる時間のうち、まだ落としている問題に相当するぶんです。正答率の低さだけで並べると残量の少ない科目が上に来てしまうため、量も掛けています。残り全部で ${formatMinutes(Math.round(subjectBudget.totalRemainMin))}${subjectBudget.rows.length > 10 ? `（表示は上位10科目、全${subjectBudget.rows.length}科目）` : ''}。</div>
+      <div class="break-note">「動画とQBの両方」の日はその日にインプットとアウトプットが揃っている日です。即日回収率は科目単位（動画を見た科目・日のうち、同じ日にその科目のQBもやった割合）で、上の日単位の表とは母数が違います。</div>
+    `}
+  </div>
+
+  <!-- Section V: セッションの長さと成果 -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.138s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
+      <div><div class="section-title">セッションの長さと成果</div><div class="section-subtitle">何分くらいで区切るのが自分に合っているか</div></div>
     </div>
-    ` : ''}
-
-    <!-- Section K: 演習の質（条件別） -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.128s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.focus}</div>
-        <div><div class="section-title">条件別の正答率</div><div class="section-subtitle">セッションごとの解答記録から、いつ・どんな状態で解いた問題がよく当たっているか</div></div>
-      </div>
-
-      ${!qbQuality.hasData ? `
-        <div class="data-collecting-msg">
-          問題演習のセッションで「解いた数」と「正答数」を記録すると、時間帯・集中度・休憩明けごとの正答率が出ます。<br>
-          現在 ${qbQuality.sessionCount}セッション / ${qbQuality.solved}問（${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問以上で表示）
+    ${!sessionLen.hasData ? `
+      <div class="data-collecting-msg">セッションが10件以上たまると比較できます。</div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} セッションの長さ</div>
+          <div class="rhythm-stat-value">${formatMinutes(Math.round(sessionLen.medianDur))}</div>
+          <div class="rhythm-stat-change change-neutral">中央値（平均 ${formatMinutes(Math.round(sessionLen.avgDur))}／${sessionLen.sessionCount}件）</div>
         </div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.book} 通算正答率</div>
-            <div class="rhythm-stat-value">${qbQuality.accuracy.toFixed(0)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">%</span></div>
-            <div class="rhythm-stat-change change-neutral">${qbQuality.correct} / ${qbQuality.solved}問</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.timer} 1問あたりの時間</div>
-            <div class="rhythm-stat-value">${qbQuality.minPerQ !== null ? qbQuality.minPerQ.toFixed(1) : '--'}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">分</span></div>
-            <div class="rhythm-stat-change change-neutral">${qbQuality.medianMinPerQ !== null ? `中央値 ${qbQuality.medianMinPerQ.toFixed(1)}分` : ''}（解説を読む時間を含む）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.target} ★と成績の対応</div>
-            <div class="rhythm-stat-value">${qbQuality.calibration ? (qbQuality.calibration.diff >= 0 ? '+' : '') + qbQuality.calibration.diff.toFixed(0) + 'pt' : '--'}</div>
-            <div class="rhythm-stat-change ${!qbQuality.calibration ? 'change-neutral' : qbQuality.calibration.diff >= 5 ? 'change-positive' : 'change-warning'}">${qbQuality.calibration ? '★4以上 と ★2以下 の正答率差' : '★の記録が貯まると判定できます'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.list} 対象セッション</div>
-            <div class="rhythm-stat-value">${qbQuality.sessionCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">件</span></div>
-            <div class="rhythm-stat-change change-neutral">記録全体の${qbQuality.coverage}%</div>
-          </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい長さ</div>
+          <div class="rhythm-stat-value">${sessionLen.bestFocus ? sessionLen.bestFocus.label : '--'}</div>
+          <div class="rhythm-stat-change ${sessionLen.bestFocus ? 'change-positive' : 'change-neutral'}">${sessionLen.bestFocus ? `平均 ★${sessionLen.bestFocus.avgFocus.toFixed(1)}` : '★の記録が貯まると判定できます'}</div>
         </div>
-
-        ${qbQuality.bestSlot && qbQuality.worstSlot && qbQuality.bestSlot.label !== qbQuality.worstSlot.label ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div><strong>${qbQuality.bestSlot.label}</strong>に解いた問題の正答率が ${qbQuality.bestSlot.accuracy.toFixed(0)}% でいちばん高く、<strong>${qbQuality.worstSlot.label}</strong>は ${qbQuality.worstSlot.accuracy.toFixed(0)}% でした（差 ${(qbQuality.bestSlot.accuracy - qbQuality.worstSlot.accuracy).toFixed(0)}pt）。</div>
-          </div>
-        ` : ''}
-
-        ${qbQuality.calibration && qbQuality.calibration.diff < 5 ? `
-          <div class="break-verdict break-verdict-muted">
-            <div>★4以上をつけた回の正答率 ${qbQuality.calibration.hi.toFixed(0)}% に対し、★2以下の回は ${qbQuality.calibration.lo.toFixed(0)}%。<strong>体感の集中度と実際の成績がほとんど対応していません。</strong>★を基準に調子を判断するより、正答率そのものを見たほうが確かです。</div>
-          </div>
-        ` : ''}
-
-        <div class="break-subtitle">時間帯別</div>
-        ${qbAccTable(qbQuality.bySlot)}
-
-        <div class="break-subtitle">集中度別</div>
-        ${qbAccTable(qbQuality.byFocus)}
-
-        <div class="break-subtitle">休憩をはさんだか</div>
-        ${qbAccTable(qbQuality.byBreak)}
-
-        <div class="break-note">正答率はセッションごとの率を平均せず、解答数で重み付けした通算（総正答 ÷ 総解答）です。灰色の行は ${QB_MIN_SESSIONS}セッション・${QB_MIN_SOLVED}問に届いておらず、参考値どまりです。</div>
-      `}
-    </div>
-
-    <!-- Section L: 解くスピードと正答率 -->
-    ${qbQuality.hasData ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.timer}</div>
-        <div><div class="section-title">解くスピードと正答率</div><div class="section-subtitle">速く解いた回で雑になっていないか</div></div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い長さ</div>
+          <div class="rhythm-stat-value">${sessionLen.bestAcc ? sessionLen.bestAcc.label : '--'}</div>
+          <div class="rhythm-stat-change ${sessionLen.bestAcc ? 'change-positive' : 'change-neutral'}">${sessionLen.bestAcc ? `正答率 ${sessionLen.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} いちばん多い長さ</div>
+          <div class="rhythm-stat-value">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return t.label; })()}</div>
+          <div class="rhythm-stat-change change-neutral">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return `${t.count}件（${t.share}%）`; })()}</div>
+        </div>
       </div>
+      ${sessionLen.bestAcc && sessionLen.worstAcc && sessionLen.bestAcc.label !== sessionLen.worstAcc.label ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.check}</span>
+          <div><strong>${sessionLen.bestAcc.label}</strong>のセッションの正答率が ${sessionLen.bestAcc.accuracy.toFixed(0)}% でいちばん高く、<strong>${sessionLen.worstAcc.label}</strong>では ${sessionLen.worstAcc.accuracy.toFixed(0)}% でした（差 ${(sessionLen.bestAcc.accuracy - sessionLen.worstAcc.accuracy).toFixed(0)}pt）。</div>
+        </div>
+      ` : ''}
       <div class="break-table">
-        <div class="break-row break-row-head break-row-run">
-          <div>1問あたり</div><div style="text-align:right">セッション</div><div style="text-align:right">解答数</div><div style="text-align:right">正答率</div>
+        <div class="break-row break-row-head break-row-wide">
+          <div>セッションの長さ</div><div style="text-align:right">件数</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div><div style="text-align:right">1問あたり</div>
         </div>
-        ${qbQuality.bySpeed.map(b => `
-          <div class="break-row break-row-run ${b.reliable ? '' : 'is-thin'}">
+        ${sessionLen.bins.map(b => `
+          <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : sessionLen.bestAcc && b.label === sessionLen.bestAcc.label ? 'is-best' : ''}">
             <div class="break-row-label">${b.label}</div>
-            <div class="break-row-num">${b.sessions}件</div>
-            <div class="break-row-num">${b.solved}問</div>
-            <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+            <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
+            <div class="break-row-num">${b.avgFocus === null || !b.reliableFocus ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
+            <div class="break-row-num">${b.accuracy === null || !b.reliableAcc ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
+            <div class="break-row-num">${b.minPerQ === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.minPerQ.toFixed(1) + '分'}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-note">長いセッションは休憩を挟んでいれば実質は分割されているので、「セッション内の休憩」のカードと合わせて読んでください。母数が足りない区分（${QB_MIN_SESSIONS}件・${QB_MIN_SOLVED}問未満）は薄く表示し、判定からも外しています。</div>
+    `}
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
+
+// 生活リズムと睡眠
+function insightsLifeHTML(d) {
+  const { IDEAL_SLEEP_HOURS, allNighter, allNighterCount, avgFocus, bestEnv, bestSleepSlot,
+    chronoColor, chronoIconSvg, chronoName, chronoTotal30, comeback, cooldownWarning,
+    dailyAvgChange, focusChangeVal, hasSleepData, hasSleepStats, lastWeekAvgStart, lastWeekLag,
+    lastWeekSleepAvg, lateNightAlert, lateNightDiff, minutesFromBase5AMToTimeStr, morningPct,
+    nightPct, paceCV, paceColor, paceIconSvg, paceName, rhythmLabel, rhythmStatus,
+    shortCooldownDays, sleepAvgHours, sleepDebtHours, sleepHoursArr, sleepMaxHours, sleepMinHours,
+    sleepSlotCompare, startTimeDiff, thisWeekAvgFocus, thisWeekAvgStart, thisWeekDailyAvg,
+    thisWeekLag, thisWeekLateNight, thisWeekSleepAvg, wakeStabilitySD, wakeStabilityStatus } = d;
+  return `
+  ${insightGroupOpenHTML('life', '生活リズムと睡眠', '起床・就寝、学習タイプ、睡眠と成績の関係', insightIcons.calendar, 'var(--color-accent-yellow)')}
+  <!-- Section A: Recent Rhythm & Trends -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
+    <div class="section-header" style="justify-content:space-between">
+      <div style="display:flex;align-items:center;gap:var(--space-md)">
+        <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.clock}</div>
+        <div><div class="section-title">生活リズムと最近の傾向</div><div class="section-subtitle">先週との比較で変化をチェック</div></div>
+      </div>
+      <span class="rhythm-status-badge ${rhythmStatus}">${rhythmLabel}</span>
+    </div>
+    <div class="rhythm-stat-grid">
+      <div class="rhythm-stat-item">
+        <div class="rhythm-stat-label">${IC.timer} 平均勉強開始</div>
+        <div class="rhythm-stat-value">${thisWeekAvgStart !== null ? minutesFromBase5AMToTimeStr(thisWeekAvgStart) : '--:--'}</div>
+        ${thisWeekAvgStart !== null && lastWeekAvgStart !== null ? `<div class="rhythm-stat-change ${startTimeDiff > 30 ? 'change-negative' : startTimeDiff < -30 ? 'change-positive' : 'change-neutral'}">${startTimeDiff > 0 ? '+' : ''}${startTimeDiff}分${startTimeDiff > 30 ? ' (後退)' : startTimeDiff < -30 ? ' (早起き化)' : ''}</div>` : '<div class="rhythm-stat-change change-neutral">先週データなし</div>'}
+      </div>
+      <div class="rhythm-stat-item">
+        <div class="rhythm-stat-label">${IC.clock} 1日平均学習</div>
+        <div class="rhythm-stat-value">${formatMinutes(thisWeekDailyAvg)}</div>
+        <div class="rhythm-stat-change ${dailyAvgChange >= 0 ? 'change-positive' : 'change-negative'}">${dailyAvgChange >= 0 ? '+' : ''}${dailyAvgChange}%</div>
+      </div>
+      <div class="rhythm-stat-item">
+        <div class="rhythm-stat-label">${IC.target} 平均集中度</div>
+        <div class="rhythm-stat-value">${thisWeekAvgFocus !== null ? '★' + thisWeekAvgFocus.toFixed(1) : '--'}</div>
+        ${focusChangeVal !== null ? `<div class="rhythm-stat-change ${focusChangeVal >= 0 ? 'change-positive' : 'change-negative'}">${focusChangeVal >= 0 ? '+' : ''}${focusChangeVal.toFixed(1)}</div>` : '<div class="rhythm-stat-change change-neutral">--</div>'}
+      </div>
+      <div class="rhythm-stat-item">
+        <div class="rhythm-stat-label">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 深夜学習割合</div>
+        <div class="rhythm-stat-value">${thisWeekLateNight}%</div>
+        <div class="rhythm-stat-change ${lateNightDiff >= 5 ? 'change-warning' : lateNightDiff <= -5 ? 'change-positive' : 'change-neutral'}">${lateNightDiff >= 0 ? '+' : ''}${lateNightDiff}%</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Section B: Personal Analysis -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.14s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
+      <div><div class="section-title">学習タイプ自己分析</div><div class="section-subtitle">直近30日間のデータから診断</div></div>
+    </div>
+    ${chronoTotal30 > 1 ? `
+    <div class="personal-type-grid">
+      <div class="personal-type-item">
+        <div class="personal-type-icon" style="background:${chronoColor}22;color:${chronoColor}">${chronoIconSvg}</div>
+        <div class="personal-type-name">${chronoName}</div>
+        <div class="personal-type-detail">朝${morningPct}% / 夜${nightPct}%</div>
+      </div>
+      <div class="personal-type-item">
+        <div class="personal-type-icon" style="background:${paceColor}22;color:${paceColor}">${paceIconSvg}</div>
+        <div class="personal-type-name">${paceName}</div>
+        <div class="personal-type-detail">CV: ${paceCV.toFixed(2)}</div>
+      </div>
+      <div class="personal-type-item">
+        <div class="personal-type-icon" style="background:rgba(78,205,196,0.13);color:var(--color-accent-teal)">${IC._s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')}</div>
+        <div class="personal-type-name">${bestEnv ? bestEnv.name : '分析中...'}</div>
+        <div class="personal-type-detail">${bestEnv ? '★' + bestEnv.avg + '（' + bestEnv.count + '件）' : 'データ蓄積中'}</div>
+      </div>
+    </div>
+    ` : '<div class="data-collecting-msg">データを蓄積中です...</div>'}
+  </div>
+
+  <!-- Section Q: 徹夜のコスト -->
+  ${allNighter.hasData ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.15s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
+      <div><div class="section-title">徹夜のコスト</div><div class="section-subtitle">徹夜した日と、その翌日・翌々日を平常日と比べる（${allNighter.count}回ぶん）</div></div>
+    </div>
+    <div class="break-table">
+      <div class="break-row break-row-head break-row-run">
+        <div>日</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div>
+      </div>
+      ${[
+        { label: '平常日', d: allNighter.normal, base: true },
+        { label: '徹夜した日', d: allNighter.onNight },
+        { label: '翌日', d: allNighter.day1 },
+        { label: '翌々日', d: allNighter.day2 }
+      ].map(row => {
+        const diff = (!row.base && row.d.avgMin !== null && allNighter.normal.avgMin)
+          ? (row.d.avgMin - allNighter.normal.avgMin) / allNighter.normal.avgMin * 100 : null;
+        return `<div class="break-row break-row-run ${row.base ? 'is-best' : row.d.days === 0 ? 'is-thin' : ''}">
+          <div class="break-row-label">${row.label}</div>
+          <div class="break-row-num">${row.d.days}日</div>
+          <div class="break-row-num">${row.d.avgMin === null ? '-' : formatMinutes(Math.round(row.d.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -10 ? '#ef4444' : diff > 10 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
+          <div class="break-row-num">${row.d.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + row.d.avgFocus.toFixed(1)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="break-note">平常日は「徹夜した日・その翌日・翌々日のいずれでもない学習日」です。徹夜が何日尾を引くかを見る目的なので、回数が少ないうちは参考値として扱ってください。</div>
+  </div>
+  ` : ''}
+
+  <!-- Section R: ブランク明けの立ち上がり -->
+  ${comeback.hasData ? `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.155s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.calendar}</div>
+      <div><div class="section-title">ブランク明けの立ち上がり</div><div class="section-subtitle">何日空けたあとかで、その日の学習量がどう変わるか</div></div>
+    </div>
+    <div class="break-table">
+      <div class="break-row break-row-head break-row-run">
+        <div>前回からの空き</div><div style="text-align:right">日数</div><div style="text-align:right">その日の学習</div><div style="text-align:right">集中度</div>
+      </div>
+      ${comeback.bins.map((b, i) => {
+        const diff = (i > 0 && b.avgMin !== null && comeback.baseMin)
+          ? (b.avgMin - comeback.baseMin) / comeback.baseMin * 100 : null;
+        return `<div class="break-row break-row-run ${i === 0 ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
+          <div class="break-row-label">${b.label}</div>
+          <div class="break-row-num">${b.count}日</div>
+          <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -20 ? '#ef4444' : diff > 0 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
+          <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="break-note">学習しない日はバイト・旅行という前提なので、途切れたこと自体は問題として扱っていません。見ているのは「空けたあと、どれだけ戻れているか」です。長い空きのあとで落ちるなら、旅行明けに軽いメニューを1日はさむと戻りやすくなります。</div>
+  </div>
+  ` : ''}
+
+  <!-- Section C: Sleep Correlation -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.16s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
+      <div><div class="section-title">睡眠と学習の相関</div><div class="section-subtitle">起床・就寝データから分析</div></div>
+    </div>
+    ${hasSleepData ? `
+    <div class="sleep-insight-grid">
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.timer} 起床リズム安定度</div>
+        <div class="sleep-insight-value">
+          ${wakeStabilityStatus ? `<span class="rhythm-status-badge ${wakeStabilityStatus}">${wakeStabilityStatus === 'good' ? '安定' : wakeStabilityStatus === 'warning' ? 'やや不安定' : '不安定'}</span>` : '--'}
+        </div>
+        ${wakeStabilitySD !== null ? `<div class="sleep-insight-note">標準偏差: ${wakeStabilitySD}分</div>` : ''}
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.clock} 初動タイムラグ</div>
+        <div class="sleep-insight-value">${thisWeekLag !== null ? thisWeekLag + '分' : '--'}</div>
+        ${thisWeekLag !== null && lastWeekLag !== null ? `<div class="sleep-insight-note">先週比: <span class="${(thisWeekLag - lastWeekLag) <= 0 ? 'change-positive' : 'change-negative'}">${thisWeekLag - lastWeekLag >= 0 ? '+' : ''}${thisWeekLag - lastWeekLag}分</span></div>` : ''}
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.star} ベスト睡眠時間</div>
+        <div class="sleep-insight-value">${bestSleepSlot ? bestSleepSlot.slot : '--'}</div>
+        ${bestSleepSlot ? `<div class="sleep-insight-note">翌日の平均集中度: ★${bestSleepSlot.avg.toFixed(1)}</div>` : '<div class="sleep-insight-note">データ蓄積中</div>'}
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.shield} クールダウン</div>
+        <div class="sleep-insight-value">${cooldownWarning ? '<span class="change-warning">要注意</span>' : '<span class="change-positive">良好</span>'}</div>
+        <div class="sleep-insight-note">${cooldownWarning ? '直近7日中' + shortCooldownDays + '日が就寝直前まで勉強' : '適切なクールダウン時間を確保'}</div>
+      </div>
+    </div>
+    ${cooldownWarning ? '<div class="sleep-alert-box alert-warning">' + IC.warn + ' 就寝直前まで勉強する傾向があり、睡眠の質を下げている可能性があります。勉強終了後は30分以上のクールダウンを心がけましょう。</div>' : ''}
+    ${lateNightAlert ? '<div class="sleep-alert-box alert-danger">' + IC.warn + ' 3日連続で就寝が大幅に後退しています。夜型化の兆候です。</div>' : ''}
+    ` : '<div class="data-collecting-msg">ダッシュボードの起床/就寝ボタンでデータを蓄積しましょう（3日分以上必要）</div>'}
+  </div>
+
+  <!-- Section C2: Sleep Statistics -->
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.17s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
+      <div><div class="section-title">睡眠統計</div><div class="section-subtitle">睡眠パターンと負債の分析</div></div>
+    </div>
+    ${hasSleepStats ? `
+    <div class="sleep-insight-grid">
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.clock} 平均睡眠時間</div>
+        <div class="sleep-insight-value" style="font-size:1.3rem;">${sleepAvgHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
+        ${thisWeekSleepAvg !== null && lastWeekSleepAvg !== null ? `<div class="sleep-insight-note"><span class="${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? 'change-positive' : 'change-negative'}">${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? '+' : ''}${(thisWeekSleepAvg - lastWeekSleepAvg).toFixed(1)}h vs 先週</span></div>` : `<div class="sleep-insight-note">${sleepHoursArr.length}日分のデータ</div>`}
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.target} 睡眠負債</div>
+        <div class="sleep-insight-value" style="font-size:1.3rem;color:${sleepDebtHours > 7 ? '#ef4444' : sleepDebtHours > 3 ? '#f59e0b' : '#4ade80'}">${sleepDebtHours > 0 ? '+' : ''}${sleepDebtHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
+        <div class="sleep-insight-note">${sleepDebtHours > 7 ? '⚠ 深刻な睡眠不足です' : sleepDebtHours > 3 ? '注意：睡眠が不足気味です' : sleepDebtHours > 0 ? 'ほぼ良好です' : '十分に眠れています'}（基準: ${IDEAL_SLEEP_HOURS}h/日）</div>
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">${IC.star} 最長 / 最短</div>
+        <div class="sleep-insight-value" style="font-size:1.1rem;">${sleepMaxHours.toFixed(1)}h <span style="font-size:0.7rem;color:var(--color-text-tertiary)">/</span> ${sleepMinHours.toFixed(1)}h</div>
+        <div class="sleep-insight-note">振れ幅 ${(sleepMaxHours - sleepMinHours).toFixed(1)}h</div>
+      </div>
+      <div class="sleep-insight-item">
+        <div class="sleep-insight-label">🌙 徹夜</div>
+        <div class="sleep-insight-value" style="font-size:1.3rem;color:${allNighterCount > 0 ? '#f59e0b' : '#4ade80'}">${allNighterCount}<span style="font-size:0.7rem;color:var(--color-text-secondary)">回</span></div>
+        <div class="sleep-insight-note">${allNighterCount > 2 ? '⚠ 徹夜は集中度を大幅に低下させます' : allNighterCount > 0 ? '控えめに' : '良い睡眠習慣です'}</div>
+      </div>
+    </div>
+
+    <!-- Sleep Duration Chart -->
+    <div style="margin-top:20px;">
+      <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間の推移</div>
+      <div class="chart-container" style="height:200px;"><canvas id="insightSleepChart"></canvas></div>
+    </div>
+
+    <!-- Sleep-Focus Correlation -->
+    ${sleepSlotCompare.length > 0 ? `
+    <div style="margin-top:20px;">
+      <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間別の平均集中度</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        ${sleepSlotCompare.map(s => `
+          <div style="flex:1;min-width:70px;background:var(--color-bg-elevated);border-radius:8px;padding:10px;text-align:center;">
+            <div style="font-size:0.75rem;color:var(--color-text-tertiary);margin-bottom:4px;">${s.slot}</div>
+            <div style="font-size:1.1rem;font-weight:700;color:${s.slot === '<6h' ? '#ef4444' : s.slot === '8h+' ? '#4ade80' : 'var(--color-text-primary)'}">${s.avg}★</div>
+            <div style="font-size:0.65rem;color:var(--color-text-tertiary)">${s.count}件</div>
           </div>
         `).join('')}
       </div>
       ${(() => {
-        const rel = qbQuality.bySpeed.filter(b => b.reliable && b.accuracy !== null);
-        if (rel.length < 2) return '<div class="break-note">区分ごとの母数が揃うと、速さと正確さのトレードオフを判定できます。</div>';
-        const fastest = rel[0], slowest = rel[rel.length - 1];
-        const d = slowest.accuracy - fastest.accuracy;
-        return d >= 10
-          ? `<div class="break-verdict"><span class="break-verdict-mark">${IC.warn}</span><div><strong>${fastest.label}</strong>で解いた回の正答率は ${fastest.accuracy.toFixed(0)}%、<strong>${slowest.label}</strong>では ${slowest.accuracy.toFixed(0)}%。速く解いた回ほど正答率が ${d.toFixed(0)}pt 低く、雑になっている可能性があります。</div></div>`
-          : `<div class="break-verdict break-verdict-muted"><div>${fastest.label} で ${fastest.accuracy.toFixed(0)}%、${slowest.label} で ${slowest.accuracy.toFixed(0)}%。速さによる正答率の差は ${Math.abs(d).toFixed(0)}pt で、大きな崩れはありません。</div></div>`;
+        const best = sleepSlotCompare.sort((a, b) => parseFloat(b.avg) - parseFloat(a.avg))[0];
+        const worst = sleepSlotCompare.sort((a, b) => parseFloat(a.avg) - parseFloat(b.avg))[0];
+        if (best && worst && best.slot !== worst.slot && parseFloat(best.avg) - parseFloat(worst.avg) >= 0.3) {
+          return `<div style="background:rgba(78,205,196,0.1);border:1px solid rgba(78,205,196,0.3);color:var(--color-accent-teal);padding:10px;border-radius:8px;margin-top:10px;font-size:0.8rem;">
+            💡 ${best.slot}の睡眠時は平均★${best.avg}、${worst.slot}では★${worst.avg}。差は${(parseFloat(best.avg) - parseFloat(worst.avg)).toFixed(1)}ポイントです。
+          </div>`;
+        }
+        return '';
       })()}
     </div>
     ` : ''}
+    ` : '<div class="data-collecting-msg">睡眠データが蓄積されると統計が表示されます</div>'}
+  </div>
 
-    <!-- Section M: 解き直しの間隔 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.132s">
+  ${insightGroupCloseHTML}
+`;
+}
+
+// 学習時間の傾向
+function insightsTrendHTML(d) {
+  const { DONUT_COLORS, balanceAlertHtml, donutR, donutSVG, donutTotal, dowCounts, dowMinutes,
+    dowNames, focusLogs, heatmapHTML, maxDowMin, maxLocMin, performanceHtml, sortedLocations,
+    sortedSubjectFocus, sortedSubjects } = d;
+  return `
+  ${insightGroupOpenHTML('trend', '学習時間の傾向', '推移・科目・時間帯・場所・曜日の内訳', insightIcons.trend, 'var(--color-accent-blue)')}
+  <!-- Trend Chart + Subject Donut -->
+  <div class="insights-grid animate-slide-up" style="animation-delay:.15s">
+    <div class="card" style="overflow:hidden">
       <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.calendar}</div>
-        <div><div class="section-title">解き直しの間隔</div><div class="section-subtitle">同じ科目に前回触れてから何日空けたか（活動が「復習」でなくても数えます）</div></div>
+        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
+        <div><div class="section-title">学習推移</div><div class="section-subtitle">日別の学習時間</div></div>
       </div>
-
-      ${!reviewStats.hasData ? `
-        <div class="data-collecting-msg">同じ科目を2回以上やった記録が貯まると、間隔ごとの正答率が出ます。</div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.calendar} 解き直しの間隔</div>
-            <div class="rhythm-stat-value">${reviewStats.medianGap}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">日</span></div>
-            <div class="rhythm-stat-change change-neutral">中央値（平均 ${reviewStats.avgGap}日）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.list} 解き直した回数</div>
-            <div class="rhythm-stat-value">${reviewStats.revisitCount}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
-            <div class="rhythm-stat-change change-neutral">${reviewStats.subjectCount}科目が対象</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.target} いちばん当たった間隔</div>
-            <div class="rhythm-stat-value">${reviewStats.bestBin ? reviewStats.bestBin.label : '--'}</div>
-            <div class="rhythm-stat-change ${reviewStats.bestBin ? 'change-positive' : 'change-neutral'}">${reviewStats.bestBin ? `正答率 ${reviewStats.bestBin.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.warn} ${REVIEW_STALE_DAYS}日以上あいた科目</div>
-            <div class="rhythm-stat-value">${reviewStats.stale.length}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
-            <div class="rhythm-stat-change ${reviewStats.stale.length > 0 ? 'change-warning' : 'change-positive'}">${reviewStats.stale.length > 0 ? `最長 ${reviewStats.stale[0].daysSince}日` : '放置なし'}</div>
-          </div>
-        </div>
-
-        ${reviewStats.bestBin && reviewStats.worstBin && reviewStats.bestBin.label !== reviewStats.worstBin.label ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div><strong>${reviewStats.bestBin.label}</strong>空けて解き直したときの正答率が ${reviewStats.bestBin.accuracy.toFixed(0)}% でいちばん高く、<strong>${reviewStats.worstBin.label}</strong>では ${reviewStats.worstBin.accuracy.toFixed(0)}% まで落ちています。</div>
-          </div>
-        ` : ''}
-
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-run">
-            <div>前回からの間隔</div><div style="text-align:right">回数</div><div style="text-align:right">正答率</div><div style="text-align:right">平均集中度</div>
-          </div>
-          ${reviewStats.bins.map(b => `
-            <div class="break-row break-row-run ${reviewStats.bestBin && b.label === reviewStats.bestBin.label ? 'is-best' : b.reliable ? '' : 'is-thin'}">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-row-num">${b.count}回</div>
-              <div class="break-row-num">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-              <div class="break-row-num">${b.avgFocus !== null ? '★' + b.avgFocus.toFixed(1) : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
-            </div>
-          `).join('')}
-        </div>
-
-        ${reviewStats.stale.length > 0 ? `
-          <div class="break-subtitle">しばらく触れていない科目</div>
-          <div class="break-table">
-            ${reviewStats.stale.slice(0, 8).map(x => `
-              <div class="break-row break-row-run">
-                <div class="break-row-label">${x.subject}</div>
-                <div class="break-row-num">${x.visitCount}回</div>
-                <div class="break-row-num"></div>
-                <div class="break-row-num" style="color:${x.daysSince >= 30 ? '#ef4444' : '#f59e0b'}">${x.daysSince}日前</div>
+      <div class="chart-container"><canvas id="insightTrendChart"></canvas></div>
+    </div>
+    <div class="card" style="overflow:hidden">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.subject}</div>
+        <div><div class="section-title">科目分布</div><div class="section-subtitle">学習時間の内訳</div></div>
+      </div>
+      ${sortedSubjects.length > 0 ? `
+        <div style="display:flex;align-items:center;gap:var(--space-lg)">
+          <svg viewBox="0 0 160 160" style="width:140px;height:140px;flex-shrink:0">
+            <circle cx="80" cy="80" r="${donutR}" fill="none" stroke="var(--color-bg-elevated)" stroke-width="20"/>
+            ${donutSVG}
+            <text x="80" y="76" text-anchor="middle" fill="var(--color-text-primary)" font-size="16" font-weight="800">${Math.floor(donutTotal/60)}h</text>
+            <text x="80" y="94" text-anchor="middle" fill="var(--color-text-tertiary)" font-size="10">合計</text>
+          </svg>
+          <div style="flex:1;font-size:0.75rem;display:flex;flex-direction:column;gap:4px">
+            ${sortedSubjects.slice(0,7).map(([name,min],i) => `
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="width:8px;height:8px;border-radius:50%;background:${DONUT_COLORS[i%DONUT_COLORS.length]};flex-shrink:0"></span>
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
+                <span style="font-weight:700;color:var(--color-text-secondary)">${formatMinutes(min)}</span>
               </div>
             `).join('')}
+            ${sortedSubjects.length > 7 ? `<div style="color:var(--color-text-tertiary)">...他${sortedSubjects.length-7}科目</div>` : ''}
           </div>
-          ${reviewStats.stale.length > 8 ? `<div class="break-note">他 ${reviewStats.stale.length - 8}科目</div>` : ''}
-        ` : ''}
-
-        ${roundGain.hasData ? `
-          <div class="break-subtitle">間隔別の「1周目→2周目」の伸び幅</div>
-          <div class="break-table">
-            <div class="break-row break-row-head break-row-run">
-              <div>解き直しの間隔</div><div style="text-align:right">科目</div><div style="text-align:right">平均の伸び</div><div style="text-align:right"></div>
-            </div>
-            ${roundGain.bins.map(b => `
-              <div class="break-row break-row-run ${b.count === 0 ? 'is-thin' : ''}">
-                <div class="break-row-label">${b.label}</div>
-                <div class="break-row-num">${b.count}科目</div>
-                <div class="break-row-num" style="color:${b.avgGain === null ? 'var(--color-text-tertiary)' : b.avgGain >= 10 ? '#10b981' : b.avgGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${b.avgGain === null ? '-' : (b.avgGain >= 0 ? '+' : '') + b.avgGain.toFixed(0) + 'pt'}</div>
-                <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
-              </div>
-            `).join('')}
-          </div>
-          <div class="break-note">周回の切り替わった日は記録していないため、間隔は「その科目を触った日の間隔の中央値」で代用した近似です。科目数が少ないうちは参考程度に見てください。</div>
-        ` : ''}
-        <div class="break-note">粒度は科目単位（「2C 循環器を3日前にやった」まで）で、問題単位ではありません。厳密な忘却曲線ではなく、解き直しの間隔の傾向として読んでください。</div>
-      `}
+        </div>
+      ` : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">データなし</p>'}
     </div>
+  </div>
 
-    ${insightGroupCloseHTML}
-
-    ${insightGroupOpenHTML('method', '勉強の進め方', '科目の混ぜ方、動画とQBの通し方、セッションの長さ', insightIcons.focus, 'var(--color-accent-purple)')}
-    <!-- Section T: 科目の混ぜ方 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.13s">
+  <!-- TOD Heatmap + Location -->
+  <div class="insights-grid animate-slide-up" style="animation-delay:.2s">
+    <div class="card" style="overflow:hidden">
       <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.subject}</div>
-        <div><div class="section-title">科目の混ぜ方</div><div class="section-subtitle">1科目に集中した日と、複数科目を混ぜた日の違い</div></div>
+        <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.clock}</div>
+        <div><div class="section-title">時間帯 × 曜日</div><div class="section-subtitle">いつ勉強しているか</div></div>
       </div>
-      ${!subjectMix.hasData ? `
-        <div class="data-collecting-msg">学習した日が5日以上たまると、科目の混ぜ方による違いが出ます。</div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.subject} 1日あたりの科目数</div>
-            <div class="rhythm-stat-value">${subjectMix.avgSubjects.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">科目</span></div>
-            <div class="rhythm-stat-change change-neutral">対象 ${subjectMix.dayCount}日</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.timer} 1日あたりの切り替え</div>
-            <div class="rhythm-stat-value">${subjectMix.avgSwitches.toFixed(1)}<span style="font-size:0.7rem;font-weight:600;color:var(--color-text-secondary)">回</span></div>
-            <div class="rhythm-stat-change change-neutral">連続するセッションで科目が変わった回数</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい組み方</div>
-            <div class="rhythm-stat-value">${subjectMix.bestFocus ? subjectMix.bestFocus.label : '--'}</div>
-            <div class="rhythm-stat-change ${subjectMix.bestFocus ? 'change-positive' : 'change-neutral'}">${subjectMix.bestFocus ? `平均 ★${subjectMix.bestFocus.avgFocus.toFixed(1)}` : 'データが貯まると判定できます'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い組み方</div>
-            <div class="rhythm-stat-value">${subjectMix.bestAcc ? subjectMix.bestAcc.label : '--'}</div>
-            <div class="rhythm-stat-change ${subjectMix.bestAcc ? 'change-positive' : 'change-neutral'}">${subjectMix.bestAcc ? `正答率 ${subjectMix.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
-          </div>
-        </div>
-        ${subjectMix.bestAcc && subjectMix.worstAcc && subjectMix.bestAcc.label !== subjectMix.worstAcc.label ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div><strong>${subjectMix.bestAcc.label}</strong>の日の正答率が ${subjectMix.bestAcc.accuracy.toFixed(0)}% で、<strong>${subjectMix.worstAcc.label}</strong>の日は ${subjectMix.worstAcc.accuracy.toFixed(0)}%（差 ${(subjectMix.bestAcc.accuracy - subjectMix.worstAcc.accuracy).toFixed(0)}pt）。</div>
-          </div>
-        ` : ''}
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-wide">
-            <div>その日の科目数</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
-          </div>
-          ${subjectMix.bins.map(b => `
-            <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : subjectMix.bestAcc && b.label === subjectMix.bestAcc.label ? 'is-best' : ''}">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-row-num">${b.count}日</div>
-              <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}</div>
-              <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
-              <div class="break-row-num">${b.accuracy === null || b.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="break-note">1科目に絞る（ブロック）ほうが集中しやすい一方、複数科目を混ぜる（インターリーブ）ほうが定着しやすいとされます。どちらが自分に効いているかは、集中度と正答率の両方を見て判断してください。日数の少ない行は参考値です。</div>
-      `}
+      <div class="tod-heatmap-grid">${heatmapHTML}</div>
+      <div style="display:flex;justify-content:flex-end;align-items:center;gap:4px;font-size:10px;color:var(--color-text-tertiary);margin-top:8px">
+        <span>少</span>
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--color-bg-elevated)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.3)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.6)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,1)"></div>
+        <span>多</span>
+      </div>
     </div>
-
-    <!-- Section U: 動画とQBを同じ日にやるか -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.134s">
+    <div class="card" style="overflow:hidden">
       <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.summary}</div>
-        <div><div class="section-title">動画とQBの通し方</div><div class="section-subtitle">同じ日にQBまで通しているか、日を分けているか</div></div>
+        <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.location}</div>
+        <div><div class="section-title">場所別の分析</div><div class="section-subtitle">学習時間と集中度</div></div>
       </div>
-      ${!sameDayMix.hasData ? `
-        <div class="data-collecting-msg">活動の種類が入った記録が5日以上たまると比較できます。</div>
-      ` : `
-        ${sameDayMix.sameDayRate !== null ? `
-          <div class="break-verdict ${sameDayMix.sameDayRate >= 50 ? '' : 'break-verdict-muted'}">
-            ${sameDayMix.sameDayRate >= 50 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
-            <div>動画を見た科目のうち <strong>${sameDayMix.sameDayRate}%</strong> は同じ日にQBまで通しています（${sameDayMix.sameDayCollected}/${sameDayMix.videoSubjectDays}件）。${
-              sameDayMix.sameDayRate >= 50 ? '見たその日に回収できています。' : '見た日と解く日が離れがちです。'
-            }</div>
-          </div>
-        ` : ''}
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-wide">
-            <div>その日の組み合わせ</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div>
-          </div>
-          ${sameDayMix.groups.map(g => `
-            <div class="break-row break-row-wide ${g.count === 0 ? 'is-thin' : g.key === 'both' ? 'is-best' : ''}">
-              <div class="break-row-label">${g.label}</div>
-              <div class="break-row-num">${g.count}日<span class="break-row-share">${g.share}%</span></div>
-              <div class="break-row-num">${g.avgMin === null ? '-' : formatMinutes(Math.round(g.avgMin))}</div>
-              <div class="break-row-num">${g.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + g.avgFocus.toFixed(1)}</div>
-              <div class="break-row-num">${g.accuracy === null || g.solved < QB_MIN_SOLVED ? '<span style="color:var(--color-text-tertiary)">-</span>' : g.accuracy.toFixed(0) + '%'}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="break-note">「動画とQBの両方」の日はその日にインプットとアウトプットが揃っている日です。即日回収率は科目単位（動画を見た科目・日のうち、同じ日にその科目のQBもやった割合）で、上の日単位の表とは母数が違います。</div>
-      `}
-    </div>
-
-    <!-- Section V: セッションの長さと成果 -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.138s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${IC.timer}</div>
-        <div><div class="section-title">セッションの長さと成果</div><div class="section-subtitle">何分くらいで区切るのが自分に合っているか</div></div>
-      </div>
-      ${!sessionLen.hasData ? `
-        <div class="data-collecting-msg">セッションが10件以上たまると比較できます。</div>
-      ` : `
-        <div class="rhythm-stat-grid">
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.timer} セッションの長さ</div>
-            <div class="rhythm-stat-value">${formatMinutes(Math.round(sessionLen.medianDur))}</div>
-            <div class="rhythm-stat-change change-neutral">中央値（平均 ${formatMinutes(Math.round(sessionLen.avgDur))}／${sessionLen.sessionCount}件）</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.focus} 集中しやすい長さ</div>
-            <div class="rhythm-stat-value">${sessionLen.bestFocus ? sessionLen.bestFocus.label : '--'}</div>
-            <div class="rhythm-stat-change ${sessionLen.bestFocus ? 'change-positive' : 'change-neutral'}">${sessionLen.bestFocus ? `平均 ★${sessionLen.bestFocus.avgFocus.toFixed(1)}` : '★の記録が貯まると判定できます'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${insightIcons.target} 正答率が高い長さ</div>
-            <div class="rhythm-stat-value">${sessionLen.bestAcc ? sessionLen.bestAcc.label : '--'}</div>
-            <div class="rhythm-stat-change ${sessionLen.bestAcc ? 'change-positive' : 'change-neutral'}">${sessionLen.bestAcc ? `正答率 ${sessionLen.bestAcc.accuracy.toFixed(0)}%` : '解答数が貯まると判定できます'}</div>
-          </div>
-          <div class="rhythm-stat-item">
-            <div class="rhythm-stat-label">${IC.book} いちばん多い長さ</div>
-            <div class="rhythm-stat-value">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return t.label; })()}</div>
-            <div class="rhythm-stat-change change-neutral">${(() => { const t = sessionLen.bins.reduce((a,b)=>(b.count>a.count?b:a)); return `${t.count}件（${t.share}%）`; })()}</div>
-          </div>
-        </div>
-        ${sessionLen.bestAcc && sessionLen.worstAcc && sessionLen.bestAcc.label !== sessionLen.worstAcc.label ? `
-          <div class="break-verdict">
-            <span class="break-verdict-mark">${IC.check}</span>
-            <div><strong>${sessionLen.bestAcc.label}</strong>のセッションの正答率が ${sessionLen.bestAcc.accuracy.toFixed(0)}% でいちばん高く、<strong>${sessionLen.worstAcc.label}</strong>では ${sessionLen.worstAcc.accuracy.toFixed(0)}% でした（差 ${(sessionLen.bestAcc.accuracy - sessionLen.worstAcc.accuracy).toFixed(0)}pt）。</div>
-          </div>
-        ` : ''}
-        <div class="break-table">
-          <div class="break-row break-row-head break-row-wide">
-            <div>セッションの長さ</div><div style="text-align:right">件数</div><div style="text-align:right">集中度</div><div style="text-align:right">正答率</div><div style="text-align:right">1問あたり</div>
-          </div>
-          ${sessionLen.bins.map(b => `
-            <div class="break-row break-row-wide ${b.count === 0 ? 'is-thin' : sessionLen.bestAcc && b.label === sessionLen.bestAcc.label ? 'is-best' : ''}">
-              <div class="break-row-label">${b.label}</div>
-              <div class="break-row-num">${b.count}件<span class="break-row-share">${b.share}%</span></div>
-              <div class="break-row-num">${b.avgFocus === null || !b.reliableFocus ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
-              <div class="break-row-num">${b.accuracy === null || !b.reliableAcc ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.accuracy.toFixed(0) + '%'}</div>
-              <div class="break-row-num">${b.minPerQ === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : b.minPerQ.toFixed(1) + '分'}</div>
-            </div>
-          `).join('')}
-        </div>
-        <div class="break-note">長いセッションは休憩を挟んでいれば実質は分割されているので、「セッション内の休憩」のカードと合わせて読んでください。母数が足りない区分（${QB_MIN_SESSIONS}件・${QB_MIN_SOLVED}問未満）は薄く表示し、判定からも外しています。</div>
-      `}
-    </div>
-    ${insightGroupCloseHTML}
-
-    ${insightGroupOpenHTML('life', '生活リズムと睡眠', '起床・就寝、学習タイプ、睡眠と成績の関係', insightIcons.calendar, 'var(--color-accent-yellow)')}
-    <!-- Section A: Recent Rhythm & Trends -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.12s">
-      <div class="section-header" style="justify-content:space-between">
-        <div style="display:flex;align-items:center;gap:var(--space-md)">
-          <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.clock}</div>
-          <div><div class="section-title">生活リズムと最近の傾向</div><div class="section-subtitle">先週との比較で変化をチェック</div></div>
-        </div>
-        <span class="rhythm-status-badge ${rhythmStatus}">${rhythmLabel}</span>
-      </div>
-      <div class="rhythm-stat-grid">
-        <div class="rhythm-stat-item">
-          <div class="rhythm-stat-label">${IC.timer} 平均勉強開始</div>
-          <div class="rhythm-stat-value">${thisWeekAvgStart !== null ? minutesFromBase5AMToTimeStr(thisWeekAvgStart) : '--:--'}</div>
-          ${thisWeekAvgStart !== null && lastWeekAvgStart !== null ? `<div class="rhythm-stat-change ${startTimeDiff > 30 ? 'change-negative' : startTimeDiff < -30 ? 'change-positive' : 'change-neutral'}">${startTimeDiff > 0 ? '+' : ''}${startTimeDiff}分${startTimeDiff > 30 ? ' (後退)' : startTimeDiff < -30 ? ' (早起き化)' : ''}</div>` : '<div class="rhythm-stat-change change-neutral">先週データなし</div>'}
-        </div>
-        <div class="rhythm-stat-item">
-          <div class="rhythm-stat-label">${IC.clock} 1日平均学習</div>
-          <div class="rhythm-stat-value">${formatMinutes(thisWeekDailyAvg)}</div>
-          <div class="rhythm-stat-change ${dailyAvgChange >= 0 ? 'change-positive' : 'change-negative'}">${dailyAvgChange >= 0 ? '+' : ''}${dailyAvgChange}%</div>
-        </div>
-        <div class="rhythm-stat-item">
-          <div class="rhythm-stat-label">${IC.target} 平均集中度</div>
-          <div class="rhythm-stat-value">${thisWeekAvgFocus !== null ? '★' + thisWeekAvgFocus.toFixed(1) : '--'}</div>
-          ${focusChangeVal !== null ? `<div class="rhythm-stat-change ${focusChangeVal >= 0 ? 'change-positive' : 'change-negative'}">${focusChangeVal >= 0 ? '+' : ''}${focusChangeVal.toFixed(1)}</div>` : '<div class="rhythm-stat-change change-neutral">--</div>'}
-        </div>
-        <div class="rhythm-stat-item">
-          <div class="rhythm-stat-label">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 深夜学習割合</div>
-          <div class="rhythm-stat-value">${thisWeekLateNight}%</div>
-          <div class="rhythm-stat-change ${lateNightDiff >= 5 ? 'change-warning' : lateNightDiff <= -5 ? 'change-positive' : 'change-neutral'}">${lateNightDiff >= 0 ? '+' : ''}${lateNightDiff}%</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Section B: Personal Analysis -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.14s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
-        <div><div class="section-title">学習タイプ自己分析</div><div class="section-subtitle">直近30日間のデータから診断</div></div>
-      </div>
-      ${chronoTotal30 > 1 ? `
-      <div class="personal-type-grid">
-        <div class="personal-type-item">
-          <div class="personal-type-icon" style="background:${chronoColor}22;color:${chronoColor}">${chronoIconSvg}</div>
-          <div class="personal-type-name">${chronoName}</div>
-          <div class="personal-type-detail">朝${morningPct}% / 夜${nightPct}%</div>
-        </div>
-        <div class="personal-type-item">
-          <div class="personal-type-icon" style="background:${paceColor}22;color:${paceColor}">${paceIconSvg}</div>
-          <div class="personal-type-name">${paceName}</div>
-          <div class="personal-type-detail">CV: ${paceCV.toFixed(2)}</div>
-        </div>
-        <div class="personal-type-item">
-          <div class="personal-type-icon" style="background:rgba(78,205,196,0.13);color:var(--color-accent-teal)">${IC._s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')}</div>
-          <div class="personal-type-name">${bestEnv ? bestEnv.name : '分析中...'}</div>
-          <div class="personal-type-detail">${bestEnv ? '★' + bestEnv.avg + '（' + bestEnv.count + '件）' : 'データ蓄積中'}</div>
-        </div>
-      </div>
-      ` : '<div class="data-collecting-msg">データを蓄積中です...</div>'}
-    </div>
-
-    <!-- Section Q: 徹夜のコスト -->
-    ${allNighter.hasData ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.15s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
-        <div><div class="section-title">徹夜のコスト</div><div class="section-subtitle">徹夜した日と、その翌日・翌々日を平常日と比べる（${allNighter.count}回ぶん）</div></div>
-      </div>
-      <div class="break-table">
-        <div class="break-row break-row-head break-row-run">
-          <div>日</div><div style="text-align:right">日数</div><div style="text-align:right">学習時間</div><div style="text-align:right">集中度</div>
-        </div>
-        ${[
-          { label: '平常日', d: allNighter.normal, base: true },
-          { label: '徹夜した日', d: allNighter.onNight },
-          { label: '翌日', d: allNighter.day1 },
-          { label: '翌々日', d: allNighter.day2 }
-        ].map(row => {
-          const diff = (!row.base && row.d.avgMin !== null && allNighter.normal.avgMin)
-            ? (row.d.avgMin - allNighter.normal.avgMin) / allNighter.normal.avgMin * 100 : null;
-          return `<div class="break-row break-row-run ${row.base ? 'is-best' : row.d.days === 0 ? 'is-thin' : ''}">
-            <div class="break-row-label">${row.label}</div>
-            <div class="break-row-num">${row.d.days}日</div>
-            <div class="break-row-num">${row.d.avgMin === null ? '-' : formatMinutes(Math.round(row.d.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -10 ? '#ef4444' : diff > 10 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
-            <div class="break-row-num">${row.d.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + row.d.avgFocus.toFixed(1)}</div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div class="break-note">平常日は「徹夜した日・その翌日・翌々日のいずれでもない学習日」です。徹夜が何日尾を引くかを見る目的なので、回数が少ないうちは参考値として扱ってください。</div>
-    </div>
-    ` : ''}
-
-    <!-- Section R: ブランク明けの立ち上がり -->
-    ${comeback.hasData ? `
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.155s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.calendar}</div>
-        <div><div class="section-title">ブランク明けの立ち上がり</div><div class="section-subtitle">何日空けたあとかで、その日の学習量がどう変わるか</div></div>
-      </div>
-      <div class="break-table">
-        <div class="break-row break-row-head break-row-run">
-          <div>前回からの空き</div><div style="text-align:right">日数</div><div style="text-align:right">その日の学習</div><div style="text-align:right">集中度</div>
-        </div>
-        ${comeback.bins.map((b, i) => {
-          const diff = (i > 0 && b.avgMin !== null && comeback.baseMin)
-            ? (b.avgMin - comeback.baseMin) / comeback.baseMin * 100 : null;
-          return `<div class="break-row break-row-run ${i === 0 ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
-            <div class="break-row-label">${b.label}</div>
-            <div class="break-row-num">${b.count}日</div>
-            <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -20 ? '#ef4444' : diff > 0 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
-            <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
-          </div>`;
-        }).join('')}
-      </div>
-      <div class="break-note">学習しない日はバイト・旅行という前提なので、途切れたこと自体は問題として扱っていません。見ているのは「空けたあと、どれだけ戻れているか」です。長い空きのあとで落ちるなら、旅行明けに軽いメニューを1日はさむと戻りやすくなります。</div>
-    </div>
-    ` : ''}
-
-    <!-- Section C: Sleep Correlation -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.16s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
-        <div><div class="section-title">睡眠と学習の相関</div><div class="section-subtitle">起床・就寝データから分析</div></div>
-      </div>
-      ${hasSleepData ? `
-      <div class="sleep-insight-grid">
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.timer} 起床リズム安定度</div>
-          <div class="sleep-insight-value">
-            ${wakeStabilityStatus ? `<span class="rhythm-status-badge ${wakeStabilityStatus}">${wakeStabilityStatus === 'good' ? '安定' : wakeStabilityStatus === 'warning' ? 'やや不安定' : '不安定'}</span>` : '--'}
-          </div>
-          ${wakeStabilitySD !== null ? `<div class="sleep-insight-note">標準偏差: ${wakeStabilitySD}分</div>` : ''}
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.clock} 初動タイムラグ</div>
-          <div class="sleep-insight-value">${thisWeekLag !== null ? thisWeekLag + '分' : '--'}</div>
-          ${thisWeekLag !== null && lastWeekLag !== null ? `<div class="sleep-insight-note">先週比: <span class="${(thisWeekLag - lastWeekLag) <= 0 ? 'change-positive' : 'change-negative'}">${thisWeekLag - lastWeekLag >= 0 ? '+' : ''}${thisWeekLag - lastWeekLag}分</span></div>` : ''}
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.star} ベスト睡眠時間</div>
-          <div class="sleep-insight-value">${bestSleepSlot ? bestSleepSlot.slot : '--'}</div>
-          ${bestSleepSlot ? `<div class="sleep-insight-note">翌日の平均集中度: ★${bestSleepSlot.avg.toFixed(1)}</div>` : '<div class="sleep-insight-note">データ蓄積中</div>'}
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.shield} クールダウン</div>
-          <div class="sleep-insight-value">${cooldownWarning ? '<span class="change-warning">要注意</span>' : '<span class="change-positive">良好</span>'}</div>
-          <div class="sleep-insight-note">${cooldownWarning ? '直近7日中' + shortCooldownDays + '日が就寝直前まで勉強' : '適切なクールダウン時間を確保'}</div>
-        </div>
-      </div>
-      ${cooldownWarning ? '<div class="sleep-alert-box alert-warning">' + IC.warn + ' 就寝直前まで勉強する傾向があり、睡眠の質を下げている可能性があります。勉強終了後は30分以上のクールダウンを心がけましょう。</div>' : ''}
-      ${lateNightAlert ? '<div class="sleep-alert-box alert-danger">' + IC.warn + ' 3日連続で就寝が大幅に後退しています。夜型化の兆候です。</div>' : ''}
-      ` : '<div class="data-collecting-msg">ダッシュボードの起床/就寝ボタンでデータを蓄積しましょう（3日分以上必要）</div>'}
-    </div>
-
-    <!-- Section C2: Sleep Statistics -->
-    <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.17s">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')}</div>
-        <div><div class="section-title">睡眠統計</div><div class="section-subtitle">睡眠パターンと負債の分析</div></div>
-      </div>
-      ${hasSleepStats ? `
-      <div class="sleep-insight-grid">
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.clock} 平均睡眠時間</div>
-          <div class="sleep-insight-value" style="font-size:1.3rem;">${sleepAvgHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
-          ${thisWeekSleepAvg !== null && lastWeekSleepAvg !== null ? `<div class="sleep-insight-note"><span class="${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? 'change-positive' : 'change-negative'}">${(thisWeekSleepAvg - lastWeekSleepAvg) >= 0 ? '+' : ''}${(thisWeekSleepAvg - lastWeekSleepAvg).toFixed(1)}h vs 先週</span></div>` : `<div class="sleep-insight-note">${sleepHoursArr.length}日分のデータ</div>`}
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.target} 睡眠負債</div>
-          <div class="sleep-insight-value" style="font-size:1.3rem;color:${sleepDebtHours > 7 ? '#ef4444' : sleepDebtHours > 3 ? '#f59e0b' : '#4ade80'}">${sleepDebtHours > 0 ? '+' : ''}${sleepDebtHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
-          <div class="sleep-insight-note">${sleepDebtHours > 7 ? '⚠ 深刻な睡眠不足です' : sleepDebtHours > 3 ? '注意：睡眠が不足気味です' : sleepDebtHours > 0 ? 'ほぼ良好です' : '十分に眠れています'}（基準: ${IDEAL_SLEEP_HOURS}h/日）</div>
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">${IC.star} 最長 / 最短</div>
-          <div class="sleep-insight-value" style="font-size:1.1rem;">${sleepMaxHours.toFixed(1)}h <span style="font-size:0.7rem;color:var(--color-text-tertiary)">/</span> ${sleepMinHours.toFixed(1)}h</div>
-          <div class="sleep-insight-note">振れ幅 ${(sleepMaxHours - sleepMinHours).toFixed(1)}h</div>
-        </div>
-        <div class="sleep-insight-item">
-          <div class="sleep-insight-label">🌙 徹夜</div>
-          <div class="sleep-insight-value" style="font-size:1.3rem;color:${allNighterCount > 0 ? '#f59e0b' : '#4ade80'}">${allNighterCount}<span style="font-size:0.7rem;color:var(--color-text-secondary)">回</span></div>
-          <div class="sleep-insight-note">${allNighterCount > 2 ? '⚠ 徹夜は集中度を大幅に低下させます' : allNighterCount > 0 ? '控えめに' : '良い睡眠習慣です'}</div>
-        </div>
-      </div>
-
-      <!-- Sleep Duration Chart -->
-      <div style="margin-top:20px;">
-        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間の推移</div>
-        <div class="chart-container" style="height:200px;"><canvas id="insightSleepChart"></canvas></div>
-      </div>
-
-      <!-- Sleep-Focus Correlation -->
-      ${sleepSlotCompare.length > 0 ? `
-      <div style="margin-top:20px;">
-        <div style="font-weight:700;font-size:0.85rem;margin-bottom:8px;">睡眠時間別の平均集中度</div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px;">
-          ${sleepSlotCompare.map(s => `
-            <div style="flex:1;min-width:70px;background:var(--color-bg-elevated);border-radius:8px;padding:10px;text-align:center;">
-              <div style="font-size:0.75rem;color:var(--color-text-tertiary);margin-bottom:4px;">${s.slot}</div>
-              <div style="font-size:1.1rem;font-weight:700;color:${s.slot === '<6h' ? '#ef4444' : s.slot === '8h+' ? '#4ade80' : 'var(--color-text-primary)'}">${s.avg}★</div>
-              <div style="font-size:0.65rem;color:var(--color-text-tertiary)">${s.count}件</div>
-            </div>
-          `).join('')}
-        </div>
-        ${(() => {
-          const best = sleepSlotCompare.sort((a, b) => parseFloat(b.avg) - parseFloat(a.avg))[0];
-          const worst = sleepSlotCompare.sort((a, b) => parseFloat(a.avg) - parseFloat(b.avg))[0];
-          if (best && worst && best.slot !== worst.slot && parseFloat(best.avg) - parseFloat(worst.avg) >= 0.3) {
-            return `<div style="background:rgba(78,205,196,0.1);border:1px solid rgba(78,205,196,0.3);color:var(--color-accent-teal);padding:10px;border-radius:8px;margin-top:10px;font-size:0.8rem;">
-              💡 ${best.slot}の睡眠時は平均★${best.avg}、${worst.slot}では★${worst.avg}。差は${(parseFloat(best.avg) - parseFloat(worst.avg)).toFixed(1)}ポイントです。
-            </div>`;
-          }
-          return '';
-        })()}
-      </div>
-      ` : ''}
-      ` : '<div class="data-collecting-msg">睡眠データが蓄積されると統計が表示されます</div>'}
-    </div>
-
-    ${insightGroupCloseHTML}
-
-    ${insightGroupOpenHTML('trend', '学習時間の傾向', '推移・科目・時間帯・場所・曜日の内訳', insightIcons.trend, 'var(--color-accent-blue)')}
-    <!-- Trend Chart + Subject Donut -->
-    <div class="insights-grid animate-slide-up" style="animation-delay:.15s">
-      <div class="card" style="overflow:hidden">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
-          <div><div class="section-title">学習推移</div><div class="section-subtitle">日別の学習時間</div></div>
-        </div>
-        <div class="chart-container"><canvas id="insightTrendChart"></canvas></div>
-      </div>
-      <div class="card" style="overflow:hidden">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${insightIcons.subject}</div>
-          <div><div class="section-title">科目分布</div><div class="section-subtitle">学習時間の内訳</div></div>
-        </div>
-        ${sortedSubjects.length > 0 ? `
-          <div style="display:flex;align-items:center;gap:var(--space-lg)">
-            <svg viewBox="0 0 160 160" style="width:140px;height:140px;flex-shrink:0">
-              <circle cx="80" cy="80" r="${donutR}" fill="none" stroke="var(--color-bg-elevated)" stroke-width="20"/>
-              ${donutSVG}
-              <text x="80" y="76" text-anchor="middle" fill="var(--color-text-primary)" font-size="16" font-weight="800">${Math.floor(donutTotal/60)}h</text>
-              <text x="80" y="94" text-anchor="middle" fill="var(--color-text-tertiary)" font-size="10">合計</text>
-            </svg>
-            <div style="flex:1;font-size:0.75rem;display:flex;flex-direction:column;gap:4px">
-              ${sortedSubjects.slice(0,7).map(([name,min],i) => `
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span style="width:8px;height:8px;border-radius:50%;background:${DONUT_COLORS[i%DONUT_COLORS.length]};flex-shrink:0"></span>
-                  <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${name}</span>
-                  <span style="font-weight:700;color:var(--color-text-secondary)">${formatMinutes(min)}</span>
-                </div>
-              `).join('')}
-              ${sortedSubjects.length > 7 ? `<div style="color:var(--color-text-tertiary)">...他${sortedSubjects.length-7}科目</div>` : ''}
-            </div>
-          </div>
-        ` : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">データなし</p>'}
-      </div>
-    </div>
-
-    <!-- TOD Heatmap + Location -->
-    <div class="insights-grid animate-slide-up" style="animation-delay:.2s">
-      <div class="card" style="overflow:hidden">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-yellow)">${insightIcons.clock}</div>
-          <div><div class="section-title">時間帯 × 曜日</div><div class="section-subtitle">いつ勉強しているか</div></div>
-        </div>
-        <div class="tod-heatmap-grid">${heatmapHTML}</div>
-        <div style="display:flex;justify-content:flex-end;align-items:center;gap:4px;font-size:10px;color:var(--color-text-tertiary);margin-top:8px">
-          <span>少</span>
-          <div style="width:12px;height:12px;border-radius:2px;background:var(--color-bg-elevated)"></div>
-          <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.3)"></div>
-          <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.6)"></div>
-          <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,1)"></div>
-          <span>多</span>
-        </div>
-      </div>
-      <div class="card" style="overflow:hidden">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-green)">${insightIcons.location}</div>
-          <div><div class="section-title">場所別の分析</div><div class="section-subtitle">学習時間と集中度</div></div>
-        </div>
-        ${sortedLocations.length > 0 ? sortedLocations.map(([loc, stat]) => {
-          const locAvgFocus = stat.focusCount > 0 ? (stat.focusSum / stat.focusCount).toFixed(1) : '-';
-          return `<div class="location-stat-row">
-            <div class="location-name">${loc}</div>
-            <div class="location-bar-wrap"><div class="location-bar-fill" style="width:${Math.round(stat.min/maxLocMin*100)}%;background:var(--gradient-primary)" data-width="${Math.round(stat.min/maxLocMin*100)}"></div></div>
-            <div class="location-stat-meta">${formatMinutes(stat.min)} / ${locAvgFocus}★</div>
-          </div>`;
-        }).join('') : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">データなし</p>'}
-      </div>
-    </div>
-
-    <!-- Subject Focus Chart -->
-    <div class="card animate-slide-up" style="animation-delay:.22s; overflow:hidden">
-      <div class="section-header">
-        <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
-        <div><div class="section-title">科目別 平均集中度</div><div class="section-subtitle">集中しやすい科目・難しい科目を把握しよう</div></div>
-      </div>
-      ${sortedSubjectFocus.length > 0 ? (() => {
-        // ★ は 1〜5 の尺度なので、バーは 0 基点ではなく 1 基点で引く。
-        // 0 基点だと 3.7 も 4.8 もほぼ満タンに見えて差が読めない。
-        // さらに全体平均の位置に線を引いて、どの科目が自分の普段より
-        // 上か下かを見れるようにする。
-        const focusScalePct = v => Math.max(0, Math.min(100, (v - 1) / 4 * 100));
-        const overallAvg = focusLogs.length > 0
-          ? focusLogs.reduce((a, l) => a + Number(l.focus_level), 0) / focusLogs.length
-          : 0;
-        const markerPct = focusScalePct(overallAvg);
-        return `
-        <div class="focus-rank" style="--focus-marker:${markerPct.toFixed(1)}%">
-          ${sortedSubjectFocus.map(([name, avg, cnt]) => {
-            // #f7dc6f はライトモードだと白地に沈むので、中位帯だけ濃いアンバーにする
-            const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#d99e0b' : '#ff6b6b';
-            const diff = avg - overallAvg;
-            const diffLabel = Math.abs(diff) < 0.05 ? '平均並み' : `平均より ${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}`;
-            return `<div class="focus-rank-row" title="${esc(name)}：平均 ★${avg.toFixed(1)}、${cnt}件、${diffLabel}">
-              <div class="focus-rank-name">${esc(name)}</div>
-              <div class="focus-rank-track">
-                <div class="focus-rank-fill" style="width:${focusScalePct(avg).toFixed(1)}%;background:${color}"></div>
-              </div>
-              <div class="focus-rank-value" style="color:${color}">★${avg.toFixed(1)}</div>
-              <div class="focus-rank-count">${cnt}件</div>
-            </div>`;
-          }).join('')}
-        </div>
-        <div class="focus-rank-foot">
-          <span class="focus-rank-legend"><i></i>縦線は全体平均 ★${overallAvg.toFixed(1)}</span>
-          <span>バーは ★1〜★5 の範囲</span>
+      ${sortedLocations.length > 0 ? sortedLocations.map(([loc, stat]) => {
+        const locAvgFocus = stat.focusCount > 0 ? (stat.focusSum / stat.focusCount).toFixed(1) : '-';
+        return `<div class="location-stat-row">
+          <div class="location-name">${loc}</div>
+          <div class="location-bar-wrap"><div class="location-bar-fill" style="width:${Math.round(stat.min/maxLocMin*100)}%;background:var(--gradient-primary)" data-width="${Math.round(stat.min/maxLocMin*100)}"></div></div>
+          <div class="location-stat-meta">${formatMinutes(stat.min)} / ${locAvgFocus}★</div>
         </div>`;
-      })() : '<p class="insight-empty-note">集中度データなし（セッション記録時に★を評価してください）</p>'}
+      }).join('') : '<p style="text-align:center;color:var(--color-text-tertiary);padding:var(--space-xl)">データなし</p>'}
     </div>
+  </div>
 
-    <!-- DOW Chart + Session List -->
-    <div class="insights-grid animate-slide-up" style="animation-delay:.25s">
-      <div class="card dow-card">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.calendar}</div>
-          <div><div class="section-title">曜日別学習時間</div><div class="section-subtitle">${(() => {
-            const total = dowMinutes.reduce((a, b) => a + b, 0);
-            if (total <= 0) return '曜日ごとの傾向';
-            const top = dowMinutes.indexOf(Math.max(...dowMinutes));
-            const bottom = dowMinutes.indexOf(Math.min(...dowMinutes));
-            return `${dowNames[top]}曜がいちばん多く、${dowNames[bottom]}曜がいちばん少ない`;
-          })()}</div></div>
-        </div>
-        <div class="dow-chart">
-          ${[1,2,3,4,5,6,0].map(d => {
-            const isTop = dowMinutes[d] > 0 && dowMinutes[d] === maxDowMin;
-            return `
-            <div class="dow-bar-wrap${isTop ? ' is-top' : ''}${dowMinutes[d] === 0 ? ' is-empty' : ''}" title="${dowNames[d]}曜：${formatMinutes(dowMinutes[d])} / ${dowCounts[d]}件">
-              <div class="dow-bar-value">${dowMinutes[d] > 0 ? formatMinutes(dowMinutes[d]) : '—'}</div>
-              <div class="dow-bar" style="height:${Math.max(2, Math.round(dowMinutes[d]/maxDowMin*100))}%"></div>
-              <div class="dow-bar-label">${dowNames[d]}</div>
-            </div>`;
-          }).join('')}
-        </div>
-        <div class="dow-foot">棒の高さは最多の曜日を100%とした相対値／数字は合計時間</div>
+  <!-- Subject Focus Chart -->
+  <div class="card animate-slide-up" style="animation-delay:.22s; overflow:hidden">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-purple)">${insightIcons.focus}</div>
+      <div><div class="section-title">科目別 平均集中度</div><div class="section-subtitle">集中しやすい科目・難しい科目を把握しよう</div></div>
+    </div>
+    ${sortedSubjectFocus.length > 0 ? (() => {
+      // ★ は 1〜5 の尺度なので、バーは 0 基点ではなく 1 基点で引く。
+      // 0 基点だと 3.7 も 4.8 もほぼ満タンに見えて差が読めない。
+      // さらに全体平均の位置に線を引いて、どの科目が自分の普段より
+      // 上か下かを見れるようにする。
+      const focusScalePct = v => Math.max(0, Math.min(100, (v - 1) / 4 * 100));
+      const overallAvg = focusLogs.length > 0
+        ? focusLogs.reduce((a, l) => a + Number(l.focus_level), 0) / focusLogs.length
+        : 0;
+      const markerPct = focusScalePct(overallAvg);
+      return `
+      <div class="focus-rank" style="--focus-marker:${markerPct.toFixed(1)}%">
+        ${sortedSubjectFocus.map(([name, avg, cnt]) => {
+          // #f7dc6f はライトモードだと白地に沈むので、中位帯だけ濃いアンバーにする
+          const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#d99e0b' : '#ff6b6b';
+          const diff = avg - overallAvg;
+          const diffLabel = Math.abs(diff) < 0.05 ? '平均並み' : `平均より ${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}`;
+          return `<div class="focus-rank-row" title="${esc(name)}：平均 ★${avg.toFixed(1)}、${cnt}件、${diffLabel}">
+            <div class="focus-rank-name">${esc(name)}</div>
+            <div class="focus-rank-track">
+              <div class="focus-rank-fill" style="width:${focusScalePct(avg).toFixed(1)}%;background:${color}"></div>
+            </div>
+            <div class="focus-rank-value" style="color:${color}">★${avg.toFixed(1)}</div>
+            <div class="focus-rank-count">${cnt}件</div>
+          </div>`;
+        }).join('')}
       </div>
-      <div class="card">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.chart}</div>
-          <div><div class="section-title">学習バランスとパフォーマンス</div><div class="section-subtitle">目的別の内訳</div></div>
-        </div>
-        <div class="balance-list">
-          ${performanceHtml || '<p class="insight-empty-note">データがありません</p>'}
-          ${balanceAlertHtml}
-        </div>
-        <div class="balance-chart-wrap">
-          <canvas id="insightBalanceChart"></canvas>
-        </div>
+      <div class="focus-rank-foot">
+        <span class="focus-rank-legend"><i></i>縦線は全体平均 ★${overallAvg.toFixed(1)}</span>
+        <span>バーは ★1〜★5 の範囲</span>
+      </div>`;
+    })() : '<p class="insight-empty-note">集中度データなし（セッション記録時に★を評価してください）</p>'}
+  </div>
+
+  <!-- DOW Chart + Session List -->
+  <div class="insights-grid animate-slide-up" style="animation-delay:.25s">
+    <div class="card dow-card">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-orange)">${insightIcons.calendar}</div>
+        <div><div class="section-title">曜日別学習時間</div><div class="section-subtitle">${(() => {
+          const total = dowMinutes.reduce((a, b) => a + b, 0);
+          if (total <= 0) return '曜日ごとの傾向';
+          const top = dowMinutes.indexOf(Math.max(...dowMinutes));
+          const bottom = dowMinutes.indexOf(Math.min(...dowMinutes));
+          return `${dowNames[top]}曜がいちばん多く、${dowNames[bottom]}曜がいちばん少ない`;
+        })()}</div></div>
+      </div>
+      <div class="dow-chart">
+        ${[1,2,3,4,5,6,0].map(d => {
+          const isTop = dowMinutes[d] > 0 && dowMinutes[d] === maxDowMin;
+          return `
+          <div class="dow-bar-wrap${isTop ? ' is-top' : ''}${dowMinutes[d] === 0 ? ' is-empty' : ''}" title="${dowNames[d]}曜：${formatMinutes(dowMinutes[d])} / ${dowCounts[d]}件">
+            <div class="dow-bar-value">${dowMinutes[d] > 0 ? formatMinutes(dowMinutes[d]) : '—'}</div>
+            <div class="dow-bar" style="height:${Math.max(2, Math.round(dowMinutes[d]/maxDowMin*100))}%"></div>
+            <div class="dow-bar-label">${dowNames[d]}</div>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="dow-foot">棒の高さは最多の曜日を100%とした相対値／数字は合計時間</div>
+    </div>
+    <div class="card">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.chart}</div>
+        <div><div class="section-title">学習バランスとパフォーマンス</div><div class="section-subtitle">目的別の内訳</div></div>
+      </div>
+      <div class="balance-list">
+        ${performanceHtml || '<p class="insight-empty-note">データがありません</p>'}
+        ${balanceAlertHtml}
+      </div>
+      <div class="balance-chart-wrap">
+        <canvas id="insightBalanceChart"></canvas>
       </div>
     </div>
-    ${insightGroupCloseHTML}
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
 
-    ${insightGroupOpenHTML('sessions', 'セッション記録', '条件に一致した学習ログの一覧', insightIcons.list, 'var(--color-accent-pink)', sessionCount + '件')}
-    <div class="insights-grid full">
-      <div class="card" style="overflow:hidden">
-        <div class="section-header">
-          <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${insightIcons.list}</div>
-          <div><div class="section-title">セッション一覧</div><div class="section-subtitle">${sessionCount}件</div></div>
+// セッション記録
+function insightsSessionsHTML(d) {
+  const { logs, sessionCount } = d;
+  return `
+  ${insightGroupOpenHTML('sessions', 'セッション記録', '条件に一致した学習ログの一覧', insightIcons.list, 'var(--color-accent-pink)', sessionCount + '件')}
+  <div class="insights-grid full">
+    <div class="card" style="overflow:hidden">
+      <div class="section-header">
+        <div class="section-icon-wrap" style="color:var(--color-accent-pink)">${insightIcons.list}</div>
+        <div><div class="section-title">セッション一覧</div><div class="section-subtitle">${sessionCount}件</div></div>
+      </div>
+      <div class="session-list">
+        <div class="session-row session-row-header">
+          <div>日時</div><div>科目</div><div style="text-align:right">時間</div><div style="text-align:center">集中</div><div style="text-align:right">場所</div>
         </div>
-        <div class="session-list">
-          <div class="session-row session-row-header">
-            <div>日時</div><div>科目</div><div style="text-align:right">時間</div><div style="text-align:center">集中</div><div style="text-align:right">場所</div>
-          </div>
-          ${logs.slice(0, 50).map(l => {
-            const d = new Date(l.started_at);
-            const dateStr = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-            return `<div class="session-row">
-              <div class="session-date">${dateStr}</div>
-              <div class="session-subject">${esc(normalizeSubjectName(l.subject_name))}${activityChip(l.activity)}</div>
-              <div class="session-duration">${formatMinutes(l.duration_minutes)}</div>
-              <div class="session-focus">${l.focus_level ? '★'.repeat(Number(l.focus_level)) : '-'}</div>
-              <div class="session-location">${esc(l.location || '未設定')}</div>
-            </div>`;
-          }).join('')}
-          ${logs.length > 50 ? `<div style="text-align:center;padding:var(--space-md);color:var(--color-text-tertiary);font-size:var(--font-size-xs)">他 ${logs.length - 50} 件</div>` : ''}
-          ${logs.length === 0 ? '<div style="text-align:center;padding:var(--space-xl);color:var(--color-text-tertiary)">該当するセッションがありません</div>' : ''}
-        </div>
+        ${logs.slice(0, 50).map(l => {
+          const d = new Date(l.started_at);
+          const dateStr = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+          return `<div class="session-row">
+            <div class="session-date">${dateStr}</div>
+            <div class="session-subject">${esc(normalizeSubjectName(l.subject_name))}${activityChip(l.activity)}</div>
+            <div class="session-duration">${formatMinutes(l.duration_minutes)}</div>
+            <div class="session-focus">${l.focus_level ? '★'.repeat(Number(l.focus_level)) : '-'}</div>
+            <div class="session-location">${esc(l.location || '未設定')}</div>
+          </div>`;
+        }).join('')}
+        ${logs.length > 50 ? `<div style="text-align:center;padding:var(--space-md);color:var(--color-text-tertiary);font-size:var(--font-size-xs)">他 ${logs.length - 50} 件</div>` : ''}
+        ${logs.length === 0 ? '<div style="text-align:center;padding:var(--space-xl);color:var(--color-text-tertiary)">該当するセッションがありません</div>' : ''}
       </div>
     </div>
-    ${insightGroupCloseHTML}
+  </div>
+  ${insightGroupCloseHTML}
+`;
+}
 
-  `;
-
+// グラフ描画。ct.innerHTML が入ったあとに走らせる。
+function drawInsightCharts(ct, d) {
+  const { IDEAL_SLEEP_HOURS, hasSleepStats, medAcc, medHours, scatterPoints, sleepDailyData,
+    sleepMaxHours, trendData, trendDataAssig, trendDataCBT, trendDataExam, trendDataOther,
+    trendLabels } = d;
   // --- Charts ---
   setTimeout(() => {
     // 投下時間 × 正答率の散布図。中央値で4象限に切り、右下（時間の割に伸びていない）を赤で示す。
@@ -9379,7 +9516,11 @@ async function renderInsights(){
       }
     }
   }, 250);
+}
 
+// フィルタ操作とセクション開閉のイベント配線。
+function wireInsightFilters(ct, d) {
+  const { io } = d;
   // --- Event: Filter preset chips ---
   document.getElementById('filter-preset-chips')?.addEventListener('click', e => {
     const chip = e.target.closest('.filter-chip');
@@ -9469,8 +9610,8 @@ async function renderInsights(){
   });
   document.getElementById('insight-expand-all')?.addEventListener('click', () => setAllInsightGroups(true));
   document.getElementById('insight-collapse-all')?.addEventListener('click', () => setAllInsightGroups(false));
-
 }
+
 
 // --- Settings ---
 function renderSettings(){
