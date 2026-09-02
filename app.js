@@ -6126,6 +6126,23 @@ const IO_BALANCED_PT = 10;
 // 講義動画は教材に登録された全部を見るとは限らない（CBTは主要分野だけ、など）。
 // 視聴予定の本数を持たせ、未設定なら登録総数＝全部見る前提にフォールバックする。
 const IO_VIDEO_PLAN_KEY = 'medfocus_io_video_plan';
+// 「この科目の講義動画は見ない」の集合。公衆衛生のように量が多くて動画を
+// 使わない科目があると、全体の本数を1つ入れる方式では正確に外せない。
+const IO_VIDEO_SKIP_KEY = 'medfocus_io_video_skip';
+function getIOVideoSkip() {
+  try {
+    const a = JSON.parse(localStorage.getItem(IO_VIDEO_SKIP_KEY) || '[]');
+    return Array.isArray(a) ? a.filter(x => typeof x === 'string') : [];
+  } catch (e) { return []; }
+}
+function toggleIOVideoSkip(id) {
+  const cur = getIOVideoSkip();
+  const next = cur.includes(id) ? cur.filter(x => x !== id) : cur.concat(id);
+  try { localStorage.setItem(IO_VIDEO_SKIP_KEY, JSON.stringify(next)); } catch (e) {}
+}
+function clearIOVideoSkip() {
+  try { localStorage.removeItem(IO_VIDEO_SKIP_KEY); } catch (e) {}
+}
 function getIOVideoPlan() {
   const v = parseInt(localStorage.getItem(IO_VIDEO_PLAN_KEY), 10);
   return Number.isFinite(v) && v > 0 ? v : null;
@@ -6152,10 +6169,16 @@ function correctedVideoShare(videoMin, qbMin, baselineVideoShare) {
   return v / (v + q) * 100;
 }
 
-function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan) {
+function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan, videoSkip) {
   const rows = pipelineRows || [];
-  const videoTotal = rows.reduce((s, r) => s + (r.videoTotal || 0), 0);
-  const videoDone = rows.reduce((s, r) => s + (r.videoDone || 0), 0);
+  const skip = new Set(videoSkip || []);
+  // 見ない科目は動画の総数からも消化数からも外す。QBはそのまま残す
+  // （動画を見ないだけで問題は解くため）。
+  const videoRows = rows.filter(r => !skip.has(r.id));
+  const videoTotal = videoRows.reduce((s, r) => s + (r.videoTotal || 0), 0);
+  const videoDone = videoRows.reduce((s, r) => s + (r.videoDone || 0), 0);
+  const skippedVideoTotal = rows.filter(r => skip.has(r.id))
+    .reduce((s, r) => s + (r.videoTotal || 0), 0);
   const qbTotal = rows.reduce((s, r) => s + (r.qb1Total || 0), 0);
   const qbDone = rows.reduce((s, r) => s + (r.qb1Done || 0), 0);
   const plan = qbPlannedTotal(qbProgress, targetRound);
@@ -6171,7 +6194,7 @@ function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan)
   const videoPlanned = videoPlan !== null && videoPlan !== undefined
     ? Math.min(videoPlan, videoTotal) : videoTotal;
   if (!unit.hasVideo || !unit.hasQuestion || videoPlanned <= 0 || plan.total <= 0) {
-    return { hasData: false, progress, plan, targetRound, videoTotal, videoPlanned };
+    return { hasData: false, progress, plan, targetRound, videoTotal, videoPlanned, skippedVideoTotal, videoRows: rows };
   }
   // 講義動画は見る予定のぶんを1回。QBは目標周回ぶん。
   const vMin = videoPlanned * unit.minPerVideo;
@@ -6179,7 +6202,8 @@ function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan)
   const total = vMin + qMin;
   return {
     hasData: true, progress, plan, targetRound,
-    videoTotal, videoPlanned, qbTotal: plan.total, vMin, qMin,
+    videoTotal, videoPlanned, skippedVideoTotal, videoRows: rows,
+    qbTotal: plan.total, vMin, qMin,
     videoPlanPct: videoTotal > 0 ? videoPlanned / videoTotal * 100 : null,
     videoShare: total > 0 ? vMin / total * 100 : null,
     remainVideoMin: Math.max(0, videoPlanned - videoDone) * unit.minPerVideo,
@@ -7141,7 +7165,7 @@ async function renderInsights(){
   // 期間で動かすと「今日」を選んだだけでサンプル不足になり基準線ごと消えてしまう。
   const unitCost = buildUnitCost(allLogs);
   const ioTargetRound = getPacerTargetRound();
-  const ioBaseline = buildIOBaseline(unitCost, pipeline.rows, getQBProgress(), ioTargetRound, getIOVideoPlan());
+  const ioBaseline = buildIOBaseline(unitCost, pipeline.rows, getQBProgress(), ioTargetRound, getIOVideoPlan(), getIOVideoSkip());
   const timeBudget = buildTimeBudget(examCountdowns, ioBaseline, allLogs, logicalToday);
   const accTrend = buildAccuracyTrend(logs, logicalToday);
   const subjectBudget = buildSubjectBudget(getQBProgress(), unitCost, ioTargetRound);
@@ -7745,12 +7769,28 @@ async function renderInsights(){
       </div>
 
       ${ioBaseline.videoTotal > 0 ? `
-        <div class="io-plan-row">
-          <span class="io-plan-label">見る予定の講義動画</span>
-          <input type="number" class="io-plan-input" id="io-video-plan" min="1" max="${ioBaseline.videoTotal}" value="${ioBaseline.videoPlanned}">
-          <span class="io-plan-sub">本 / 登録 ${ioBaseline.videoTotal}本${ioBaseline.videoPlanPct !== null && ioBaseline.videoPlanPct < 99.5 ? `（${ioBaseline.videoPlanPct.toFixed(0)}%）` : ''}</span>
-          ${getIOVideoPlan() !== null ? '<button class="filter-reset-btn" id="io-video-plan-reset">全部見る前提に戻す</button>' : ''}
-        </div>
+        ${(() => {
+          const skip = new Set(getIOVideoSkip());
+          const withVideo = (ioBaseline.videoRows || []).filter(r => (r.videoTotal || 0) > 0);
+          if (!withVideo.length) return '';
+          const registered = withVideo.reduce((s, r) => s + r.videoTotal, 0);
+          return `
+            <div class="io-plan-row">
+              <span class="io-plan-label">見る予定の講義動画</span>
+              <input type="number" class="io-plan-input" id="io-video-plan" min="1" max="${ioBaseline.videoTotal}" value="${ioBaseline.videoPlanned}">
+              <span class="io-plan-sub">本 / 対象 ${ioBaseline.videoTotal}本（登録 ${registered}本${ioBaseline.skippedVideoTotal > 0 ? ` − 見ない科目 ${ioBaseline.skippedVideoTotal}本` : ''}）</span>
+              ${getIOVideoPlan() !== null ? '<button class="filter-reset-btn" id="io-video-plan-reset">本数の指定を消す</button>' : ''}
+            </div>
+            <div class="io-skip-row">
+              <span class="io-plan-label">動画を見ない科目</span>
+              <div class="io-skip-chips" id="io-video-skip-chips">
+                ${withVideo.map(r => `<button class="io-skip-chip ${skip.has(r.id) ? 'off' : ''}" data-subject="${r.id}" title="${skip.has(r.id) ? 'クリックで「見る」に戻す' : 'クリックで「見ない」にする'}">${r.name}<span class="io-skip-count">${r.videoTotal}本</span></button>`).join('')}
+              </div>
+              ${skip.size ? '<button class="filter-reset-btn" id="io-video-skip-reset">全科目見る前提に戻す</button>' : ''}
+            </div>
+            <div class="io-skip-note">灰色にした科目の動画は、基準線と「試験までに間に合うか」の必要時間から外れます。QBの問題数はそのまま残ります（動画を見ないだけで問題は解くため）。</div>
+          `;
+        })()}
       ` : ''}
 
       ${!io.hasData ? `
@@ -8711,6 +8751,16 @@ async function renderInsights(){
   });
   document.getElementById('io-video-plan-reset')?.addEventListener('click', () => {
     setIOVideoPlan(null);
+    renderInsights();
+  });
+  document.getElementById('io-video-skip-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.io-skip-chip');
+    if (!chip) return;
+    toggleIOVideoSkip(chip.dataset.subject);
+    renderInsights();
+  });
+  document.getElementById('io-video-skip-reset')?.addEventListener('click', () => {
+    clearIOVideoSkip();
     renderInsights();
   });
   // --- Event: セクションの折りたたみ ---

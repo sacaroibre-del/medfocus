@@ -2647,3 +2647,48 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   color: var(--color-text-tertiary);
   line-height: 1.6;
 }
+
+/* 動画を見ない科目の指定 */
+.io-skip-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: var(--font-size-xs);
+}
+.io-skip-chips {
+  flex: 1;
+  min-width: 200px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.io-skip-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  background: rgba(139, 92, 246, 0.12);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.io-skip-chip:hover { border-color: rgba(139, 92, 246, 0.7); }
+.io-skip-chip.off {
+  background: var(--color-bg-elevated);
+  border-color: var(--color-border);
+  color: var(--color-text-tertiary);
+  text-decoration: line-through;
+}
+.io-skip-count { font-weight: 500; color: var(--color-text-tertiary); }
+.io-skip-note {
+  margin-bottom: var(--space-md);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
