@@ -892,6 +892,18 @@ function showToast(msg){
 }
 
 // ==================== HELPERS ====================
+// ユーザーが自由入力できる文字列（メモ・自由入力の科目名・試験名・プロフィール）を
+// テンプレートリテラルで HTML に埋める前に必ず通す。" を潰さないと
+// data-memo="..." のような属性がそこで切れて、編集モーダルに値が渡らない。
+function esc(v) {
+  if (v === null || v === undefined) return '';
+  return String(v)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 function getLogicalDate(d) { const l=new Date(d); if(l.getHours()<3){ l.setDate(l.getDate()-1); } return l; }
 function toLocalDateKey(d) { return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function formatMinutes(m){const h=Math.floor(m/60);const min=m%60;if(h===0)return`${min}分`;if(min===0)return`${h}時間`;return`${h}時間${min}分`;}
@@ -2178,7 +2190,7 @@ function renderLogin(){
           const meta = '';  // 大学・学年は返さない（未ログインの検索で出す情報を最小限にする）
           return `<div style="padding:10px; background:var(--color-bg-elevated); border-radius:8px; margin-top:8px; display:flex; justify-content:space-between; align-items:center;">
             <span style="flex:1; margin-right:8px;">
-              <b>${u.full_name}</b>さん ${meta}<br>
+              <b>${esc(u.full_name)}</b>さん ${meta}<br>
               ID: <code style="color:var(--color-accent-teal); font-size:1rem;">${id}</code>
               ${isLegacy ? '<br><span style="font-size:0.7rem; color:var(--color-accent-pink);">※旧方式のアカウント</span>' : ''}
             </span>
@@ -2482,8 +2494,8 @@ function renderSidebar(){
     <div class="sidebar-profile" id="logout-btn" title="クリックでログアウト" style="cursor:pointer">
       ${avatarHtml}
       <div class="sidebar-profile-info">
-        <div class="sidebar-profile-name">${currentUser.name}</div>
-        <div class="sidebar-profile-role">${currentUser.university} ${currentUser.grade}年</div>
+        <div class="sidebar-profile-name">${esc(currentUser.name)}</div>
+        <div class="sidebar-profile-role">${esc(currentUser.university)} ${currentUser.grade}年</div>
         <div class="sidebar-profile-id" style="font-size:0.65rem; color:var(--color-text-tertiary); margin-top:2px;">ID: ${currentUser.login_id || '---'}</div>
       </div>
     </div>`;
@@ -2901,8 +2913,8 @@ async function renderDashboard(){
         <div class="pacer-head-left">
           ${pacer.future.length > 1 ? `
             <select id="pacer-exam" class="pacer-select">
-              ${pacer.future.map(e => `<option value="${e.id}" ${String(e.id)===String(pacer.exam.id)?'selected':''}>${e.name}</option>`).join('')}
-            </select>` : `<span class="pacer-exam-name">${pacer.exam.name}</span>`}
+              ${pacer.future.map(e => `<option value="${e.id}" ${String(e.id)===String(pacer.exam.id)?'selected':''}>${esc(e.name)}</option>`).join('')}
+            </select>` : `<span class="pacer-exam-name">${esc(pacer.exam.name)}</span>`}
           <span class="pacer-days">あと <strong>${pacer.daysLeft}</strong> 日</span>
         </div>
         <select id="pacer-round" class="pacer-select">
@@ -2965,7 +2977,7 @@ async function renderDashboard(){
 
       ${dashBudget.hasData ? `
         <div class="next-move-budget ${dashBudget.onTrack ? 'ok' : 'ng'}">
-          ${dashBudget.exam.name} まで あと <strong>${dashBudget.daysLeft}日</strong>：${dashBudget.onTrack
+          ${esc(dashBudget.exam.name)} まで あと <strong>${dashBudget.daysLeft}日</strong>：${dashBudget.onTrack
             ? `このペースなら間に合います（${formatMinutes(Math.abs(dashBudget.diffMin))} の余裕）`
             : `<strong>1日あたり ${formatMinutes(Math.ceil(dashBudget.shortfallPerDay))} 足りません</strong>`}
         </div>
@@ -3724,7 +3736,7 @@ async function renderStudy(){
                 <span class="bulk-label">科目</span>
                 <select class="filter-select" id="bulk-subject">
                   <option value="">全科目</option>
-                  ${subjects.map(x => `<option value="${x}" ${bulkActivity.subject === x ? 'selected' : ''}>${x}</option>`).join('')}
+                  ${subjects.map(x => `<option value="${esc(x)}" ${bulkActivity.subject === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}
                 </select>
                 <label class="bulk-check"><input type="checkbox" id="bulk-unclassified" ${bulkActivity.onlyUnclassified ? 'checked' : ''}> 未分類のログだけ</label>
               </div>
@@ -3764,16 +3776,16 @@ async function renderStudy(){
             return`<div class="study-log-entry" data-id="${l.id}">
               <div style="flex:1;min-width:0;">
                 <div style="display:flex;align-items:center;gap:var(--space-sm);flex-wrap:wrap;">
-                  <span class="study-log-subject">${sub?.name||l.subject_name}</span>${activityChip(l.activity)}${qbCountChip(l)}${videoCountChip(l)}
+                  <span class="study-log-subject">${esc(sub?.name||l.subject_name)}</span>${activityChip(l.activity)}${qbCountChip(l)}${videoCountChip(l)}
                   <span class="study-log-duration">${formatMinutes(l.duration_minutes)}</span>
                   <span class="study-log-time">${tmStart}〜${tmEnd}</span>
-                  ${l.location && l.location !== '未設定' ? `<span class="study-log-location" style="font-size:0.75rem; margin-left:4px; color:var(--color-text-tertiary)" title="${l.location}">${locIcon(l.location)} ${l.location}</span>` : ''}
+                  ${l.location && l.location !== '未設定' ? `<span class="study-log-location" style="font-size:0.75rem; margin-left:4px; color:var(--color-text-tertiary)" title="${esc(l.location)}">${locIcon(l.location)} ${esc(l.location)}</span>` : ''}
                   ${l.focus_level ? `<span class="study-log-focus" style="font-size:0.8rem; margin-left:2px;" title="集中度: ${l.focus_level}">${focusEmoji(l.focus_level)} ${l.focus_level}</span>` : ''}
                 </div>
-                ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${l.memo}</div>`:''}
+                ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.memo)}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${sub?.name||l.subject_name}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${l.memo||''}" data-location="${l.location || ''}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${esc(sub?.name||l.subject_name)}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${esc(l.memo)}" data-location="${esc(l.location)}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}
@@ -4173,7 +4185,7 @@ async function renderStudy(){
               ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}" ${s.name===ds.subject?'selected':''}>${s.name}</option>`).join('')}</optgroup>`).join('')}
               <option value="custom" ${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?'selected':''}>その他/自由入力</option>
             </select>
-            <input type="text" id="edit-log-subject-custom" value="${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?ds.subject:''}" style="margin-top:8px; display:${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?'block':'none'};" placeholder="内容を入力..." />
+            <input type="text" id="edit-log-subject-custom" value="${esc(!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?ds.subject:'')}" style="margin-top:8px; display:${!subjectCategories.some(c=>c.subjects.some(s=>s.name===ds.subject))?'block':'none'};" placeholder="内容を入力..." />
           </div>
           <div style="display:flex; gap:12px; margin-bottom:12px;">
             <div class="settings-field" style="flex:1;">
@@ -4225,7 +4237,7 @@ async function renderStudy(){
           </div>
           <div class="settings-field">
             <label>メモ</label>
-            <textarea id="edit-log-memo" style="width:100%; min-height:60px;">${ds.memo}</textarea>
+            <textarea id="edit-log-memo" style="width:100%; min-height:60px;">${esc(ds.memo)}</textarea>
           </div>
         </div>
         <div class="modal-footer">
@@ -4316,7 +4328,7 @@ async function renderCountdown() {
             <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${isPast ? 'var(--color-text-tertiary)' : (e.color||'#4ECDC4')}"></div>
             <div style="display:flex;justify-content:space-between;align-items:flex-start">
               <div>
-                <div class="countdown-name">${e.name}</div>
+                <div class="countdown-name">${esc(e.name)}</div>
                 <div class="countdown-date">${dt}</div>
               </div>
               <button class="btn-log-action delete btn-delete-cd" data-id="${e.id}" title="削除">✕</button>
@@ -6905,7 +6917,7 @@ function dailyReviewBodyHTML(rv, colorOf) {
       <div class="review-subjects">
         ${rv.subjects.slice(0, 5).map(s => `
           <div class="review-subject">
-            <span class="review-subject-name"><i style="background:${colorOf(s.name)}"></i>${s.name}</span>
+            <span class="review-subject-name"><i style="background:${colorOf(s.name)}"></i>${esc(s.name)}</span>
             <span class="review-subject-bar"><span style="width:${s.share}%;background:${colorOf(s.name)}"></span></span>
             <span class="review-subject-min">${formatMinutes(s.minutes)}</span>
           </div>`).join('')}
@@ -7662,7 +7674,7 @@ async function renderInsights(){
           <span class="filter-label">場所</span>
           <select class="filter-select" id="filter-location">
             <option value="">全て</option>
-            ${allLocations.map(l => `<option value="${l}" ${insightFilters.location===l?'selected':''}>${l}</option>`).join('')}
+            ${allLocations.map(l => `<option value="${esc(l)}" ${insightFilters.location===l?'selected':''}>${esc(l)}</option>`).join('')}
           </select>
         </div>
         <div class="filter-group">
@@ -7893,7 +7905,7 @@ async function renderInsights(){
           <div class="budget-verdict-main">${timeBudget.onTrack
             ? `このペースなら間に合う計算です（${formatMinutes(Math.abs(timeBudget.diffMin))} の余裕）`
             : `このペースだと <strong>${formatMinutes(Math.abs(timeBudget.diffMin))} 足りません</strong>`}</div>
-          <div class="budget-verdict-sub">${timeBudget.exam.name} まで あと ${timeBudget.daysLeft}日${
+          <div class="budget-verdict-sub">${esc(timeBudget.exam.name)} まで あと ${timeBudget.daysLeft}日${
             timeBudget.onTrack ? '' : ` ／ 1日あたり <strong>${formatMinutes(Math.ceil(timeBudget.shortfallPerDay))}</strong> 上積みが必要`
           }</div>
         </div>
@@ -8617,7 +8629,7 @@ async function renderInsights(){
                 <div class="break-row-label">${b.label}</div>
                 <div class="break-row-num">${b.count}科目</div>
                 <div class="break-row-num" style="color:${b.avgGain === null ? 'var(--color-text-tertiary)' : b.avgGain >= 10 ? '#10b981' : b.avgGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${b.avgGain === null ? '-' : (b.avgGain >= 0 ? '+' : '') + b.avgGain.toFixed(0) + 'pt'}</div>
-                <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${b.subjects.slice(0, 2).join('・')}</div>
+                <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
               </div>
             `).join('')}
           </div>
@@ -9146,10 +9158,10 @@ async function renderInsights(){
             const dateStr = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
             return `<div class="session-row">
               <div class="session-date">${dateStr}</div>
-              <div class="session-subject">${normalizeSubjectName(l.subject_name)}${activityChip(l.activity)}</div>
+              <div class="session-subject">${esc(normalizeSubjectName(l.subject_name))}${activityChip(l.activity)}</div>
               <div class="session-duration">${formatMinutes(l.duration_minutes)}</div>
               <div class="session-focus">${l.focus_level ? '★'.repeat(Number(l.focus_level)) : '-'}</div>
-              <div class="session-location">${l.location || '未設定'}</div>
+              <div class="session-location">${esc(l.location || '未設定')}</div>
             </div>`;
           }).join('')}
           ${logs.length > 50 ? `<div style="text-align:center;padding:var(--space-md);color:var(--color-text-tertiary);font-size:var(--font-size-xs)">他 ${logs.length - 50} 件</div>` : ''}
@@ -9448,8 +9460,8 @@ function renderSettings(){
           ${currentUser.avatar_url ? `<img src="${currentUser.avatar_url}" style="width:100%;height:100%;object-fit:cover;border-radius:50%;" onerror="this.style.display='none';this.parentElement.innerHTML='${ini}'"/>` : ini}
         </div>
         <div class="settings-profile-info">
-          <h2 id="display-name">${currentUser.name}</h2>
-          <p id="display-role">${currentUser.university} 医学部${currentUser.grade}年</p>
+          <h2 id="display-name">${esc(currentUser.name)}</h2>
+          <p id="display-role">${esc(currentUser.university)} 医学部${currentUser.grade}年</p>
           <p style="color:var(--color-text-tertiary);font-size:.75rem" id="display-email">${currentUser.email}</p>
         </div>
       </div>
@@ -9467,7 +9479,7 @@ function renderSettings(){
             <input type="file" id="input-avatar-file" accept="image/*" style="display:none" />
           </div>
         </div>
-        <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${currentUser.name}" placeholder="例: 田中 太郎"/></div>
+        <div class="settings-field"><label>表示名</label><input type="text" id="input-name" value="${esc(currentUser.name)}" placeholder="例: 田中 太郎"/></div>
         <div class="settings-field">
           <label>ログインID (変更不可)</label>
           <div style="padding:10px; background:var(--color-bg-elevated); border-radius:var(--radius-sm); font-family:monospace; font-weight:700; color:${canLoginWithId() ? 'var(--color-accent-teal)' : 'var(--color-text-tertiary)'}; display:flex; justify-content:space-between; align-items:center; gap:8px;">
@@ -9477,7 +9489,7 @@ function renderSettings(){
           ${!canLoginWithId() ? `<div style="margin-top:6px; font-size:0.72rem; color:var(--color-text-tertiary); line-height:1.6;">このアカウントは<strong>メールアドレスで登録</strong>されています。ログイン画面では「旧アカウント」タブから、下のメールアドレスとパスワードでログインしてください。</div>` : ''}
         </div>
         <div class="settings-field"><label>メールアドレス</label><input type="email" id="input-email" value="${currentUser.email}" placeholder="ログイン共通" disabled style="opacity:0.6"/></div>
-        <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${currentUser.university}" placeholder="例: 東京大学医学部"/></div>
+        <div class="settings-field"><label>大学・所属名</label><input type="text" id="input-univ" value="${esc(currentUser.university)}" placeholder="例: 東京大学医学部"/></div>
         <div class="settings-field"><label>学年</label>
           <select id="input-grade">${[1,2,3,4,5,6].map(gr=>`<option value="${gr}" ${gr===currentUser.grade?'selected':''}>${gr}年</option>`).join('')}</select>
         </div>
