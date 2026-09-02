@@ -579,7 +579,7 @@ function normalizeSubjectName(name){
 // ログが未分類のまま大量に残る。未分類のままだと活動を軸にした分析
 // （インプット/アウトプット比率、条件別の正答率など）がほぼ効かないので、
 // 期間と科目で絞ってまとめて設定できるようにする。
-const bulkActivity = { open: false, period: 'all', subject: '', onlyUnclassified: true };
+const bulkActivity = { open: false, period: 'all', subject: '', onlyUnclassified: true, dateFrom: '', dateTo: '' };
 
 // 「最近の学習ログ」は7日固定だったため、まとめて設定で古いログを変えても
 // 画面上は直近1週間しか出ず、反映されたかを確認できなかった。表示範囲を
@@ -594,17 +594,29 @@ let studyLogRange = '7';
 
 function bulkActivityTargets(logs) {
   const today = getLogicalDate(new Date());
-  let from = null;
-  if (bulkActivity.period === 'recent30') { from = new Date(today); from.setDate(from.getDate() - 29); }
-  else if (bulkActivity.period === 'month') { from = new Date(today.getFullYear(), today.getMonth(), 1); }
-  const fromKey = from ? toLocalDateKey(from) : null;
+  let fromKey = null, toKey = null;
+  if (bulkActivity.period === 'recent30') {
+    const f = new Date(today); f.setDate(f.getDate() - 29);
+    fromKey = toLocalDateKey(f);
+  } else if (bulkActivity.period === 'month') {
+    fromKey = toLocalDateKey(new Date(today.getFullYear(), today.getMonth(), 1));
+  } else if (bulkActivity.period === 'custom') {
+    // 片方だけの指定も許す（「この日以降」「この日まで」）
+    fromKey = bulkActivity.dateFrom || null;
+    toKey = bulkActivity.dateTo || null;
+    // 逆に入力されていても意図どおりに拾えるよう入れ替える
+    if (fromKey && toKey && fromKey > toKey) { const t = fromKey; fromKey = toKey; toKey = t; }
+  }
 
   return (logs || []).filter(l => {
     if (bulkActivity.onlyUnclassified && l.activity) return false;
     if (bulkActivity.subject && normalizeSubjectName(l.subject_name) !== bulkActivity.subject) return false;
-    if (fromKey) {
+    if (fromKey || toKey) {
       const r = getLogRange(l);
-      if (isNaN(r.start) || toLocalDateKey(getLogicalDate(r.start)) < fromKey) return false;
+      if (isNaN(r.start)) return false;
+      const k = toLocalDateKey(getLogicalDate(r.start));
+      if (fromKey && k < fromKey) return false;
+      if (toKey && k > toKey) return false;
     }
     return true;
   });
@@ -3552,6 +3564,21 @@ function bindBulkActivityEvents(logs) {
     bulkActivity.period = chip.dataset.period;
     renderStudy();
   });
+  document.getElementById('bulk-date-from')?.addEventListener('change', e => {
+    bulkActivity.dateFrom = e.target.value;
+    bulkActivity.period = 'custom';
+    renderStudy();
+  });
+  document.getElementById('bulk-date-to')?.addEventListener('change', e => {
+    bulkActivity.dateTo = e.target.value;
+    bulkActivity.period = 'custom';
+    renderStudy();
+  });
+  document.getElementById('bulk-date-clear')?.addEventListener('click', () => {
+    bulkActivity.dateFrom = '';
+    bulkActivity.dateTo = '';
+    renderStudy();
+  });
   document.getElementById('bulk-subject')?.addEventListener('change', e => {
     bulkActivity.subject = e.target.value;
     renderStudy();
@@ -3790,7 +3817,11 @@ async function renderStudy(){
           const targets = bulkActivityTargets(logs);
           const targetMin = targets.reduce((a, b) => a + (b.duration_minutes || 0), 0);
           const subjects = [...new Set(logs.map(l => normalizeSubjectName(l.subject_name)))].sort();
-          const periods = [{ v: 'all', l: '全期間' }, { v: 'month', l: '今月' }, { v: 'recent30', l: '直近30日' }];
+          const periods = [{ v: 'all', l: '全期間' }, { v: 'month', l: '今月' }, { v: 'recent30', l: '直近30日' }, { v: 'custom', l: '期間を指定' }];
+          // 入力の目安として、読み込み済みログの最古・最新を出しておく
+          const loadedKeys = logs.map(l => toLocalDateKey(getLogicalDate(getLogRange(l).start))).sort();
+          const oldestKey = loadedKeys[0] || '';
+          const newestKey = loadedKeys[loadedKeys.length - 1] || '';
           return `
             <div class="bulk-panel">
               <div class="bulk-row">
@@ -3799,6 +3830,16 @@ async function renderStudy(){
                   ${periods.map(x => `<button class="filter-chip ${bulkActivity.period === x.v ? 'active' : ''}" data-period="${x.v}">${x.l}</button>`).join('')}
                 </div>
               </div>
+              ${bulkActivity.period === 'custom' ? `
+                <div class="bulk-row">
+                  <span class="bulk-label">日付</span>
+                  <input type="date" class="filter-date-input" id="bulk-date-from" value="${bulkActivity.dateFrom}" min="${oldestKey}" max="${newestKey}">
+                  <span class="filter-sep">〜</span>
+                  <input type="date" class="filter-date-input" id="bulk-date-to" value="${bulkActivity.dateTo}" min="${oldestKey}" max="${newestKey}">
+                  <button class="filter-reset-btn" id="bulk-date-clear">クリア</button>
+                </div>
+                <div class="bulk-note" style="margin-top:0">空欄のままにすると片側だけの指定（「この日以降すべて」「この日まですべて」）になります。</div>
+              ` : ''}
               <div class="bulk-row">
                 <span class="bulk-label">科目</span>
                 <select class="filter-select" id="bulk-subject">
