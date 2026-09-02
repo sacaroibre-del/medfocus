@@ -892,6 +892,7 @@ function showToast(msg){
 }
 
 
+
 // ==================== HELPERS ====================
 // ユーザーが自由入力できる文字列（メモ・自由入力の科目名・試験名・プロフィール）を
 // テンプレートリテラルで HTML に埋める前に必ず通す。" を潰さないと
@@ -9271,6 +9272,7 @@ function insightsTrendHTML(d) {
           return `${dowNames[top]}曜がいちばん多く、${dowNames[bottom]}曜がいちばん少ない`;
         })()}</div></div>
       </div>
+      ${dowMinutes.some(m => m > 0) ? `
       <div class="dow-chart">
         ${[1,2,3,4,5,6,0].map(d => {
           const isTop = dowMinutes[d] > 0 && dowMinutes[d] === maxDowMin;
@@ -9283,6 +9285,7 @@ function insightsTrendHTML(d) {
         }).join('')}
       </div>
       <div class="dow-foot">棒の高さは最多の曜日を100%とした相対値／数字は合計時間</div>
+      ` : '<p class="insight-empty-note">この条件の学習記録がありません。</p>'}
     </div>
     <div class="card">
       <div class="section-header">
