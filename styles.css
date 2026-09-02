@@ -2477,6 +2477,10 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   border-top: 1px solid var(--color-border);
 }
 .insight-group.open .insight-group-body { display: block; }
+/* グループ直下のカードの間隔。.insights-grid と .insight-analysis-card には
+   margin-bottom があるのに素の .card だけ無く、そこだけ次の要素と密着していた
+   （下の :last-child で打ち消しているのに、打ち消される側の指定が無かった）。 */
+.insight-group-body > .card { margin-bottom: var(--space-lg); }
 /* グループ内では各カードの外枠を外して二重の箱に見えないようにする */
 .insight-group-body > .card:last-child,
 .insight-group-body > .insights-grid:last-child,
