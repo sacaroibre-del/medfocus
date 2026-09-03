@@ -3267,6 +3267,17 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .card.is-collapsed > :not(.card-header) { display:none; }
 /* タイマーと横並びのグリッドでは行の高さに引き伸ばされるので、畳んだら上に詰める */
 .card.is-collapsed { align-self:start; }
+/* 学習記録ページ: QB × 学習分析は通常は全幅。学習ログを畳むと右カラムに空きができるので、
+   その下へ上げてタイマーの横に収める（畳んだ見出しだけが浮いて見えないように） */
+.study-layout > .study-check-card { grid-column:1 / -1; }
+.study-layout:has(> .study-log-card.is-collapsed) { grid-template-rows:auto 1fr; }
+.study-layout:has(> .study-log-card.is-collapsed) > .stopwatch-card { grid-row:1 / span 2; }
+.study-layout:has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:2; grid-row:2; align-self:start; }
+@media (max-width:1200px) {
+  .study-layout:has(> .study-log-card.is-collapsed) { grid-template-rows:none; }
+  .study-layout:has(> .study-log-card.is-collapsed) > .stopwatch-card,
+  .study-layout:has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:auto; grid-row:auto; }
+}
 .card.is-collapsed > .card-header { margin-bottom:0; border-bottom:none !important; padding-bottom:0 !important; }
 .card.is-collapsed .card-collapse-btn svg { transform:rotate(-90deg); }
 /* 畳んだら範囲チップやまとめて設定も隠す（開いてから触る） */

@@ -3839,9 +3839,9 @@ async function renderStudy(){
           ${rangedLogs.length === 0 ? `<div class="study-log-empty">${logRangeDef.days ? `直近${logRangeDef.days}日の記録はありません。` : '記録がありません。'}</div>` : ''}
           ${rangedLogs.length > shownLogs.length ? `<div class="study-log-more">表示は新しい順に ${shownLogs.length}件までです（該当 ${rangedLogs.length}件）。まとめて設定は表示件数に関わらず対象すべてに反映されます。</div>` : ''}
         </div></div>
-    </div>
-    
-    <div class="study-check-card card animate-slide-up ${isCardCollapsed('study-qb') ? 'is-collapsed' : ''}" style="animation-delay:.2s;margin-top:var(--space-lg);">
+
+    <!-- QB × 学習分析: 通常は全幅。学習ログを畳んだときは右カラムでタイマーの横に上がる（CSS 側で制御） -->
+    <div class="study-check-card card animate-slide-up ${isCardCollapsed('study-qb') ? 'is-collapsed' : ''}" style="animation-delay:.2s;">
       <div class="card-header" style="border-bottom:1px solid rgba(148,163,184,0.1);padding-bottom:var(--space-sm);">
         <div class="card-title">${IC.stats}QB × 学習分析 ${cardCollapseBtnHTML('study-qb')}</div>
       </div>
@@ -3883,6 +3883,7 @@ async function renderStudy(){
           `).join('');
         })()}
       </div>
+    </div>
     </div>`;
 
 
