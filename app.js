@@ -637,12 +637,12 @@ async function applyBulkActivity(ids, activity) {
       .eq('user_id', session.user.id);
     if (error) {
       console.error('bulk activity update error:', error);
-      invalidateCache('study_logs');
+      invalidateCache('study_logs'); _planSyncAt = 0;
       return { ok: false, done, total: ids.length, message: error.message };
     }
     done += part.length;
   }
-  invalidateCache('study_logs');
+  invalidateCache('study_logs'); _planSyncAt = 0;
   return { ok: true, done, total: ids.length };
 }
 
@@ -880,6 +880,44 @@ function applyTheme(){
 }
 function toggleTheme(){ isDark = !isDark; applyTheme(); renderSidebar(); }
 applyTheme();
+
+// ==================== カードの折りたたみ ====================
+// 学習記録ページの長いカード（学習ログ、QB × 学習分析）を畳めるようにする。
+// 状態は localStorage に持ち、次に開いたときも同じ形で出す。
+const CARD_COLLAPSE_KEY = 'medfocus_card_collapsed';
+function getCardCollapsed() {
+  try { const v = JSON.parse(localStorage.getItem(CARD_COLLAPSE_KEY) || '{}'); return v && typeof v === 'object' ? v : {}; }
+  catch (e) { return {}; }
+}
+function isCardCollapsed(id) { return !!getCardCollapsed()[id]; }
+function setCardCollapsed(id, collapsed) {
+  const v = getCardCollapsed(); v[id] = !!collapsed;
+  try { localStorage.setItem(CARD_COLLAPSE_KEY, JSON.stringify(v)); } catch (e) {}
+}
+function cardCollapseBtnHTML(id) {
+  const c = isCardCollapsed(id);
+  return `<button type="button" class="card-collapse-btn" data-collapse="${id}" aria-expanded="${!c}" title="${c ? '開く' : '畳む'}"><svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg></button>`;
+}
+// ボタンは描画のたびに作り直されるので、document に1回だけ委譲で付ける
+document.addEventListener('click', e => {
+  // 矢印だけでなく見出し行のどこを押しても畳める（インサイトの見出しと同じ挙動）。
+  // ただし見出し行にある期間チップや「まとめて設定」ボタンは、その機能を優先する
+  let btn = e.target.closest('[data-collapse]');
+  if (!btn) {
+    const header = e.target.closest('.card-header');
+    if (!header) return;
+    btn = header.querySelector('[data-collapse]');
+    if (!btn) return;
+    if (e.target.closest('button, a, select, input, label') ) return;
+  }
+  const card = btn.closest('.card');
+  if (!card) return;
+  const collapsed = !card.classList.contains('is-collapsed');
+  card.classList.toggle('is-collapsed', collapsed);
+  btn.setAttribute('aria-expanded', String(!collapsed));
+  btn.title = collapsed ? '開く' : '畳む';
+  setCardCollapsed(btn.dataset.collapse, collapsed);
+});
 
 // ==================== TOAST ====================
 function showToast(msg){
@@ -1202,7 +1240,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       showToast(IC.x+' 保存に失敗しました: ' + error.message);
       return false;
     } else { 
-      invalidateCache('study_logs');
+      invalidateCache('study_logs'); _planSyncAt = 0;
       // 問題演習で問題数を記録したときは、教材進捗トラッカーも同時に進める
       const qbApplied = applyQb();
       // Save daily snapshot with current goal
@@ -1249,14 +1287,14 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
   if (endedAt) payload.ended_at = endedAt;
   const { error } = await supabase.from('study_logs').update(payload).eq('id', id);
   if (error) showToast(IC.x+' 更新に失敗しました');
-  else { invalidateCache('study_logs'); showToast(IC.check+' 記録を更新しました！'); }
+  else { invalidateCache('study_logs'); _planSyncAt = 0; showToast(IC.check+' 記録を更新しました！'); }
 }
 
 async function deleteStudyLog(id) {
   if (!hasDB()) return;
   const { error } = await supabase.from('study_logs').delete().eq('id', id);
   if (error) showToast(IC.x+' 削除に失敗しました');
-  else { invalidateCache('study_logs'); showToast(IC.check+' 記録を削除しました！'); }
+  else { invalidateCache('study_logs'); _planSyncAt = 0; showToast(IC.check+' 記録を削除しました！'); }
 }
 
 
@@ -2440,6 +2478,8 @@ const navItems = [
     icon: '<svg viewBox="0 0 24 24"><path d="M12 2a7 7 0 0 0-7 7c0 3 2 5.5 4 7.5L12 20l3-3.5c2-2 4-4.5 4-7.5a7 7 0 0 0-7-7z"/><circle cx="12" cy="9" r="2"/></svg>',
     items: [
       { route: '/study', label: '学習記録', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 15"/></svg>' },
+      { route: '/plans', label: '逆算プラン', icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></svg>' },
+      { route: '/calendar', label: 'カレンダー', icon: '<svg viewBox="0 0 24 24"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/></svg>' },
       { route: '/insights', label: 'インサイト', icon: '<svg viewBox="0 0 24 24"><path d="M21 12c0 1.2-4 6-9 6s-9-4.8-9-6c0-1.2 4-6 9-6s9 4.8 9 6z"/><circle cx="12" cy="12" r="3"/></svg>' },
       { route: '/qb', label: '教材進捗', icon: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/><path d="M8 7h8M8 11h6"/></svg>' }
     ]
@@ -2799,6 +2839,8 @@ async function renderDashboard(){
   }
 
   // 試験逆算ペースメーター（目標リングの直下に出す）
+  // 逆算プランの今日のノルマ。同期に失敗してもダッシュボード全体は落とさない
+  const planSync = await syncPlans(false).catch(e => { console.warn('plan sync error:', e); return null; });
   const pacer = buildExamPacer(examCountdowns, getQBProgress(), getVideoProgress(),
                                logs, getDailyProgressDeltas());
 
@@ -2968,6 +3010,9 @@ async function renderDashboard(){
         }見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
       `}
     </div>`}
+
+    <!-- 今日のノルマ（逆算プラン） -->
+    ${todayPlanCardHTML(planSync)}
 
     <!-- 今日の一手 -->
     ${(dashSubjects.hasData || dashPending.length > 0 || dashBudget.hasData) ? `
@@ -3691,9 +3736,9 @@ async function renderStudy(){
           </div>
         ` : ''}
       </div>
-      <div class="study-log-card card animate-slide-up" style="animation-delay:.1s">
+      <div class="study-log-card card animate-slide-up ${isCardCollapsed('study-log') ? 'is-collapsed' : ''}" style="animation-delay:.1s">
         <div class="card-header study-log-header">
-          <div class="card-title">${IC.list}学習ログ</div>
+          <div class="card-title">${IC.list}学習ログ ${cardCollapseBtnHTML('study-log')}</div>
           <div class="study-log-header-actions">
             <div class="filter-chips" id="study-log-range-chips">
               ${STUDY_LOG_RANGES.map(r => `<button class="filter-chip ${studyLogRange === r.v ? 'active' : ''}" data-range="${r.v}">${r.l}</button>`).join('')}
@@ -3796,9 +3841,9 @@ async function renderStudy(){
         </div></div>
     </div>
     
-    <div class="study-check-card card animate-slide-up" style="animation-delay:.2s;margin-top:var(--space-lg);">
+    <div class="study-check-card card animate-slide-up ${isCardCollapsed('study-qb') ? 'is-collapsed' : ''}" style="animation-delay:.2s;margin-top:var(--space-lg);">
       <div class="card-header" style="border-bottom:1px solid rgba(148,163,184,0.1);padding-bottom:var(--space-sm);">
-        <div class="card-title">${IC.stats}QB × 学習分析</div>
+        <div class="card-title">${IC.stats}QB × 学習分析 ${cardCollapseBtnHTML('study-qb')}</div>
       </div>
       <div style="padding:var(--space-md);">
         ${(()=>{
@@ -9869,6 +9914,1569 @@ function renderSettings(){
   });
 }
 
+// ==================== 日付キーのユーティリティ ====================
+// カレンダーと逆算プランは日付を 'YYYY-MM-DD' の文字列（＝dateKey）で持ち回る。
+// Postgres の DATE 型がこの形で返ってくるのと、辞書順の比較がそのまま
+// 日付の前後になるため。Date に戻すときは必ず parseDateKey を通すこと。
+
+// new Date('2026-09-14') は UTC 解釈になり、日本時間では前日にずれる。
+// この関数はローカル0時の Date を返す。
+function parseDateKey(key) {
+  if (!key) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key).slice(0, 10));
+  if (!m) return null;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return isNaN(d.getTime()) ? null : d;
+}
+
+function shiftDateKey(key, days) {
+  const d = parseDateKey(key);
+  if (!d) return null;
+  d.setDate(d.getDate() + days);
+  return toLocalDateKey(d);
+}
+
+// a - b を日数で返す。どちらかが不正なら null。
+function diffDateKeys(a, b) {
+  const da = parseDateKey(a), db = parseDateKey(b);
+  if (!da || !db) return null;
+  return Math.round((da - db) / 86400000);
+}
+
+// 逆算と期限判定の基準日。アプリ全体と同じ3時境界の論理日を使う。
+function todayPlanKey() {
+  return toLocalDateKey(getLogicalDate(new Date()));
+}
+
+// ==================== 逆算プラン: 純関数 ====================
+// このセクションの関数は DOM・Supabase・localStorage のどれにも触らない。
+// test_planning.cjs から直接呼んで検証できるようにするため。
+
+const PLAN_MAX_SPAN_DAYS = 1830;   // 暴走よけ（約5年）
+const PLAN_DEFAULT_MILESTONES = 4;
+
+// 曜日除外を考慮した稼働日の dateKey 配列。
+// excludeWeekdays は 0=日 … 6=土（JS の Date#getDay と同じ）。
+function planWorkingDays(startKey, endKey, excludeWeekdays) {
+  const start = parseDateKey(startKey), end = parseDateKey(endKey);
+  if (!start || !end || start > end) return [];
+  const excl = new Set((excludeWeekdays || [])
+    .map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6));
+  if (excl.size >= 7) return [];   // 全曜日を除外＝稼働日なし
+  const out = [];
+  const cur = new Date(start);
+  for (let i = 0; i <= PLAN_MAX_SPAN_DAYS && cur <= end; i++) {
+    if (!excl.has(cur.getDay())) out.push(toLocalDateKey(cur));
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
+// 総量を n 日へ整数で割り振る。合計は必ず total に一致する。
+// 累積値の四捨五入の差をとる方式なので、総量が日数より少なくても
+// 先頭に固まらず期間全体へ散る（例: 10問 / 30日 → 3日おきに1問）。
+function distributeVolume(total, n) {
+  const t = Math.max(0, Math.floor(Number(total) || 0));
+  const days = Math.max(0, Math.floor(Number(n) || 0));
+  if (days === 0) return [];
+  const out = [];
+  let prev = 0;
+  for (let i = 1; i <= days; i++) {
+    const cum = Math.round((t * i) / days);
+    out.push(cum - prev);
+    prev = cum;
+  }
+  return out;
+}
+
+// 総ボリュームが無いプランの中間チェックポイント。
+// 稼働日を count 等分し、その境目をマイルストーンにする。
+// 期間が短くて境目が同じ日に重なるときは間引く（同じマスに2つ置かない）。
+function buildMilestones(workingDays, count) {
+  const days = workingDays || [];
+  if (!days.length) return [];
+  const m = Math.max(1, Math.min(20, Math.floor(Number(count)) || PLAN_DEFAULT_MILESTONES));
+  const out = [];
+  let lastIdx = -1;
+  for (let k = 1; k <= m; k++) {
+    const idx = Math.min(days.length - 1, Math.ceil((days.length * k) / m) - 1);
+    if (idx <= lastIdx) continue;
+    lastIdx = idx;
+    out.push({ dateKey: days[idx], pct: Math.round((k / m) * 100) });
+  }
+  return out;
+}
+
+// 逆算の本体。「何を・いつから・いつまでに」から「どの日に何をやるか」を組む。
+// 初回生成と再逆算（残量を totalVolume に渡して開始日を今日にする）の両方でこれを使う。
+//
+// 返り値: { ok:false, error } または
+//   { ok:true, mode:'quota'|'milestone', startKey, dueKey, workingDays,
+//     workingDayCount, totalDayCount, totalVolume, perDay,
+//     items:[{seq,dateKey,kind,targetAmount,pct,title}], warnings:[] }
+function buildPlanSchedule(input) {
+  const o = input || {};
+  const title = o.title || '';
+  const todayKey = o.todayKey || todayPlanKey();
+  const dueKey = o.dueDate ? String(o.dueDate).slice(0, 10) : '';
+  const rawStartKey = o.startDate ? String(o.startDate).slice(0, 10) : todayKey;
+  const warnings = [];
+
+  if (!parseDateKey(dueKey)) return { ok: false, error: 'no-due', warnings };
+  if (!parseDateKey(rawStartKey)) return { ok: false, error: 'invalid-start', warnings };
+  if (diffDateKeys(dueKey, rawStartKey) < 0) return { ok: false, error: 'invalid-range', warnings };
+  if (diffDateKeys(dueKey, todayKey) < 0) return { ok: false, error: 'past-due', warnings };
+
+  // 開始日が過去でも、今日より前の日にノルマは置けない
+  let startKey = rawStartKey;
+  if (diffDateKeys(startKey, todayKey) < 0) { startKey = todayKey; warnings.push('start-clamped'); }
+
+  const excludeWeekdays = (Array.isArray(o.excludeWeekdays) ? o.excludeWeekdays : [])
+    .map(Number).filter(n => Number.isInteger(n) && n >= 0 && n <= 6);
+  const workingDays = planWorkingDays(startKey, dueKey, excludeWeekdays);
+  if (!workingDays.length) return { ok: false, error: 'all-excluded', warnings };
+
+  const base = {
+    ok: true, title, unit: o.unit || 'q',
+    startKey, dueKey, todayKey, excludeWeekdays,
+    totalDayCount: diffDateKeys(dueKey, startKey) + 1,
+    workingDays, workingDayCount: workingDays.length,
+    warnings
+  };
+
+  const rawVolume = Number(o.totalVolume);
+  const hasVolume = o.totalVolume !== null && o.totalVolume !== undefined
+    && o.totalVolume !== '' && Number.isFinite(rawVolume) && rawVolume > 0;
+
+  // ボリューム無し → 期間を等分してマイルストーンだけ置く
+  if (!hasVolume) {
+    const ms = buildMilestones(workingDays, o.milestoneCount);
+    return Object.assign(base, {
+      mode: 'milestone', totalVolume: null, perDay: null,
+      items: ms.map((x, i) => ({
+        seq: i + 1, dateKey: x.dateKey, kind: 'milestone',
+        targetAmount: null, pct: x.pct,
+        title: `${title || 'プラン'} ${x.pct}%地点`
+      }))
+    });
+  }
+
+  const totalVolume = Math.floor(rawVolume);
+  const amounts = distributeVolume(totalVolume, workingDays.length);
+  const items = [];
+  workingDays.forEach((dateKey, i) => {
+    if (amounts[i] <= 0) return;   // 総量が稼働日数より少ない日は置かない
+    items.push({
+      seq: items.length + 1, dateKey, kind: 'quota',
+      targetAmount: amounts[i], pct: null, title: title || 'プラン'
+    });
+  });
+  if (items.length < workingDays.length) warnings.push('sparse');
+
+  return Object.assign(base, {
+    mode: 'quota', totalVolume,
+    perDay: totalVolume / workingDays.length,
+    items
+  });
+}
+
+// 再逆算。完了ぶんを引いた残量を、今日から締切までの稼働日へ配り直す。
+// 過去の未完了タスクは呼び出し側で消さずに残す（何日遅れているかが見えることに意味があるため）。
+function rebuildPlanSchedule(plan, tasks, todayKey) {
+  const p = plan || {};
+  const today = todayKey || todayPlanKey();
+  // 完了印が付いていれば予定量ぶん、そうでなければ入力済みの実績ぶんを消化とみなす
+  const doneAmount = (tasks || []).reduce((s, t) => {
+    const target = Number(t.target_amount) || 0;
+    const done = Number(t.done_amount) || 0;
+    return s + (t.completed ? Math.max(target, done) : done);
+  }, 0);
+
+  const total = Number(p.total_volume);
+  const hasVolume = Number.isFinite(total) && total > 0;
+  const remaining = hasVolume ? Math.max(0, total - doneAmount) : null;
+
+  if (hasVolume && remaining === 0) {
+    return { ok: true, mode: 'complete', items: [], warnings: [],
+             doneAmount, remaining: 0, todayKey: today };
+  }
+
+  // 開始日が先なら、そこから配る。過去なら buildPlanSchedule が今日に寄せる
+  const sched = buildPlanSchedule({
+    title: p.title,
+    startDate: p.start_date || today,
+    dueDate: p.due_date,
+    totalVolume: remaining,
+    unit: p.unit,
+    excludeWeekdays: p.exclude_weekdays,
+    milestoneCount: p.milestone_count,
+    todayKey: today
+  });
+  return Object.assign({}, sched, { doneAmount, remaining });
+}
+
+// プランの進捗サマリ。カード表示と「遅れているか」の判定に使う。
+function planProgress(plan, tasks, todayKey) {
+  const p = plan || {};
+  const today = todayKey || todayPlanKey();
+  const list = tasks || [];
+  const total = Number(p.total_volume);
+  const hasVolume = Number.isFinite(total) && total > 0;
+
+  let done = 0, plannedByToday = 0, overdueCount = 0, todayTarget = 0, todayDone = 0;
+  list.forEach(t => {
+    const key = String(t.due_date || '').slice(0, 10);
+    const target = Number(t.target_amount) || 0;
+    const amt = t.completed ? Math.max(target, Number(t.done_amount) || 0) : (Number(t.done_amount) || 0);
+    done += amt;
+    // 「遅れ」は昨日までに終わっているべき量との差。今日ぶんはまだこれからなので数えない
+    if (key && key < today) plannedByToday += target;
+    if (!t.completed && key && key < today) overdueCount++;
+    if (key === today) { todayTarget += target; todayDone += Number(t.done_amount) || 0; }
+  });
+
+  const pct = hasVolume ? Math.min(100, (done / total) * 100) : null;
+  const behind = Math.max(0, plannedByToday - done);
+  let status = 'ontrack';
+  if (hasVolume && done >= total) status = 'done';
+  else if (overdueCount > 0 || behind > 0) status = 'behind';
+
+  return {
+    hasVolume, total: hasVolume ? total : null,
+    done, remaining: hasVolume ? Math.max(0, total - done) : null, pct,
+    plannedByToday, behind, overdueCount,
+    todayTarget, todayDone,
+    daysLeft: Math.max(0, diffDateKeys(p.due_date, today) || 0),
+    status
+  };
+}
+
+// ---------- 実績（学習ログ）との突合 ----------
+// プランは「QB問題集」なら questions_solved、「講義動画」なら videos_watched を
+// 消化量として読む。ノルマの完了チェックを手で押さなくても、学習記録を付ければ
+// その日のぶんが自動で埋まり、残りの日の1日あたりが引き直される。
+function planLogField(plan) {
+  const u = plan && plan.unit;
+  return u === 'video' ? 'videos_watched' : (u === 'q' ? 'questions_solved' : null);
+}
+
+function planLogMatches(plan, log) {
+  if (!plan || !plan.subject_id || !log) return false;
+  const want = subjectNameMap[String(plan.subject_id).toLowerCase()];
+  return !!want && normalizeSubjectName(log.subject_name) === want;
+}
+
+// 開始日以降のログを論理日で束ねて { dateKey: 消化量 } にする
+function planDoneByDayFromLogs(plan, logs) {
+  const out = {};
+  const field = planLogField(plan);
+  if (!field) return out;
+  const startKey = String((plan && plan.start_date) || '').slice(0, 10);
+  (logs || []).forEach(l => {
+    if (!planLogMatches(plan, l) || !l.started_at) return;
+    const n = Number(l[field]);
+    if (!Number.isFinite(n) || n <= 0) return;
+    const key = toLocalDateKey(getLogicalDate(new Date(l.started_at)));
+    if (startKey && key < startKey) return;
+    out[key] = (out[key] || 0) + n;
+  });
+  return out;
+}
+
+// 保存済みタスクに実績を重ねる（元の配列は変えない）。
+//  - done_amount は「手入力」と「ログ由来」の大きい方
+//  - 量に達していれば completed 扱い
+//  - ログはあるがタスクの無い日は、消化量だけ持つ仮タスク(extra)として足す。
+//    残量の計算に入れるためで、DB には保存しない
+function planApplyLogs(plan, tasks, doneByDay) {
+  const byDay = doneByDay || {};
+  const claimed = new Set();
+  // 同じ日に節目とノルマが並ぶことがあるので、ログはノルマ側に1回だけ付ける
+  const ordered = (tasks || []).slice().sort((a, b) => (a.kind === 'quota' ? 0 : 1) - (b.kind === 'quota' ? 0 : 1));
+  const applied = ordered.map(t => {
+    const key = String(t.due_date || '').slice(0, 10);
+    const fromLog = claimed.has(key) ? 0 : (byDay[key] || 0);
+    claimed.add(key);
+    const target = Number(t.target_amount) || 0;
+    const done = Math.max(Number(t.done_amount) || 0, fromLog);
+    const completed = !!t.completed || (t.kind === 'quota' && target > 0 && done >= target);
+    return Object.assign({}, t, { done_amount: done, completed, log_amount: fromLog });
+  });
+  Object.entries(byDay).forEach(([key, n]) => {
+    if (claimed.has(key) || n <= 0) return;
+    applied.push({ id: null, plan_id: plan && plan.id, due_date: key, kind: 'quota', title: null,
+                   target_amount: 0, done_amount: n, completed: true, log_amount: n, seq: 0, extra: true });
+  });
+  return applied.sort((a, b) => String(a.due_date).localeCompare(String(b.due_date)) || (a.seq || 0) - (b.seq || 0));
+}
+
+// 保存済みの今日以降のタスクと、いま逆算した結果が食い違うか（＝配り直しが要るか）
+function planScheduleDiffers(tasks, schedule, todayKey) {
+  const cur = (tasks || [])
+    .filter(t => !t.extra && String(t.due_date || '').slice(0, 10) >= todayKey)
+    .map(t => `${String(t.due_date).slice(0, 10)}:${t.kind}:${Number(t.target_amount) || 0}`).sort();
+  const next = ((schedule && schedule.items) || [])
+    .map(i => `${i.dateKey}:${i.kind}:${Number(i.targetAmount) || 0}`).sort();
+  return cur.join('|') !== next.join('|');
+}
+
+// 教材進捗トラッカーから「この科目の残り」を引く。ウィザードの総量の初期値に使う。
+function planVolumeSuggestion(unit, subjectId, targetRound) {
+  if (!subjectId) return null;
+  if (unit === 'video') {
+    const v = (getVideoProgress() || {})[subjectId];
+    if (!v || !(v.total > 0)) return null;
+    return { total: v.total, done: v.done || 0, remaining: Math.max(0, v.total - (v.done || 0)), label: '本' };
+  }
+  const rounds = (getQBProgress() || {})[subjectId];
+  const base = baseTotalForSubject(rounds);
+  if (!base) return null;
+  const r = rounds[String(targetRound || 1)];
+  const done = r ? (r.done || 0) : 0;
+  return { total: base, done, remaining: Math.max(0, base - done), label: '問',
+           rounds: Object.keys(rounds || {}).map(k => parseInt(k, 10)).filter(Number.isFinite).sort((a, b) => a - b) };
+}
+
+// ==================== カレンダー: 純関数 ====================
+const CAL_WEEK_START = 0;   // 0=日曜始まり
+
+// 表示範囲を組む。month はその月を含む日曜始まりの週を必要なぶんだけ（5〜6週）。
+function buildCalendarRange(cursorKey, view) {
+  const cur = parseDateKey(cursorKey);
+  if (!cur) return null;
+  const mode = view === 'week' ? 'week' : 'month';
+  let first, weekCount;
+  if (mode === 'week') {
+    first = new Date(cur);
+    first.setDate(first.getDate() - ((first.getDay() - CAL_WEEK_START + 7) % 7));
+    weekCount = 1;
+  } else {
+    const monthFirst = new Date(cur.getFullYear(), cur.getMonth(), 1);
+    const monthLast = new Date(cur.getFullYear(), cur.getMonth() + 1, 0);
+    first = new Date(monthFirst);
+    first.setDate(first.getDate() - ((first.getDay() - CAL_WEEK_START + 7) % 7));
+    weekCount = Math.ceil((Math.round((monthLast - first) / 86400000) + 1) / 7);
+  }
+  const weeks = [];
+  const d = new Date(first);
+  for (let w = 0; w < weekCount; w++) {
+    const row = [];
+    for (let i = 0; i < 7; i++) { row.push(toLocalDateKey(d)); d.setDate(d.getDate() + 1); }
+    weeks.push(row);
+  }
+  return {
+    view: mode, weeks,
+    startKey: weeks[0][0], endKey: weeks[weeks.length - 1][6],
+    year: cur.getFullYear(), month: cur.getMonth()
+  };
+}
+
+// チップの並び順。日付マスの中では「試験 → 節目 → 予定 → ノルマ」で読む。
+const CAL_KIND_ORDER = { exam: 0, milestone: 1, event: 2, quota: 3 };
+
+// カレンダーのセル配列を作る。予定・逆算タスク・試験カウントダウンを1本のチップ列にまとめる。
+// state は 'done' | 'todo' | 'overdue' の3値。色は科目を表す軸なので、
+// 状態はここでは色に落とさず、描画側で塗り・線・記号として表現する。
+function buildCalendarModel(cursorKey, view, sources) {
+  const range = buildCalendarRange(cursorKey, view);
+  if (!range) return null;
+  const s = sources || {};
+  const todayKey = s.todayKey || todayPlanKey();
+  const plansById = s.plansById || {};
+  const byDay = {};
+  const push = (dateKey, chip) => {
+    if (!dateKey || dateKey < range.startKey || dateKey > range.endKey) return;
+    (byDay[dateKey] = byDay[dateKey] || []).push(chip);
+  };
+
+  // ① 手で作った予定。期間予定は各日に展開する（またぎの帯は v1 では作らない）
+  (s.events || []).forEach(ev => {
+    const from = String(ev.start_date || '').slice(0, 10);
+    if (!parseDateKey(from)) return;
+    const to = ev.end_date ? String(ev.end_date).slice(0, 10) : from;
+    const span = Math.max(0, Math.min(diffDateKeys(to, from) || 0, 365));
+    for (let i = 0; i <= span; i++) {
+      push(shiftDateKey(from, i), {
+        id: ev.id, kind: 'event', title: ev.title,
+        subjectId: ev.subject_id || null, color: ev.color || null,
+        state: 'todo', amount: null,
+        // 時刻は任意。講義のように時間の決まった予定だけが持つ（無ければ終日扱い）
+        startTime: ev.all_day === false && ev.start_time ? String(ev.start_time).slice(0, 5) : null,
+        endTime: ev.all_day === false && ev.end_time ? String(ev.end_time).slice(0, 5) : null,
+        spanIndex: i, spanTotal: span + 1, raw: ev
+      });
+    }
+  });
+
+  // ② 逆算タスク
+  (s.tasks || []).forEach(t => {
+    const key = String(t.due_date || '').slice(0, 10);
+    if (!parseDateKey(key)) return;
+    const plan = plansById[t.plan_id] || null;
+    push(key, {
+      id: t.id, kind: t.kind === 'milestone' ? 'milestone' : 'quota',
+      title: t.title || (plan ? plan.title : 'ノルマ'),
+      subjectId: (plan && plan.subject_id) || null,
+      color: (plan && plan.color) || null,
+      state: t.completed ? 'done' : (key < todayKey ? 'overdue' : 'todo'),
+      amount: t.target_amount, doneAmount: Number(t.done_amount) || 0,
+      unit: plan ? plan.unit : null, planId: t.plan_id, raw: t
+    });
+  });
+
+  // ③ 試験カウントダウン（既存の exam_countdowns）。読み取り専用のマーカー
+  (s.countdowns || []).forEach(e => {
+    push(String(e.exam_date || '').slice(0, 10), {
+      id: 'cd-' + e.id, kind: 'exam', title: e.name,
+      subjectId: null, color: e.color || null,
+      state: 'todo', amount: null, raw: e
+    });
+  });
+
+  // ④ 学習ログ（実績）。チップにはせず、その日の積載量として日別に集計する。
+  //    論理日（3時境界）で束ねるので、深夜の勉強は前日ぶんとして数える。
+  const studyByDay = {};
+  (s.logs || []).forEach(l => {
+    if (!l || !l.started_at) return;
+    const key = toLocalDateKey(getLogicalDate(new Date(l.started_at)));
+    if (key < range.startKey || key > range.endKey) return;
+    const min = Number(l.duration_minutes) || 0;
+    if (min <= 0) return;
+    const bucket = studyByDay[key] = studyByDay[key] || { total: 0, bySubject: {} };
+    bucket.total += min;
+    const sid = l.subject_name || '未設定';
+    bucket.bySubject[sid] = (bucket.bySubject[sid] || 0) + min;
+  });
+
+  const isTask = c => c.kind === 'quota' || c.kind === 'milestone';
+  const weeks = range.weeks.map(row => row.map(dateKey => {
+    const d = parseDateKey(dateKey);
+    const study = studyByDay[dateKey] || null;
+    // 種類 → 時刻（時刻なしは後ろ） → タイトル の順に並べる
+    const items = (byDay[dateKey] || []).sort((a, b) =>
+      (CAL_KIND_ORDER[a.kind] - CAL_KIND_ORDER[b.kind]) ||
+      String(a.startTime || '99:99').localeCompare(String(b.startTime || '99:99')) ||
+      String(a.title || '').localeCompare(String(b.title || ''), 'ja'));
+    const tasks = items.filter(isTask);
+    return {
+      dateKey, day: d.getDate(), weekday: d.getDay(),
+      inMonth: range.view === 'week' || d.getMonth() === range.month,
+      isToday: dateKey === todayKey,
+      isPast: dateKey < todayKey,
+      items,
+      taskCount: tasks.length,
+      doneCount: tasks.filter(c => c.state === 'done').length,
+      hasOverdue: tasks.some(c => c.state === 'overdue'),
+      studyMinutes: study ? study.total : 0,
+      studyBySubject: study
+        ? Object.entries(study.bySubject)
+            .map(([subjectId, minutes]) => ({ subjectId, minutes }))
+            .sort((a, b) => b.minutes - a.minutes)
+        : []
+    };
+  }));
+
+  return Object.assign({}, range, { todayKey, weeks });
+}
+
+// 科目 id / 表示名 → 所属カテゴリ id ('cat-vol2' 等)。無ければ null。
+function subjectCategoryOf(key) {
+  if (!key) return null;
+  const k = String(key).toLowerCase();
+  for (const c of subjectCategories) {
+    if (c.subjects.some(sub => sub.id.toLowerCase() === k || sub.name.toLowerCase() === k)) return c.id;
+  }
+  return null;
+}
+
+// カレンダーの表示フィルタ。種類（予定/ノルマ/試験/実績）と科目カテゴリで絞る。
+// categories が空なら科目では絞らない。絞っているときは科目の無い項目は出さない
+// （試験カウントダウンだけは科目を持たないので、種類の on/off だけに従う）。
+function filterCalendarSources(sources, filters) {
+  const s = sources || {};
+  const f = filters || {};
+  const kinds = Object.assign({ event: true, task: true, exam: true, study: true }, f.kinds || {});
+  const cats = new Set(f.categories || []);
+  const catOk = subjectKey => !cats.size || cats.has(subjectCategoryOf(subjectKey));
+  const plansById = s.plansById || {};
+  return Object.assign({}, s, {
+    events: kinds.event ? (s.events || []).filter(e => catOk(e.subject_id)) : [],
+    tasks: kinds.task ? (s.tasks || []).filter(t => { const p = plansById[t.plan_id]; return catOk(p && p.subject_id); }) : [],
+    countdowns: kinds.exam ? (s.countdowns || []) : [],
+    logs: kinds.study ? (s.logs || []).filter(l => catOk(l.subject_name)) : []
+  });
+}
+
+// 予定フォームの入力を DB の行の形にそろえる。不正なら { error } を返す。
+function normalizeCalendarEvent(input) {
+  const o = input || {};
+  const title = String(o.title || '').trim();
+  if (!title) return { error: 'タイトルを入力してください' };
+  const start = String(o.start_date || '').slice(0, 10);
+  if (!parseDateKey(start)) return { error: '開始日を選んでください' };
+  let end = o.end_date ? String(o.end_date).slice(0, 10) : null;
+  if (end && !parseDateKey(end)) return { error: '終了日が不正です' };
+  if (end && end < start) return { error: '終了日は開始日以降にしてください' };
+  if (end === start) end = null;   // 単日は end_date を持たない
+  const allDay = o.all_day !== false;
+  const st = !allDay && o.start_time ? String(o.start_time).slice(0, 5) : null;
+  const et = !allDay && o.end_time ? String(o.end_time).slice(0, 5) : null;
+  if (st && et && !end && et < st) return { error: '終了時刻は開始時刻以降にしてください' };
+  return {
+    value: {
+      title,
+      subject_id: o.subject_id || null,
+      category: o.category || 'other',
+      start_date: start,
+      end_date: end,
+      all_day: allDay || !(st || et),
+      start_time: st, end_time: et,
+      memo: String(o.memo || '').trim() || null,
+      color: o.color || null
+    }
+  };
+}
+
+// ==================== CALENDAR: ページ ====================
+// 色は科目を表す軸として使う（subjectCategories のカテゴリ色を継承）。
+// 完了/未完了の状態は色ではなく、塗り・枠線・記号で表す。
+
+const CAL_DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
+const CAL_CELL_MAX_CHIPS = 3;
+const CAL_FALLBACK_COLOR = '#94a3b8';
+
+const _subjectColorCache = {};
+// 科目 id ('2C') でも表示名 ('2C 循環器') でも引けるようにする。
+// 学習ログは subject_name に表示名を入れているが、プランは id を持つため。
+function subjectColorOf(key) {
+  if (!key) return CAL_FALLBACK_COLOR;
+  const cached = _subjectColorCache[key];
+  if (cached) return cached;
+  const k = String(key).toLowerCase();
+  let color = null;
+  subjectCategories.forEach(c => c.subjects.forEach(sub => {
+    if (sub.id.toLowerCase() === k || sub.name.toLowerCase() === k) color = c.color;
+  }));
+  return (_subjectColorCache[key] = color || CAL_FALLBACK_COLOR);
+}
+
+function calChipColor(chip) {
+  return chip.color || subjectColorOf(chip.subjectId) ||CAL_FALLBACK_COLOR;
+}
+
+const calendarState = {
+  view: 'month',        // 'month' | 'week'
+  cursorKey: null,      // 表示中の月/週を代表する日
+  selectedKey: null     // 右パネルに出している日
+};
+
+function calUnitLabel(unit) {
+  return ({ q: '問', page: 'p', video: '本', count: '' })[unit] || '';
+}
+
+function calendarChipHTML(chip) {
+  const color = calChipColor(chip);
+  const cls = ['cal-chip', 'kind-' + chip.kind];
+  if (chip.state === 'done') cls.push('is-done');
+  if (chip.state === 'overdue') cls.push('is-overdue');
+  const time = chip.startTime ? `<span class="cal-chip-time">${esc(chip.startTime)}</span>` : '';
+  const mark = chip.state === 'done' ? '✓ ' : (chip.state === 'overdue' ? '! ' : '');
+  const partial = chip.kind === 'quota' && chip.state !== 'done' && chip.doneAmount > 0;
+  const amount = (chip.amount !== null && chip.amount !== undefined)
+    ? `<span class="cal-chip-amount">${partial ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}</span>` : '';
+  return `<div class="${cls.join(' ')}" style="--chip:${esc(color)}" title="${esc(chip.title)}">
+    ${time}<span class="cal-chip-label">${mark}${esc(chip.title)}</span>${amount}
+  </div>`;
+}
+
+// その日の積載量を科目色の横棒で見せる。重い日がひと目で分かるようにするため。
+function calendarLoadHTML(cell) {
+  if (!cell.studyBySubject.length) return '';
+  const max = 300;   // 5時間で満杯として幅を割る
+  const bars = cell.studyBySubject.slice(0, 4).map(s => {
+    const w = Math.max(4, Math.min(100, (s.minutes / max) * 100));
+    return `<span style="width:${w.toFixed(1)}%;background:${esc(subjectColorOf(s.subjectId))}"></span>`;
+  }).join('');
+  return `<div class="cal-load" title="${formatMinutes(cell.studyMinutes)}">${bars}</div>`;
+}
+
+function calendarCellHTML(cell, selectedKey) {
+  const cls = ['cal-cell'];
+  if (!cell.inMonth) cls.push('out-month');
+  if (cell.dateKey === selectedKey) cls.push('selected');
+
+  const dowCls = cell.weekday === 0 ? ' sun' : (cell.weekday === 6 ? ' sat' : '');
+  const todayBadge = cell.isToday ? '<span class="cal-badge-today">今日</span>' : '';
+  const examBadge = cell.items.some(i => i.kind === 'exam') ? '<span class="cal-badge-exam">試験</span>' : '';
+
+  let count = '';
+  if (cell.taskCount > 0) {
+    const c = ['cal-cell-count'];
+    if (cell.hasOverdue) c.push('has-overdue');
+    else if (cell.doneCount === cell.taskCount) c.push('all-done');
+    count = `<span class="${c.join(' ')}">${cell.doneCount}/${cell.taskCount}</span>`;
+  }
+
+  const shown = cell.items.slice(0, CAL_CELL_MAX_CHIPS).map(calendarChipHTML).join('');
+  const rest = cell.items.length - CAL_CELL_MAX_CHIPS;
+  const more = rest > 0 ? `<div class="cal-chip-more">＋${rest}件</div>` : '';
+
+  return `<div class="${cls.join(' ')}" data-cal-day="${cell.dateKey}">
+    <div class="cal-cell-head">
+      <span class="cal-daynum${dowCls}">${cell.day}</span>${todayBadge}${examBadge}${count}
+    </div>
+    ${calendarLoadHTML(cell)}${shown}${more}
+  </div>`;
+}
+
+function calendarGridHTML(model) {
+  const dow = CAL_DOW_LABELS.map((d, i) =>
+    `<div class="${i === 0 ? 'sun' : (i === 6 ? 'sat' : '')}">${d}</div>`).join('');
+  const cells = model.weeks.flat().map(c => calendarCellHTML(c, calendarState.selectedKey)).join('');
+  return `<div class="cal-dow">${dow}</div><div class="cal-weeks view-${model.view}">${cells}</div>`;
+}
+
+function calendarPanelItemHTML(chip) {
+  const color = calChipColor(chip);
+  const time = chip.startTime
+    ? `${esc(chip.startTime)}${chip.endTime ? '–' + esc(chip.endTime) : ''}` : '終日';
+  const evCat = chip.kind === 'event' && chip.raw && chip.raw.category
+    ? (CAL_EVENT_CATEGORIES.find(c => c.id === chip.raw.category) || {}).label : null;
+  const kindLabel = evCat || (({ exam: '試験', milestone: '節目', event: '予定', quota: 'ノルマ' })[chip.kind] || '');
+  const amount = (chip.amount !== null && chip.amount !== undefined)
+    ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '';
+  const tag = chip.state === 'overdue' ? '<span class="cal-item-tag">期限切れ</span>' : '';
+  const check = chip.kind === 'quota' ? `<span class="cal-item-check ${chip.state === 'done' ? 'on' : ''}">${chip.state === 'done' ? '✓' : ''}</span>` : '';
+  const clickable = chip.kind === 'event' ? ` clickable" data-cal-event="${esc(chip.id)}" title="クリックで編集`
+    : (chip.kind === 'quota' && chip.id ? ` clickable" data-cal-task="${esc(chip.id)}" title="クリックで完了/未完了` : '');
+  return `<div class="cal-panel-item${clickable}">
+    <div class="cal-item-bar" style="background:${esc(color)}"></div>
+    <div class="cal-item-body">
+      <div class="cal-item-title${chip.state === 'done' ? ' is-done' : ''}">${esc(chip.title)}${amount}</div>
+      <div class="cal-item-meta">${kindLabel}${chip.kind === 'event' ? '・' + time : ''}</div>
+      ${tag}
+    </div>
+    ${check}
+  </div>`;
+}
+
+function calendarPanelHTML(cell) {
+  if (!cell) return '<div class="cal-panel"><div class="cal-panel-empty">日付を選んでください</div></div>';
+  const d = parseDateKey(cell.dateKey);
+  const examCount = cell.items.filter(i => i.kind === 'exam').length;
+  const list = cell.items.length
+    ? cell.items.map(calendarPanelItemHTML).join('')
+    : '<div class="cal-panel-empty">この日の予定はありません</div>';
+
+  return `<div class="cal-panel">
+    <div class="cal-panel-head">
+      <div class="cal-panel-kicker">選択中の日</div>
+      <div class="cal-panel-date">
+        <strong>${d.getMonth() + 1}月${d.getDate()}日</strong>
+        <span>${CAL_DOW_LABELS[cell.weekday]}曜日</span>
+      </div>
+      <div class="cal-stats">
+        <div>
+          <div class="cal-stat-num">${cell.items.length}</div>
+          <div class="cal-stat-label">予定</div>
+        </div>
+        <div>
+          <div class="cal-stat-num">${cell.studyMinutes > 0 ? (cell.studyMinutes / 60).toFixed(1) : '0'}<span style="font-size:0.8125rem">h</span></div>
+          <div class="cal-stat-label">学習実績</div>
+        </div>
+        <div>
+          <div class="cal-stat-num" style="color:${examCount ? 'var(--color-accent-pink)' : 'inherit'}">${examCount}</div>
+          <div class="cal-stat-label">試験</div>
+        </div>
+      </div>
+    </div>
+    <div class="cal-panel-list">${list}</div>
+    <div class="cal-panel-foot">
+      <button class="btn btn-secondary" data-cal-add style="width:100%;justify-content:center;font-size:var(--font-size-xs)">＋ この日に予定を追加</button>
+    </div>
+  </div>`;
+}
+
+function calendarTitleHTML(model) {
+  if (model.view === 'week') {
+    const a = parseDateKey(model.startKey), b = parseDateKey(model.endKey);
+    return `${a.getFullYear()}年${a.getMonth() + 1}月${a.getDate()}日 – ${b.getMonth() + 1}月${b.getDate()}日`;
+  }
+  return `${model.year}年${model.month + 1}月`;
+}
+
+// ---------- 予定(calendar_events)のデータ層 ----------
+// DB が使えるときは Supabase を正とし、デモ/オフラインでは localStorage に持つ。
+// 双方向同期はしない（sleep_logs の移行で懲りているので、片方向で割り切る）。
+const CALENDAR_EVENTS_LS_KEY = 'medfocus_calendar_events';
+const CALENDAR_FILTERS_LS_KEY = 'medfocus_calendar_filters';
+
+function getLocalCalendarEvents() {
+  try { const v = JSON.parse(localStorage.getItem(CALENDAR_EVENTS_LS_KEY) || '[]'); return Array.isArray(v) ? v : []; }
+  catch (e) { return []; }
+}
+function setLocalCalendarEvents(list) {
+  try { localStorage.setItem(CALENDAR_EVENTS_LS_KEY, JSON.stringify(list)); } catch (e) {}
+}
+
+async function fetchCalendarEvents() {
+  if (!hasDB()) return getLocalCalendarEvents();
+  const cached = getCached('calendar_events');
+  if (cached) return cached;
+  // 学生1人の予定は多くても数百件なので、月ごとに切らず全件を取って30秒キャッシュする
+  const { data, error } = await supabase.from('calendar_events')
+    .select('*').eq('user_id', session.user.id).order('start_date', { ascending: true });
+  if (error) { console.error('fetchCalendarEvents error:', error.message); return []; }
+  setCache('calendar_events', data || []);
+  return data || [];
+}
+
+async function saveCalendarEvent(input) {
+  const n = normalizeCalendarEvent(input);
+  if (n.error) { showToast(IC.warn + ' ' + n.error); return null; }
+  if (!hasDB()) {
+    const list = getLocalCalendarEvents();
+    const ev = Object.assign({ id: generateUID(), created_at: new Date().toISOString() }, n.value);
+    list.push(ev); setLocalCalendarEvents(list);
+    showToast(IC.check + ' 予定を追加しました');
+    return ev;
+  }
+  const { data, error } = await supabase.from('calendar_events')
+    .insert([Object.assign({ user_id: session.user.id }, n.value)]).select().single();
+  if (error) { console.error('saveCalendarEvent error:', error); showToast(IC.x + ' 保存に失敗しました: ' + error.message); return null; }
+  invalidateCache('calendar_events');
+  showToast(IC.check + ' 予定を追加しました');
+  return data;
+}
+
+async function updateCalendarEvent(id, input) {
+  const n = normalizeCalendarEvent(input);
+  if (n.error) { showToast(IC.warn + ' ' + n.error); return null; }
+  if (!hasDB()) {
+    const list = getLocalCalendarEvents();
+    const i = list.findIndex(e => e.id === id);
+    if (i < 0) return null;
+    list[i] = Object.assign({}, list[i], n.value, { updated_at: new Date().toISOString() });
+    setLocalCalendarEvents(list);
+    showToast(IC.check + ' 予定を更新しました');
+    return list[i];
+  }
+  const { data, error } = await supabase.from('calendar_events')
+    .update(Object.assign({ updated_at: new Date().toISOString() }, n.value)).eq('id', id).select().single();
+  if (error) { console.error('updateCalendarEvent error:', error); showToast(IC.x + ' 更新に失敗しました: ' + error.message); return null; }
+  invalidateCache('calendar_events');
+  showToast(IC.check + ' 予定を更新しました');
+  return data;
+}
+
+async function deleteCalendarEvent(id) {
+  if (!hasDB()) {
+    setLocalCalendarEvents(getLocalCalendarEvents().filter(e => e.id !== id));
+    showToast(IC.check + ' 予定を削除しました');
+    return true;
+  }
+  const { error } = await supabase.from('calendar_events').delete().eq('id', id);
+  if (error) { showToast(IC.x + ' 削除に失敗しました: ' + error.message); return false; }
+  invalidateCache('calendar_events');
+  showToast(IC.check + ' 予定を削除しました');
+  return true;
+}
+
+// ---------- 表示フィルタの保存 ----------
+function getCalendarFilters() {
+  const base = { kinds: { event: true, task: true, exam: true, study: true }, categories: [] };
+  try {
+    const v = JSON.parse(localStorage.getItem(CALENDAR_FILTERS_LS_KEY) || 'null');
+    if (v && typeof v === 'object') {
+      return { kinds: Object.assign(base.kinds, v.kinds || {}), categories: Array.isArray(v.categories) ? v.categories : [] };
+    }
+  } catch (e) {}
+  return base;
+}
+function setCalendarFilters(f) {
+  try { localStorage.setItem(CALENDAR_FILTERS_LS_KEY, JSON.stringify(f)); } catch (e) {}
+}
+
+// ---------- 予定の追加・編集モーダル ----------
+const CAL_EVENT_CATEGORIES = [
+  { id: 'lecture', label: '講義・実習' },
+  { id: 'exam', label: '試験' },
+  { id: 'deadline', label: '締切' },
+  { id: 'other', label: 'その他' }
+];
+
+// existing が null なら新規。defaultDateKey は「この日に追加」で使う。
+// 保存・削除が済んだら onChange() を呼ぶので、呼び出し側はそこで描き直す。
+function openEventModal(existing, defaultDateKey, onChange) {
+  const ev = existing || {};
+  const isEdit = !!existing;
+  const subjectOptions = subjectCategories.map(c =>
+    `<optgroup label="${esc(c.name)}">${c.subjects.map(s =>
+      `<option value="${s.id}" ${ev.subject_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
+  const categoryOptions = CAL_EVENT_CATEGORIES.map(c =>
+    `<option value="${c.id}" ${(ev.category || 'other') === c.id ? 'selected' : ''}>${c.label}</option>`).join('');
+  const allDay = ev.all_day !== false;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in';
+  modal.style.zIndex = '2000';
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up" style="max-width:460px;">
+      <div class="modal-header">
+        <div class="modal-title">${isEdit ? '予定を編集' : '予定を追加'}</div>
+        <button class="modal-close" data-ev-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>タイトル</label>
+          <input type="text" id="ev-title" value="${esc(ev.title || '')}" placeholder="例: 循環器 講義、レポート提出" maxlength="80" style="margin-bottom:0" />
+        </div>
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1; min-width:0;">
+            <label>科目</label>
+            <select id="ev-subject" style="width:100%"><option value="">（科目なし）</option>${subjectOptions}</select>
+          </div>
+          <div class="settings-field" style="flex:1; min-width:0;">
+            <label>種類</label>
+            <select id="ev-category" style="width:100%">${categoryOptions}</select>
+          </div>
+        </div>
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1;">
+            <label>開始日</label>
+            <input type="date" id="ev-start" value="${esc(ev.start_date || defaultDateKey || '')}" style="margin-bottom:0" />
+          </div>
+          <div class="settings-field" style="flex:1;">
+            <label>終了日 <span style="color:var(--color-text-tertiary);font-weight:400">（単日なら空）</span></label>
+            <input type="date" id="ev-end" value="${esc(ev.end_date || '')}" style="margin-bottom:0" />
+          </div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:var(--font-size-sm); margin-bottom:12px; cursor:pointer;">
+          <input type="checkbox" id="ev-allday" ${allDay ? 'checked' : ''} style="width:auto; margin:0" /> 終日
+        </label>
+        <div id="ev-time-row" style="display:${allDay ? 'none' : 'flex'}; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1;">
+            <label>開始時刻</label>
+            <input type="time" id="ev-start-time" value="${esc(ev.start_time ? String(ev.start_time).slice(0, 5) : '')}" style="margin-bottom:0" />
+          </div>
+          <div class="settings-field" style="flex:1;">
+            <label>終了時刻</label>
+            <input type="time" id="ev-end-time" value="${esc(ev.end_time ? String(ev.end_time).slice(0, 5) : '')}" style="margin-bottom:0" />
+          </div>
+        </div>
+        <div class="settings-field" style="margin-bottom:16px;">
+          <label>メモ</label>
+          <textarea id="ev-memo" style="min-height:70px; margin-bottom:0" placeholder="場所・持ち物など">${esc(ev.memo || '')}</textarea>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <button class="btn btn-primary" id="ev-save" style="flex:1; justify-content:center;">${isEdit ? '更新する' : '追加する'}</button>
+          ${isEdit ? '<button class="btn-log-action delete" id="ev-delete" style="padding:8px 14px;">削除</button>' : ''}
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const $ = sel => modal.querySelector(sel);
+  const close = () => modal.remove();
+  $('[data-ev-close]').onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+  $('#ev-allday').onchange = e => { $('#ev-time-row').style.display = e.target.checked ? 'none' : 'flex'; };
+  setTimeout(() => $('#ev-title').focus(), 50);
+
+  const read = () => ({
+    title: $('#ev-title').value,
+    subject_id: $('#ev-subject').value || null,
+    category: $('#ev-category').value,
+    start_date: $('#ev-start').value,
+    end_date: $('#ev-end').value || null,
+    all_day: $('#ev-allday').checked,
+    start_time: $('#ev-start-time').value || null,
+    end_time: $('#ev-end-time').value || null,
+    memo: $('#ev-memo').value
+  });
+
+  $('#ev-save').onclick = async function () {
+    this.disabled = true;
+    const saved = isEdit ? await updateCalendarEvent(ev.id, read()) : await saveCalendarEvent(read());
+    this.disabled = false;
+    if (!saved) return;
+    close();
+    if (onChange) onChange(saved);
+  };
+  if (isEdit) {
+    $('#ev-delete').onclick = async () => {
+      if (!confirm('この予定を削除しますか？')) return;
+      if (await deleteCalendarEvent(ev.id)) { close(); if (onChange) onChange(null); }
+    };
+  }
+}
+
+// 表示中のカレンダーに流し込むデータをそろえる。
+async function calendarSources() {
+  const [logs, events, sync] = await Promise.all([fetchStudyLogs(), fetchCalendarEvents(), syncPlans(false)]);
+  if (sync.rebuilt.length) showToast(IC.check + ' 実績に合わせて配り直しました: ' + sync.rebuilt.join('、'));
+  return {
+    todayKey: todayPlanKey(),
+    countdowns: examCountdowns || [],
+    logs: logs || [],
+    events: events || [],
+    // 実績だけの仮タスク(extra)はカレンダーには出さない（ログの積載バーで見える）
+    tasks: sync.tasks.filter(t => !t.extra),
+    plansById: sync.plansById
+  };
+}
+
+const CAL_KIND_FILTERS = [
+  { id: 'event', label: '予定' },
+  { id: 'task', label: 'ノルマ' },
+  { id: 'exam', label: '試験' },
+  { id: 'study', label: '実績' }
+];
+
+function calendarFiltersHTML(filters) {
+  const kinds = CAL_KIND_FILTERS.map(k =>
+    `<button class="cal-filter-chip ${filters.kinds[k.id] ? 'on' : ''}" data-cal-kind="${k.id}">${k.label}</button>`).join('');
+  const cats = subjectCategories.map(c => {
+    const on = !filters.categories.length || filters.categories.includes(c.id);
+    return `<button class="cal-legend-item ${on ? '' : 'off'}" data-cal-cat="${c.id}" title="クリックでこのカテゴリだけ表示">
+      <span class="cal-legend-swatch" style="background:${esc(c.color)}"></span>${esc(c.name)}
+    </button>`;
+  }).join('');
+  const clear = filters.categories.length
+    ? `<button class="cal-filter-clear" data-cal-cat-clear>すべて表示</button>` : '';
+  return `<div class="cal-filters">
+    <div class="cal-filter-group">${kinds}</div>
+    <div class="cal-spacer"></div>
+    <div class="cal-legend">${cats}${clear}</div>
+  </div>`;
+}
+
+async function renderCalendar() {
+  const ct = document.getElementById('page-container');
+  const todayKey = todayPlanKey();
+  if (!calendarState.cursorKey) calendarState.cursorKey = todayKey;
+  if (!calendarState.selectedKey) calendarState.selectedKey = todayKey;
+  let filters = getCalendarFilters();
+
+  ct.innerHTML = `<div class="page-header">
+      <h1 class="page-title">${IC.calendar}カレンダー</h1>
+      <p class="page-subtitle">予定とノルマを1枚で見渡す</p>
+    </div>
+    <div id="cal-root"><div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>`;
+
+  await fetchCountdowns();
+  let sources = await calendarSources();
+
+  // 画面から離れていたら描き直さない（await の間に別ページへ移動している場合）
+  if (currentRoute !== '/calendar') return;
+
+  // 予定を足した・消したあとに呼ぶ。データを取り直して同じ位置で描き直す
+  async function reload() {
+    _planSyncAt = 0;
+    sources = await calendarSources();
+    if (currentRoute === '/calendar') draw();
+  }
+
+  function draw() {
+    const model = buildCalendarModel(calendarState.cursorKey, calendarState.view, filterCalendarSources(sources, filters));
+    if (!model) return;
+    const cells = model.weeks.flat();
+    // 月を移ったときに選択日が範囲外なら、その月の初日へ寄せる
+    let selected = cells.find(c => c.dateKey === calendarState.selectedKey);
+    if (!selected) {
+      selected = cells.find(c => c.inMonth) || cells[0];
+      calendarState.selectedKey = selected.dateKey;
+    }
+
+    const root = document.getElementById('cal-root');
+    root.innerHTML = `
+      <div class="cal-toolbar">
+        <span class="cal-month-title">${calendarTitleHTML(model)}</span>
+        <div class="cal-nav">
+          <button data-cal-nav="-1" title="前へ">‹</button>
+          <button data-cal-nav="1" title="次へ">›</button>
+        </div>
+        <button class="btn btn-secondary" data-cal-nav="0" style="padding:6px 14px;font-size:var(--font-size-xs)">今日</button>
+        <span class="cal-today-note">今日 ${todayKey.slice(5).replace('-', '/')}</span>
+        <div class="cal-spacer"></div>
+        <button class="btn btn-primary" data-cal-add style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 予定を追加</button>
+        <div class="cal-seg">
+          <button data-cal-view="month" class="${calendarState.view === 'month' ? 'active' : ''}">月</button>
+          <button data-cal-view="week" class="${calendarState.view === 'week' ? 'active' : ''}">週</button>
+        </div>
+      </div>
+      ${calendarFiltersHTML(filters)}
+      <div class="cal-layout">
+        <div class="cal-grid-card">${calendarGridHTML(model)}</div>
+        ${calendarPanelHTML(selected)}
+      </div>`;
+
+    root.querySelectorAll('[data-cal-nav]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const dir = Number(btn.dataset.calNav);
+        if (dir === 0) {
+          calendarState.cursorKey = todayKey;
+          calendarState.selectedKey = todayKey;
+        } else if (calendarState.view === 'week') {
+          calendarState.cursorKey = shiftDateKey(calendarState.cursorKey, dir * 7);
+        } else {
+          const d = parseDateKey(calendarState.cursorKey);
+          // 31日から月を送ると短い月を飛ばしてしまうので、1日に寄せてから動かす
+          calendarState.cursorKey = toLocalDateKey(new Date(d.getFullYear(), d.getMonth() + dir, 1));
+        }
+        draw();
+      });
+    });
+    root.querySelectorAll('[data-cal-view]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        calendarState.view = btn.dataset.calView;
+        // 週表示へ移るときは選択中の日を含む週を出す
+        if (calendarState.view === 'week') calendarState.cursorKey = calendarState.selectedKey;
+        draw();
+      });
+    });
+    root.querySelectorAll('[data-cal-day]').forEach(cellEl => {
+      cellEl.addEventListener('click', () => {
+        calendarState.selectedKey = cellEl.dataset.calDay;
+        draw();
+      });
+    });
+
+    // フィルタ
+    root.querySelectorAll('[data-cal-kind]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        filters.kinds[btn.dataset.calKind] = !filters.kinds[btn.dataset.calKind];
+        setCalendarFilters(filters); draw();
+      });
+    });
+    root.querySelectorAll('[data-cal-cat]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.calCat;
+        const i = filters.categories.indexOf(id);
+        if (i >= 0) filters.categories.splice(i, 1); else filters.categories.push(id);
+        // 全部選んだら「絞り込みなし」に戻す
+        if (filters.categories.length >= subjectCategories.length) filters.categories = [];
+        setCalendarFilters(filters); draw();
+      });
+    });
+    root.querySelector('[data-cal-cat-clear]')?.addEventListener('click', () => {
+      filters.categories = []; setCalendarFilters(filters); draw();
+    });
+
+    // 予定の追加・編集
+    root.querySelectorAll('[data-cal-add]').forEach(btn => {
+      btn.addEventListener('click', () => openEventModal(null, calendarState.selectedKey, reload));
+    });
+    root.querySelectorAll('[data-cal-task]').forEach(el => {
+      el.addEventListener('click', async () => {
+        const t = (sources.tasks || []).find(x => String(x.id) === el.dataset.calTask);
+        if (!t) return;
+        await setTaskCompleted(t, !t.completed);
+        reload();
+      });
+    });
+    root.querySelectorAll('[data-cal-event]').forEach(el => {
+      el.addEventListener('click', () => {
+        const ev = (sources.events || []).find(e => String(e.id) === el.dataset.calEvent);
+        if (ev) openEventModal(ev, null, reload);
+      });
+    });
+  }
+
+  draw();
+}
+
+// ==================== 逆算プラン: データ層 ====================
+const PLANS_LS_KEY = 'medfocus_study_plans';
+const PLAN_TASKS_LS_KEY = 'medfocus_plan_tasks';
+const PLAN_UNITS = [
+  { id: 'q', label: 'QB問題集', unit: '問', hint: '解いた問題数（学習記録の「解いた問題数」で自動消化）' },
+  { id: 'video', label: '講義動画', unit: '本', hint: '見た本数（学習記録の「見た本数」で自動消化）' }
+];
+function planUnitLabel(unit) { return (PLAN_UNITS.find(u => u.id === unit) || {}).unit || ''; }
+function planUnitName(unit) { return (PLAN_UNITS.find(u => u.id === unit) || {}).label || ''; }
+function subjectNameOf(id) { return subjectNameMap[String(id || '').toLowerCase()] || id || '（科目なし）'; }
+
+function getLocalList(key) { try { const v = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(v) ? v : []; } catch (e) { return []; } }
+function setLocalList(key, list) { try { localStorage.setItem(key, JSON.stringify(list)); } catch (e) {} }
+
+async function fetchPlans() {
+  if (!hasDB()) return getLocalList(PLANS_LS_KEY);
+  const cached = getCached('study_plans');
+  if (cached) return cached;
+  const { data, error } = await supabase.from('study_plans').select('*')
+    .eq('user_id', session.user.id).order('due_date', { ascending: true });
+  if (error) { console.error('fetchPlans error:', error.message); return []; }
+  setCache('study_plans', data || []);
+  return data || [];
+}
+
+async function fetchPlanTasks() {
+  if (!hasDB()) return getLocalList(PLAN_TASKS_LS_KEY);
+  const cached = getCached('plan_tasks');
+  if (cached) return cached;
+  // 長いプランが複数あると PostgREST の既定上限(1000行)を超えるので、空が返るまで range で取る
+  const all = [];
+  for (let page = 0, from = 0; page < 40; page++) {
+    const { data, error } = await supabase.from('plan_tasks').select('*')
+      .eq('user_id', session.user.id)
+      .order('due_date', { ascending: true }).order('id', { ascending: true })
+      .range(from, from + 499);
+    if (error) { console.error('fetchPlanTasks error:', error.message); return all; }
+    if (!data || !data.length) break;
+    all.push(...data); from += data.length;
+  }
+  setCache('plan_tasks', all);
+  return all;
+}
+
+function scheduleToTaskRows(plan, schedule, seqOffset) {
+  return (schedule.items || []).map((it, i) => ({
+    plan_id: plan.id, due_date: it.dateKey, kind: it.kind,
+    title: it.kind === 'milestone' ? it.title : null,
+    target_amount: it.kind === 'quota' ? it.targetAmount : null,
+    done_amount: 0, completed: false, seq: (seqOffset || 0) + i + 1
+  }));
+}
+
+async function createPlan(input, schedule) {
+  const row = {
+    title: input.title, subject_id: input.subject_id || null,
+    start_date: schedule.startKey, due_date: schedule.dueKey,
+    total_volume: schedule.totalVolume, unit: input.unit || 'q',
+    exclude_weekdays: schedule.excludeWeekdays || [],
+    milestone_count: input.milestone_count || null,
+    auto_redistribute: input.auto_redistribute !== false,
+    target_round: input.target_round || null,
+    status: 'active', memo: input.memo || null
+  };
+  if (!hasDB()) {
+    const plan = Object.assign({ id: generateUID(), created_at: new Date().toISOString() }, row);
+    const tasks = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ id: generateUID() }, t));
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).concat([plan]));
+    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).concat(tasks));
+    showToast(IC.check + ' プランを作成しました');
+    return plan;
+  }
+  const { data: plan, error } = await supabase.from('study_plans')
+    .insert([Object.assign({ user_id: session.user.id }, row)]).select().single();
+  if (error) { console.error('createPlan error:', error); showToast(IC.x + ' 作成に失敗しました: ' + error.message); return null; }
+  const rows = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ user_id: session.user.id }, t));
+  if (rows.length) {
+    const { error: e2 } = await supabase.from('plan_tasks').insert(rows);
+    if (e2) { console.error('createPlan tasks error:', e2); showToast(IC.x + ' ノルマの保存に失敗しました: ' + e2.message); }
+  }
+  invalidateCache('study_plans'); invalidateCache('plan_tasks');
+  showToast(IC.check + ' プランを作成しました');
+  return plan;
+}
+
+// 今日以降のタスクを消して、逆算し直した結果で置き換える。過去の行は残す。
+async function replaceFutureTasks(plan, schedule, todayKey) {
+  const all = await fetchPlanTasks();
+  const mine = all.filter(t => t.plan_id === plan.id);
+  const keep = mine.filter(t => String(t.due_date).slice(0, 10) < todayKey);
+  const seqOffset = keep.reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
+  const fresh = scheduleToTaskRows(plan, schedule, seqOffset);
+  if (!hasDB()) {
+    const rows = fresh.map(t => Object.assign({ id: generateUID() }, t));
+    setLocalList(PLAN_TASKS_LS_KEY, all.filter(t => t.plan_id !== plan.id).concat(keep, rows));
+    return keep.concat(rows);
+  }
+  const { error } = await supabase.from('plan_tasks').delete().eq('plan_id', plan.id).gte('due_date', todayKey);
+  if (error) { console.error('replaceFutureTasks delete error:', error); return mine; }
+  let inserted = [];
+  if (fresh.length) {
+    const { data, error: e2 } = await supabase.from('plan_tasks')
+      .insert(fresh.map(t => Object.assign({ user_id: session.user.id }, t))).select();
+    if (e2) console.error('replaceFutureTasks insert error:', e2);
+    inserted = data || [];
+  }
+  invalidateCache('plan_tasks');
+  return keep.concat(inserted);
+}
+
+async function setTaskCompleted(task, completed) {
+  if (!task || !task.id) return;
+  const patch = { completed: !!completed, completed_at: completed ? new Date().toISOString() : null };
+  if (!hasDB()) {
+    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).map(t => t.id === task.id ? Object.assign({}, t, patch) : t));
+  } else {
+    const { error } = await supabase.from('plan_tasks').update(patch).eq('id', task.id);
+    if (error) { showToast(IC.x + ' 更新に失敗しました'); return; }
+    invalidateCache('plan_tasks');
+  }
+  _planSyncAt = 0;
+}
+
+async function updatePlanStatus(id, status) {
+  if (!hasDB()) {
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).map(p => p.id === id ? Object.assign({}, p, { status }) : p));
+  } else {
+    const { error } = await supabase.from('study_plans').update({ status, updated_at: new Date().toISOString() }).eq('id', id);
+    if (error) { showToast(IC.x + ' 更新に失敗しました'); return; }
+    invalidateCache('study_plans');
+  }
+  _planSyncAt = 0;
+}
+
+async function deletePlan(id) {
+  if (!hasDB()) {
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).filter(p => p.id !== id));
+    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).filter(t => t.plan_id !== id));
+  } else {
+    // plan_tasks は ON DELETE CASCADE で一緒に消える
+    const { error } = await supabase.from('study_plans').delete().eq('id', id);
+    if (error) { showToast(IC.x + ' 削除に失敗しました'); return; }
+    invalidateCache('study_plans'); invalidateCache('plan_tasks');
+  }
+  _planSyncAt = 0;
+  showToast(IC.check + ' プランを削除しました');
+}
+
+// ---------- 同期：実績を重ね、遅れていれば残りを配り直す ----------
+// カレンダーとプラン一覧の両方がここを通る。30秒はキャッシュして無駄な書き込みを避ける。
+let _planSyncAt = 0, _planSyncResult = null;
+async function syncPlans(force) {
+  if (!force && _planSyncResult && Date.now() - _planSyncAt < 30000) return _planSyncResult;
+  const [plans, tasksRaw, logs] = await Promise.all([fetchPlans(), fetchPlanTasks(), fetchStudyLogs()]);
+  const today = todayPlanKey();
+  const byPlan = {};
+  tasksRaw.forEach(t => { (byPlan[t.plan_id] = byPlan[t.plan_id] || []).push(t); });
+
+  const tasks = [];
+  const plansById = {};
+  const rebuilt = [];
+  for (const plan of plans) {
+    plansById[plan.id] = plan;
+    const doneByDay = planDoneByDayFromLogs(plan, logs);
+    let mine = planApplyLogs(plan, byPlan[plan.id] || [], doneByDay);
+    const canAuto = plan.status === 'active' && plan.auto_redistribute !== false && Number(plan.total_volume) > 0;
+    if (canAuto) {
+      const sched = rebuildPlanSchedule(plan, mine, today);
+      if (sched.ok && planScheduleDiffers(mine, sched, today)) {
+        const fresh = await replaceFutureTasks(plan, sched, today);
+        mine = planApplyLogs(plan, fresh, doneByDay);
+        rebuilt.push(plan.title);
+        if (sched.mode === 'complete') { await updatePlanStatus(plan.id, 'done'); plan.status = 'done'; }
+      }
+    }
+    tasks.push(...mine);
+  }
+  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today };
+  _planSyncAt = Date.now();
+  return _planSyncResult;
+}
+
+// ==================== 逆算プラン: ページ ====================
+function planStatusBadge(plan, prog) {
+  if (plan.status === 'archived') return '<span class="plan-badge muted">アーカイブ</span>';
+  if (plan.status === 'done' || prog.status === 'done') return '<span class="plan-badge done">完了</span>';
+  if (prog.status === 'behind') return '<span class="plan-badge behind">遅れ</span>';
+  return '<span class="plan-badge ok">順調</span>';
+}
+
+function planCardHTML(plan, tasks, todayKey) {
+  const prog = planProgress(plan, tasks, todayKey);
+  const unit = planUnitLabel(plan.unit);
+  const color = subjectColorOf(plan.subject_id);
+  const due = parseDateKey(plan.due_date);
+  const hasVolume = prog.hasVolume;
+
+  // 当初の1日あたり／いまの1日あたり
+  const initial = hasVolume ? buildPlanSchedule({ startDate: plan.start_date, dueDate: plan.due_date,
+    totalVolume: plan.total_volume, excludeWeekdays: plan.exclude_weekdays, todayKey: plan.start_date }) : null;
+  const now = hasVolume && plan.status === 'active' ? rebuildPlanSchedule(plan, tasks, todayKey) : null;
+  const perDayNow = now && now.ok && now.mode === 'quota' ? now.perDay : null;
+  const perDayInit = initial && initial.ok ? initial.perDay : null;
+  const fmt = v => v === null || v === undefined ? '–' : (Math.round(v * 10) / 10) + unit;
+
+  const bar = hasVolume ? `
+    <div class="plan-bar"><span style="width:${Math.min(100, prog.pct || 0).toFixed(1)}%;background:${esc(color)}"></span></div>
+    <div class="plan-bar-label"><strong>${prog.done}</strong> / ${prog.total}${unit} <span>${Math.round(prog.pct || 0)}%</span></div>` :
+    `<div class="plan-bar-label">マイルストーン方式（${tasks.filter(t => t.kind === 'milestone').length}地点）</div>`;
+
+  const stats = hasVolume ? `
+    <div class="plan-stats">
+      <div><div class="plan-stat-num">${prog.todayTarget}${unit}</div><div class="plan-stat-label">今日のノルマ${prog.todayDone ? `（実績 ${prog.todayDone}）` : ''}</div></div>
+      <div><div class="plan-stat-num">${fmt(perDayNow)}</div><div class="plan-stat-label">1日あたり${perDayInit !== null ? `（当初 ${fmt(perDayInit)}）` : ''}</div></div>
+      <div><div class="plan-stat-num ${prog.behind > 0 ? 'warn' : ''}">${prog.behind > 0 ? prog.behind + unit : '0'}</div><div class="plan-stat-label">遅れ</div></div>
+      <div><div class="plan-stat-num">${prog.daysLeft}</div><div class="plan-stat-label">残り日数</div></div>
+    </div>` : `
+    <div class="plan-stats">
+      <div><div class="plan-stat-num">${prog.daysLeft}</div><div class="plan-stat-label">残り日数</div></div>
+      <div><div class="plan-stat-num">${prog.overdueCount}</div><div class="plan-stat-label">未達の節目</div></div>
+    </div>`;
+
+  const excl = (plan.exclude_weekdays || []).length
+    ? `・${(plan.exclude_weekdays || []).map(d => CAL_DOW_LABELS[d]).join('')}曜は休み` : '';
+  const active = plan.status === 'active';
+  return `<div class="plan-card card" data-plan-id="${esc(plan.id)}" style="--plan:${esc(color)}">
+    <div class="plan-head">
+      <div class="plan-title">${esc(plan.title)}</div>
+      ${planStatusBadge(plan, prog)}
+    </div>
+    <div class="plan-meta">${planUnitName(plan.unit)}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
+      ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
+    ${bar}${stats}
+    <div class="plan-actions">
+      ${active && hasVolume ? '<button class="btn-log-action" data-plan-rebuild>再逆算</button>' : ''}
+      ${active ? '<button class="btn-log-action" data-plan-status="done">完了にする</button>' : '<button class="btn-log-action" data-plan-status="active">再開</button>'}
+      ${plan.status !== 'archived' ? '<button class="btn-log-action" data-plan-status="archived">アーカイブ</button>' : ''}
+      <button class="btn-log-action delete" data-plan-delete>削除</button>
+    </div>
+  </div>`;
+}
+
+function planPreviewHTML(sched, unit) {
+  if (!sched.ok) {
+    const msg = { 'no-due': '締切日を選んでください', 'invalid-range': '締切日は開始日以降にしてください',
+                  'past-due': '締切日が過去です', 'all-excluded': '稼働する曜日がありません', 'invalid-start': '開始日が不正です' }[sched.error] || 'エラー';
+    return `<div class="plan-preview-error">${IC.warn} ${msg}</div>`;
+  }
+  const u = planUnitLabel(unit);
+  const items = sched.items;
+  const head = sched.mode === 'quota'
+    ? `<div class="plan-preview-summary"><strong>${sched.workingDayCount}日</strong>で <strong>${sched.totalVolume}${u}</strong> → 1日あたり <strong>${Math.round(sched.perDay * 10) / 10}${u}</strong>${sched.warnings.includes('sparse') ? '<span>（量が少ないので配分の無い日があります）</span>' : ''}</div>`
+    : `<div class="plan-preview-summary">総量なし → <strong>${items.length}地点</strong>のマイルストーンを置きます</div>`;
+  const rows = (items.length > 8 ? items.slice(0, 6).concat([null], items.slice(-1)) : items).map(it => {
+    if (!it) return '<div class="plan-preview-row ellipsis">…</div>';
+    const d = parseDateKey(it.dateKey);
+    return `<div class="plan-preview-row"><span>${d.getMonth() + 1}/${d.getDate()}（${CAL_DOW_LABELS[d.getDay()]}）</span><span>${it.kind === 'quota' ? it.targetAmount + u : esc(it.title)}</span></div>`;
+  }).join('');
+  return head + `<div class="plan-preview-list">${rows}</div>`;
+}
+
+// 作成ウィザード。入力 → プレビュー → 確定。
+function openPlanWizard(onCreated) {
+  const todayKey = todayPlanKey();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in';
+  modal.style.zIndex = '2000';
+  const subjectOptions = subjectCategories.filter(c => c.id !== 'cat-other').map(c =>
+    `<optgroup label="${esc(c.name)}">${c.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
+  const dowBoxes = CAL_DOW_LABELS.map((d, i) =>
+    `<label class="plan-dow"><input type="checkbox" data-dow="${i}" checked /> ${d}</label>`).join('');
+  const defaultDue = shiftDateKey(todayKey, 30);
+
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up" style="max-width:520px;">
+      <div class="modal-header">
+        <div class="modal-title">逆算プランを作る</div>
+        <button class="modal-close" data-pw-close>✕</button>
+      </div>
+      <div class="modal-body" id="pw-step1">
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>やること</label>
+          <div class="cal-seg" style="display:inline-flex">
+            ${PLAN_UNITS.map((u, i) => `<button data-pw-unit="${u.id}" class="${i === 0 ? 'active' : ''}">${u.label}</button>`).join('')}
+          </div>
+          <div class="plan-hint" id="pw-unit-hint">${PLAN_UNITS[0].hint}</div>
+        </div>
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:2; min-width:0;">
+            <label>科目</label>
+            <select id="pw-subject" style="width:100%">${subjectOptions}</select>
+          </div>
+          <div class="settings-field" style="flex:1; min-width:0;" id="pw-round-field">
+            <label>周回</label>
+            <select id="pw-round" style="width:100%">${[1,2,3,4,5].map(n => `<option value="${n}">${n}周目</option>`).join('')}</select>
+          </div>
+        </div>
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>総量 <span id="pw-volume-unit" style="color:var(--color-text-tertiary);font-weight:400">（問）</span></label>
+          <input type="number" id="pw-volume" min="1" step="1" placeholder="例: 340" style="margin-bottom:0" />
+          <div class="plan-hint" id="pw-volume-hint"></div>
+        </div>
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>タイトル</label>
+          <input type="text" id="pw-title" maxlength="80" style="margin-bottom:0" />
+        </div>
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1;"><label>開始日</label><input type="date" id="pw-start" value="${todayKey}" style="margin-bottom:0" /></div>
+          <div class="settings-field" style="flex:1;"><label>締切日</label><input type="date" id="pw-due" value="${defaultDue}" style="margin-bottom:0" /></div>
+        </div>
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>勉強する曜日</label>
+          <div class="plan-dow-row">${dowBoxes}</div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:var(--font-size-sm); margin-bottom:16px; cursor:pointer;">
+          <input type="checkbox" id="pw-auto" checked style="width:auto; margin:0" /> 遅れたら残りを自動で配り直す
+        </label>
+        <button class="btn btn-primary" id="pw-next" style="width:100%; justify-content:center;">逆算する →</button>
+      </div>
+      <div class="modal-body" id="pw-step2" style="display:none">
+        <div id="pw-preview"></div>
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button class="btn btn-secondary" id="pw-back" style="flex:1; justify-content:center;">← 戻る</button>
+          <button class="btn btn-primary" id="pw-create" style="flex:2; justify-content:center;">この内容で作成</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const $ = sel => modal.querySelector(sel);
+  const close = () => modal.remove();
+  $('[data-pw-close]').onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  let unit = 'q';
+  let titleTouched = false;
+  const syncPrefill = () => {
+    const sid = $('#pw-subject').value;
+    const round = Number($('#pw-round').value) || 1;
+    $('#pw-round-field').style.display = unit === 'q' ? '' : 'none';
+    $('#pw-volume-unit').textContent = `（${planUnitLabel(unit)}）`;
+    const sug = planVolumeSuggestion(unit, sid, round);
+    const volInput = $('#pw-volume');
+    if (sug) {
+      volInput.value = sug.remaining > 0 ? sug.remaining : sug.total;
+      $('#pw-volume-hint').textContent = `教材進捗より: 全 ${sug.total}${sug.label}・消化 ${sug.done}${sug.label}・残り ${sug.remaining}${sug.label}`;
+    } else {
+      $('#pw-volume-hint').textContent = '教材進捗に登録が無いので手で入力してください';
+    }
+    if (!titleTouched) {
+      $('#pw-title').value = `${subjectNameOf(sid)} ${planUnitName(unit)}${unit === 'q' ? ` ${round}周目` : ''}`;
+    }
+  };
+  modal.querySelectorAll('[data-pw-unit]').forEach(b => b.addEventListener('click', () => {
+    unit = b.dataset.pwUnit;
+    modal.querySelectorAll('[data-pw-unit]').forEach(x => x.classList.toggle('active', x === b));
+    $('#pw-unit-hint').textContent = (PLAN_UNITS.find(u => u.id === unit) || {}).hint || '';
+    syncPrefill();
+  }));
+  $('#pw-subject').onchange = syncPrefill;
+  $('#pw-round').onchange = syncPrefill;
+  $('#pw-title').oninput = () => { titleTouched = true; };
+  syncPrefill();
+
+  const readInput = () => ({
+    title: $('#pw-title').value.trim(),
+    unit, subject_id: $('#pw-subject').value,
+    target_round: unit === 'q' ? Number($('#pw-round').value) || 1 : null,
+    totalVolume: $('#pw-volume').value === '' ? null : Number($('#pw-volume').value),
+    startDate: $('#pw-start').value, dueDate: $('#pw-due').value,
+    excludeWeekdays: [...modal.querySelectorAll('[data-dow]')].filter(c => !c.checked).map(c => Number(c.dataset.dow)),
+    auto_redistribute: $('#pw-auto').checked
+  });
+
+  let lastSched = null, lastInput = null;
+  $('#pw-next').onclick = () => {
+    const inp = readInput();
+    if (!inp.title) { showToast(IC.warn + ' タイトルを入力してください'); return; }
+    if (inp.totalVolume !== null && !(inp.totalVolume > 0)) { showToast(IC.warn + ' 総量は1以上にしてください'); return; }
+    lastInput = inp;
+    lastSched = buildPlanSchedule({ title: inp.title, startDate: inp.startDate, dueDate: inp.dueDate,
+      totalVolume: inp.totalVolume, unit: inp.unit, excludeWeekdays: inp.excludeWeekdays, todayKey });
+    $('#pw-preview').innerHTML = planPreviewHTML(lastSched, inp.unit);
+    $('#pw-create').style.display = lastSched.ok ? '' : 'none';
+    $('#pw-step1').style.display = 'none'; $('#pw-step2').style.display = '';
+  };
+  $('#pw-back').onclick = () => { $('#pw-step2').style.display = 'none'; $('#pw-step1').style.display = ''; };
+  $('#pw-create').onclick = async function () {
+    if (!lastSched || !lastSched.ok) return;
+    this.disabled = true;
+    const plan = await createPlan(lastInput, lastSched);
+    this.disabled = false;
+    if (!plan) return;
+    _planSyncAt = 0;
+    close();
+    if (onCreated) onCreated(plan);
+  };
+}
+
+async function renderPlans() {
+  const ct = document.getElementById('page-container');
+  ct.innerHTML = `<div class="page-header">
+      <h1 class="page-title">${IC.target || IC.calendar}逆算プラン</h1>
+      <p class="page-subtitle">「何を・いつまでに」から、今日やる量を決める</p>
+    </div>
+    <div id="plans-root"><div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>`;
+
+  async function draw(force) {
+    const sync = await syncPlans(force);
+    if (currentRoute !== '/plans') return;
+    if (sync.rebuilt.length) showToast(IC.check + ' 実績に合わせて配り直しました: ' + sync.rebuilt.join('、'));
+    const byPlan = {};
+    sync.tasks.forEach(t => { (byPlan[t.plan_id] = byPlan[t.plan_id] || []).push(t); });
+    const order = { active: 0, done: 1, archived: 2 };
+    const plans = sync.plans.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || String(a.due_date).localeCompare(String(b.due_date)));
+    const root = document.getElementById('plans-root');
+    root.innerHTML = `
+      <div class="cal-toolbar">
+        <span class="cal-today-note">今日 ${sync.todayKey.slice(5).replace('-', '/')}・進行中 ${plans.filter(p => p.status === 'active').length}件</span>
+        <div class="cal-spacer"></div>
+        <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
+      </div>
+      ${plans.length ? `<div class="plan-list">${plans.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey)).join('')}</div>`
+        : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`}`;
+
+    root.querySelector('[data-plan-new]').onclick = () => openPlanWizard(() => draw(true));
+    root.querySelectorAll('.plan-card').forEach(card => {
+      const id = card.dataset.planId;
+      const plan = sync.plansById[id];
+      card.querySelector('[data-plan-rebuild]')?.addEventListener('click', async () => {
+        const sched = rebuildPlanSchedule(plan, byPlan[id] || [], sync.todayKey);
+        if (!sched.ok) { showToast(IC.warn + ' 逆算できません（締切が過去か稼働日なし）'); return; }
+        await replaceFutureTasks(plan, sched, sync.todayKey);
+        if (sched.mode === 'complete') await updatePlanStatus(id, 'done');
+        _planSyncAt = 0; showToast(IC.check + ' 配り直しました'); draw(true);
+      });
+      card.querySelectorAll('[data-plan-status]').forEach(b => b.addEventListener('click', async () => {
+        await updatePlanStatus(id, b.dataset.planStatus); draw(true);
+      }));
+      card.querySelector('[data-plan-delete]')?.addEventListener('click', async () => {
+        if (!confirm(`「${plan.title}」を削除しますか？ノルマも一緒に消えます。`)) return;
+        await deletePlan(id); draw(true);
+      });
+    });
+  }
+  draw(false);
+}
+
+
+// ダッシュボード用「今日のノルマ」。進行中プランの今日ぶんを1枚にまとめる。
+function todayPlanCardHTML(sync) {
+  if (!sync) return '';
+  const active = sync.plans.filter(p => p.status === 'active');
+  if (!active.length) return '';
+  const today = sync.todayKey;
+  const rows = active.map(plan => {
+    const mine = sync.tasks.filter(t => t.plan_id === plan.id);
+    const prog = planProgress(plan, mine, today);
+    const unit = planUnitLabel(plan.unit);
+    const color = subjectColorOf(plan.subject_id);
+    const todayTask = mine.find(t => !t.extra && t.kind === 'quota' && String(t.due_date).slice(0, 10) === today);
+    const milestone = mine.find(t => !t.extra && t.kind === 'milestone' && String(t.due_date).slice(0, 10) === today);
+    let main, sub;
+    if (todayTask) {
+      const done = prog.todayDone >= prog.todayTarget;
+      main = `<span class="${done ? 'is-done' : ''}">${prog.todayDone > 0 ? `${prog.todayDone} / ` : ''}${prog.todayTarget}${unit}</span>${done ? ' <span class="tp-ok">✓</span>' : ''}`;
+      sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日${prog.behind > 0 ? `・<span class="tp-warn">遅れ ${prog.behind}${unit}</span>` : ''}`;
+    } else if (milestone) {
+      main = `<span>節目</span>`;
+      sub = esc(milestone.title || '');
+    } else {
+      main = `<span class="tp-rest">今日は休み</span>`;
+      sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日`;
+    }
+    return `<div class="tp-row" style="--plan:${esc(color)}">
+      <div class="tp-bar"></div>
+      <div class="tp-body">
+        <div class="tp-title">${esc(plan.title)}</div>
+        <div class="tp-sub">${sub}</div>
+      </div>
+      <div class="tp-main">${main}</div>
+    </div>`;
+  }).join('');
+  return `<div class="card today-plan-card animate-slide-up" style="animation-delay:.08s">
+    <div class="card-header">
+      <div class="card-title">${IC.target}今日のノルマ</div>
+      <a href="/calendar" data-route="/calendar" class="next-move-link">カレンダーで見る →</a>
+    </div>
+    <div class="tp-list">${rows}</div>
+  </div>`;
+}
+
 // ==================== REGISTER & INIT ====================
 console.log('DEBUG: Registering routes and starting app');
 
@@ -9891,6 +11499,8 @@ registerRoute('/study',()=>{if(!session){renderLogin();return;}ensureAppLayout()
 
 registerRoute('/insights',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderInsights();});
 registerRoute('/qb',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderQBProgress();});
+registerRoute('/calendar',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCalendar();});
+registerRoute('/plans',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderPlans();});
 registerRoute('/countdown',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderCountdown();});
 registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayout();document.body.classList.remove('hide-sidebar');destroyAllCharts();renderSidebar();renderSettings();});
 
