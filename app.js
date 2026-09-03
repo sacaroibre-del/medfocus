@@ -5072,6 +5072,29 @@ function normalizeVideoProgress(raw) {
       const cur = entry[ed];
       entry[ed] = cur ? { ...cur, ...legacy } : legacy;
     }
+    // その科目に存在しない版に入っている記録は、存在する版へ移す。
+    // 版を持たなかった頃のデータを一度国試版として包んだあとで、その科目に
+    // 国試版が無いと分かった場合（基礎医学）に、記録が画面から消えるのを防ぐ。
+    VIDEO_EDITION_IDS.forEach(e => {
+      const from = entry[e];
+      if (!from || videoEditionAvailableFor(sid, e)) return;
+      const to = availableVideoEditions(sid)[0];
+      if (!to) return;
+      delete entry[e];
+      changed = true;
+      const cur = entry[to];
+      if (!cur) { entry[to] = from; return; }
+      // 両方に記録があるときは多いほうを残す（どちらも同じ視聴の記録なので）
+      const merged = {
+        done: Math.max(cur.done || 0, from.done || 0),
+        total: Math.max(cur.total || 0, from.total || 0)
+      };
+      const sec = Number.isFinite(cur.total_sec) ? cur.total_sec
+                : (Number.isFinite(from.total_sec) ? from.total_sec : null);
+      if (sec !== null) merged.total_sec = sec;
+      entry[to] = merged;
+    });
+
     if (Object.keys(entry).length) out[sid] = entry;
     else changed = true;
   });
@@ -5581,16 +5604,20 @@ function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
 function videoTrackerBlockHtml(sid) {
   const covered = cbtCoveredBy(sid);
   const master = cbtMasterFor(sid);
-  const primary = primaryEditionOf(sid);
+  // ピンは「いま実際に数えている版」に立てる。主軸に記録が無い間は
+  // 記録のあるほうで数えているので、その版にピンが立つ。
+  const counted = resolvedVideoEditionOf(sid);
 
-  // 主軸の版は必ず出す。もう一方は存在していて記録があるときだけ出す。
-  const rows = availableVideoEditions(sid).filter(ed => {
-    if (ed === primary) return true;
+  // 記録がある版は必ず出す。存在しないはずの版に記録が残っていても、
+  // 画面から消して編集できなくするより出したほうが安全。
+  const rows = VIDEO_EDITION_IDS.filter(ed => {
     const v = videoProgressFor(sid, ed);
-    return v.total > 0 || v.done > 0;
-  }).map(ed => videoTrackerEditionRowHtml(sid, ed, primary === ed));
+    if (v.total > 0 || v.done > 0) return true;
+    return ed === counted;
+  }).map(ed => videoTrackerEditionRowHtml(sid, ed, counted === ed));
 
   let note = '';
+  const primary = primaryEditionOf(sid);
   const cbtStarted = (() => { const v = videoProgressFor(sid, 'cbt'); return v.total > 0 || v.done > 0; })();
   if (covered) {
     note = `<div class="vid-ed-note">CBT版では ${esc(subjectNameOf(covered))} にまとめられています。CBT版の進捗はそちらで管理してください。</div>`;

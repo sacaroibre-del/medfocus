@@ -85,6 +85,35 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   eq('包み直し: 未知の版キーは無視する', W.normalizeVideoProgress({ '2C': { qassist: { done: 9, total: 9 } } }).data, {});
 }
 
+// ---------- 存在しない版に入った記録を救出する ----------
+{
+  // 前のデプロイで基礎医学の進捗が国試版として保存されていた。
+  // そのままだと画面から消えるので、存在する版（CBT版）へ移す。
+  const stranded = { '1A': { kokushi: { done: 2, total: 9 } } };
+  const r = W.normalizeVideoProgress(stranded);
+  eq('救出: 基礎医学の国試版はCBT版へ移る', r.data, { '1A': { cbt: { done: 2, total: 9 } } });
+  ok('救出: 移したことを返す', r.changed === true);
+
+  // 移し先にも記録があるときは多いほうを残す
+  const both = { '1A': { kokushi: { done: 5, total: 9 }, cbt: { done: 2, total: 9 } } };
+  eq('救出: 両方に記録があれば多いほうを残す',
+     W.normalizeVideoProgress(both).data, { '1A': { cbt: { done: 5, total: 9 } } });
+
+  // 合計時間は失わない
+  const withSec = { '1A': { kokushi: { done: 1, total: 4 }, cbt: { done: 0, total: 4, total_sec: 1200 } } };
+  eq('救出: 合計時間を引き継ぐ',
+     W.normalizeVideoProgress(withSec).data, { '1A': { cbt: { done: 1, total: 4, total_sec: 1200 } } });
+
+  // 代表科目にまとめられる科目にCBT版の記録が残っていたら国試版へ
+  eq('救出: 含まれる科目のCBT版は国試版へ移る',
+     W.normalizeVideoProgress({ '2Q': { cbt: { done: 3, total: 5 } } }).data,
+     { '2Q': { kokushi: { done: 3, total: 5 } } });
+
+  // 臨床の科目は両方あるので動かさない
+  const clinical = { '2C': { kokushi: { done: 3, total: 12 }, cbt: { done: 1, total: 4 } } };
+  eq('救出: 両方ある科目は動かさない', W.normalizeVideoProgress(clinical).data, clinical);
+}
+
 // ---------- 端末間のマージ ----------
 {
   const remote = { '2C': { kokushi: { done: 3, total: 12 }, cbt: { done: 0, total: 4 } } };
