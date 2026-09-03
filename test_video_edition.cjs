@@ -99,9 +99,14 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
 // ---------- 主軸の解決 ----------
 {
   eq('主軸: CBT版マスタのある科目は既定でCBT版', W.primaryEditionOf('2C', PREFS_CBT), 'cbt');
-  eq('主軸: CBT版マスタの無い科目は必ず国試版', W.primaryEditionOf('1A', PREFS_CBT), 'kokushi');
-  eq('主軸: 2K 中毒はCBT版に無いので国試版', W.primaryEditionOf('2K', PREFS_CBT), 'kokushi');
-  eq('主軸: 他科目に含まれる科目は国試版', W.primaryEditionOf('2Q', PREFS_CBT), 'kokushi');
+  // 基礎医学はCBT版だけを見る。マスタが未登録でもCBT版を主軸にできる
+  eq('主軸: マスタが無くても既定はCBT版（基礎医学）', W.primaryEditionOf('1A', PREFS_CBT), 'cbt');
+  eq('主軸: 2K 中毒もマスタは無いが既定はCBT版', W.primaryEditionOf('2K', PREFS_CBT), 'cbt');
+  eq('主軸: 他科目に含まれる科目だけは必ず国試版', W.primaryEditionOf('2Q', PREFS_CBT), 'kokushi');
+  eq('主軸: 含まれる科目は上書きしても国試版',
+     W.primaryEditionOf('2W', { default: 'cbt', primary: { '2W': 'cbt' } }), 'kokushi');
+  ok('版の可否: 含まれる科目だけCBT版を選べない',
+     W.cbtEditionBlocked('2B') === true && W.cbtEditionBlocked('1A') === false);
   eq('主軸: 科目ごとの上書きが効く',
      W.primaryEditionOf('2C', { default: 'cbt', primary: { '2C': 'kokushi' } }), 'kokushi');
   eq('主軸: 既定を国試版にできる', W.primaryEditionOf('2C', PREFS_KOKUSHI), 'kokushi');
@@ -135,7 +140,8 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   };
   const p = W.primaryVideoProgress(raw, PREFS_CBT);
   eq('主軸の進捗: CBT版が主軸の科目', p['2C'], { done: 1, total: 4, total_sec: 10463, edition: 'cbt' });
-  eq('主軸の進捗: CBT版に無い科目は国試版', p['2K'], { done: 2, total: 5, total_sec: null, edition: 'kokushi' });
+  eq('主軸の進捗: マスタが無くCBT版が未登録なら国試版の数字が出る',
+     p['2K'], { done: 2, total: 5, total_sec: null, edition: 'kokushi' });
 
   const pk = W.primaryVideoProgress(raw, { default: 'cbt', primary: { '2C': 'kokushi' } });
   eq('主軸の進捗: 主軸を国試版にすると国試版の数字が出る',
@@ -155,6 +161,12 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   eq('無変化: 旧データは版を足しても同じ数字が出る', flat, legacy);
   eq('無変化: 読んでいる版はすべて国試版',
      Object.values(p).map(v => v.edition), ['kokushi', 'kokushi', 'kokushi']);
+
+  // 基礎医学でCBT版を使い始めると、そちらが分母になる
+  const withCbt = { '1A': { kokushi: { done: 1, total: 4 }, cbt: { done: 0, total: 9 } } };
+  eq('基礎医学: CBT版を入れるとCBT版で数える',
+     W.primaryVideoProgress(withCbt, PREFS_CBT)['1A'],
+     { done: 0, total: 9, total_sec: null, edition: 'cbt' });
 }
 
 // ---------- 両方の版を並べて返す ----------
@@ -213,6 +225,10 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   const thin = W.buildUnitCost([{ activity: 'video', duration_minutes: 300, videos_watched: 6, video_edition: 'kokushi' }]);
   eq('単価: サンプル不足の版は全体の実測に落ちる',
      Math.round(W.minutesPerVideoFor('kokushi', thin, '1A')), 50);
+
+  // マスタが無い科目のCBT版は、臨床のマスタ平均ではなく実測を使う
+  eq('単価: マスタが無いCBT版は実測（臨床の平均を当てない）',
+     Math.round(W.minutesPerVideoFor('cbt', unit, '1A') * 10) / 10, 6.5);
 }
 
 // ---------- 残り時間は本数比ではなく時間比になる（時間ベース化の要） ----------
@@ -257,7 +273,7 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
     { activity: 'video', subject_name: '2C', video_edition: 'cbt', duration_minutes: 60, started_at: iso('2026-09-03T10:00:00') },
     // 同じ 2C を国試版で深追い＝補足視聴
     { activity: 'video', subject_name: '2C', video_edition: 'kokushi', duration_minutes: 90, started_at: iso('2026-09-02T10:00:00') },
-    // 1A はCBT版に無いので主軸は国試版。補足にならない
+    // 1A も主軸はCBT版（基礎医学はCBT版で見る）。国試版で見た分は補足
     { activity: 'video', subject_name: '1A', video_edition: 'kokushi', duration_minutes: 30, started_at: iso('2026-09-01T10:00:00') },
     // 動画以外は数えない
     { activity: 'qb', subject_name: '2C', duration_minutes: 120, started_at: iso('2026-09-03T14:00:00') },
@@ -267,14 +283,15 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   const sup = W.buildSupplementalVideo(logs, today, 30, { default: 'cbt', primary: {} });
 
   eq('補足視聴: 動画の合計時間', sup.totalMin, 180);
-  eq('補足視聴: 主軸でない版の時間', sup.supplementalMin, 90);
-  eq('補足視聴: 主軸の版の時間', sup.primaryMin, 90);
-  eq('補足視聴: 割合', Math.round(sup.pct), 50);
-  eq('補足視聴: 科目の内訳', sup.rows.map(r => [r.name, r.min, r.edition]), [['2C 循環器', 90, 'kokushi']]);
+  eq('補足視聴: 主軸でない版の時間', sup.supplementalMin, 120);
+  eq('補足視聴: 主軸の版の時間', sup.primaryMin, 60);
+  eq('補足視聴: 割合', Math.round(sup.pct), 67);
+  eq('補足視聴: 科目の内訳（多い順）', sup.rows.map(r => [r.name, r.min, r.edition]),
+     [['2C 循環器', 90, 'kokushi'], ['1A 細胞生物学', 30, 'kokushi']]);
 
   // 主軸を国試版にすると、同じログでも補足の向きが逆になる
   const sup2 = W.buildSupplementalVideo(logs, today, 30, { default: 'cbt', primary: { '2C': 'kokushi' } });
-  eq('補足視聴: 主軸を変えると入れ替わる', [sup2.supplementalMin, sup2.primaryMin], [60, 120]);
+  eq('補足視聴: 主軸を変えると入れ替わる', [sup2.supplementalMin, sup2.primaryMin], [90, 90]);
 }
 
 // ---------- CBT版の総数とマスタのズレ ----------
