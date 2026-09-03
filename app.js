@@ -2516,12 +2516,16 @@ function renderSidebar(){
         return `<div class="nav-item ${path===child.route?'active':''}" data-route="${child.route}"><div class="nav-item-icon">${child.icon}</div><span>${child.label}</span></div>`;
       }).join('');
       
-      return `<div class="nav-group">
-        <div class="nav-group-header">
+      // スマホの下部ドックでは「その他」グループをボタン1つにまとめ、押すと上にポップオーバーで出す
+      // （8項目を横一列に並べると画面幅に収まらないため）。PC では見出しのままで挙動は変わらない
+      const groupActive = i.items.some(child => child.route === path);
+      return `<div class="nav-group ${groupActive ? 'active' : ''}" data-nav-group="${i.group}">
+        <button type="button" class="nav-group-header" data-nav-group-toggle="${i.group}" aria-expanded="false">
+          <div class="nav-item-icon nav-group-icon">${i.icon}</div>
           <div class="nav-group-header-left">
             <span>${i.label}</span>
           </div>
-        </div>
+        </button>
         <div class="nav-group-items">
           ${childItemsHtml}
         </div>
@@ -2542,9 +2546,28 @@ function renderSidebar(){
       </div>
     </div>`;
 
+  sb.querySelectorAll('[data-nav-group-toggle]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const g = btn.closest('.nav-group');
+      const open = !g.classList.contains('open');
+      sb.querySelectorAll('.nav-group.open').forEach(x => { if (x !== g) x.classList.remove('open'); });
+      g.classList.toggle('open', open);
+      btn.setAttribute('aria-expanded', String(open));
+    });
+  });
   document.getElementById('theme-btn').addEventListener('click', toggleTheme);
   document.getElementById('logout-btn').addEventListener('click', () => { if(confirm('ログアウトしますか？')) handleLogout(); });
 }
+
+// ドック外をタップしたら「その他」のポップオーバーを閉じる
+document.addEventListener('click', e => {
+  if (e.target.closest('.nav-group')) return;
+  document.querySelectorAll('#sidebar .nav-group.open').forEach(g => {
+    g.classList.remove('open');
+    const b = g.querySelector('[data-nav-group-toggle]'); if (b) b.setAttribute('aria-expanded', 'false');
+  });
+});
 
 // ==================== ROUTER ====================
 const routes={};
