@@ -68,6 +68,10 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
 {
   const r = W.normalizeVideoProgress({ '2C': { done: 3, total: 12 } });
   eq('包み直し: 旧形式は国試版になる', r.data, { '2C': { kokushi: { done: 3, total: 12 } } });
+  // 基礎医学の旧データは実際にはCBT版を見た記録なので、CBT版として包む
+  eq('包み直し: 国試版が無い科目の旧データはCBT版になる',
+     W.normalizeVideoProgress({ '1A': { done: 2, total: 9 } }).data,
+     { '1A': { cbt: { done: 2, total: 9 } } });
   ok('包み直し: 変換したことを返す', r.changed === true);
 
   const v2 = { '2C': { kokushi: { done: 3, total: 12 }, cbt: { done: 1, total: 4, total_sec: 10463 } } };
@@ -99,14 +103,21 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
 // ---------- 主軸の解決 ----------
 {
   eq('主軸: CBT版マスタのある科目は既定でCBT版', W.primaryEditionOf('2C', PREFS_CBT), 'cbt');
-  // 基礎医学はCBT版だけを見る。マスタが未登録でもCBT版を主軸にできる
-  eq('主軸: マスタが無くても既定はCBT版（基礎医学）', W.primaryEditionOf('1A', PREFS_CBT), 'cbt');
-  eq('主軸: 2K 中毒もマスタは無いが既定はCBT版', W.primaryEditionOf('2K', PREFS_CBT), 'cbt');
-  eq('主軸: 他科目に含まれる科目だけは必ず国試版', W.primaryEditionOf('2Q', PREFS_CBT), 'kokushi');
+  // 基礎医学に国試版の動画は存在しない。マスタが未登録でもCBT版になる
+  eq('主軸: 基礎医学はCBT版（国試版が存在しない）', W.primaryEditionOf('1A', PREFS_CBT), 'cbt');
+  eq('主軸: 基礎医学は既定を国試版にしてもCBT版', W.primaryEditionOf('1J', PREFS_KOKUSHI), 'cbt');
+  eq('主軸: 基礎医学は上書きしても国試版にはできない',
+     W.primaryEditionOf('1C', { default: 'cbt', primary: { '1C': 'kokushi' } }), 'cbt');
+  eq('主軸: 2K 中毒はマスタが無いだけなので既定どおりCBT版', W.primaryEditionOf('2K', PREFS_CBT), 'cbt');
+  eq('主軸: 2K 中毒は国試版にも切り替えられる', W.primaryEditionOf('2K', PREFS_KOKUSHI), 'kokushi');
+  eq('主軸: 他科目に含まれる科目は必ず国試版', W.primaryEditionOf('2Q', PREFS_CBT), 'kokushi');
   eq('主軸: 含まれる科目は上書きしても国試版',
      W.primaryEditionOf('2W', { default: 'cbt', primary: { '2W': 'cbt' } }), 'kokushi');
-  ok('版の可否: 含まれる科目だけCBT版を選べない',
-     W.cbtEditionBlocked('2B') === true && W.cbtEditionBlocked('1A') === false);
+
+  eq('版の有無: 基礎医学に国試版は無い', W.availableVideoEditions('1A'), ['cbt']);
+  eq('版の有無: 含まれる科目にCBT版は無い', W.availableVideoEditions('2B'), ['kokushi']);
+  eq('版の有無: 臨床の科目は両方ある', W.availableVideoEditions('2C'), ['kokushi', 'cbt']);
+  eq('版の有無: マスタが無い臨床科目も両方ある', W.availableVideoEditions('2K'), ['kokushi', 'cbt']);
   eq('主軸: 科目ごとの上書きが効く',
      W.primaryEditionOf('2C', { default: 'cbt', primary: { '2C': 'kokushi' } }), 'kokushi');
   eq('主軸: 既定を国試版にできる', W.primaryEditionOf('2C', PREFS_KOKUSHI), 'kokushi');
@@ -155,16 +166,17 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   const wrapped = W.normalizeVideoProgress(legacy).data;
   const p = W.primaryVideoProgress(wrapped, PREFS_CBT);
 
-  // 主軸の既定はCBT版だが、CBT版の総数がまだ入っていないので国試版の数字がそのまま出る
+  // 版を足しても数字は変わらない。臨床は国試版として、基礎医学はCBT版として
+  // 包まれるが、どちらも「その科目に記録のある版」を読むので同じ値が出る
   const flat = {};
   Object.entries(p).forEach(([sid, v]) => { flat[sid] = { done: v.done, total: v.total }; });
   eq('無変化: 旧データは版を足しても同じ数字が出る', flat, legacy);
-  eq('無変化: 読んでいる版はすべて国試版',
-     Object.values(p).map(v => v.edition), ['kokushi', 'kokushi', 'kokushi']);
+  eq('無変化: 臨床は国試版、基礎医学はCBT版として読む',
+     [p['2C'].edition, p['2A'].edition, p['1A'].edition], ['kokushi', 'kokushi', 'cbt']);
 
-  // 基礎医学でCBT版を使い始めると、そちらが分母になる
+  // 基礎医学は国試版の行が残っていてもCBT版で数える
   const withCbt = { '1A': { kokushi: { done: 1, total: 4 }, cbt: { done: 0, total: 9 } } };
-  eq('基礎医学: CBT版を入れるとCBT版で数える',
+  eq('基礎医学: 国試版の行があってもCBT版で数える',
      W.primaryVideoProgress(withCbt, PREFS_CBT)['1A'],
      { done: 0, total: 9, total_sec: null, edition: 'cbt' });
 }
@@ -190,8 +202,11 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
 // ---------- ログの版（未設定は国試版として扱う） ----------
 {
   eq('ログの版: 記録されていればそれ', W.logVideoEdition({ video_edition: 'cbt' }), 'cbt');
-  eq('ログの版: 未設定は国試版', W.logVideoEdition({ video_edition: null }), 'kokushi');
-  eq('ログの版: 不正な値も国試版', W.logVideoEdition({ video_edition: 'qassist' }), 'kokushi');
+  eq('ログの版: 未設定は国試版', W.logVideoEdition({ video_edition: null, subject_name: '2C' }), 'kokushi');
+  eq('ログの版: 不正な値も国試版', W.logVideoEdition({ video_edition: 'qassist', subject_name: '2C' }), 'kokushi');
+  eq('ログの版: 基礎医学の未設定はCBT版',
+     W.logVideoEdition({ video_edition: null, subject_name: '1A' }), 'cbt');
+  eq('ログの版: 科目が分からなければ国試版', W.logVideoEdition({ video_edition: null }), 'kokushi');
 }
 
 // ---------- 1本あたりの所要分を版ごとに出す ----------

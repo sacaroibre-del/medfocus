@@ -738,9 +738,10 @@ function videoCountFieldsHtml(suffix){
 let selectedVideoEdition = '';
 function formVideoEdition(sid){
   if (!sid) return LEGACY_VIDEO_EDITION;
-  // CBT版の進捗を代表科目が持つ科目では、CBT版を選べない
-  if (selectedVideoEdition === 'cbt' && cbtEditionBlocked(sid)) return 'kokushi';
-  if (isVideoEdition(selectedVideoEdition)) return selectedVideoEdition;
+  // その科目に存在しない版は選べない（基礎医学の国試版、含まれる科目のCBT版）
+  if (isVideoEdition(selectedVideoEdition) && videoEditionAvailableFor(sid, selectedVideoEdition)) {
+    return selectedVideoEdition;
+  }
   return resolvedVideoEditionOf(sid);
 }
 
@@ -771,7 +772,7 @@ function syncVideoCountFields(suffix){
   if (edWrap) {
     edWrap.querySelectorAll('.edition-btn').forEach(btn => {
       const e = btn.dataset.edition;
-      const usable = e !== 'cbt' || !(sid && cbtEditionBlocked(sid));
+      const usable = !sid || videoEditionAvailableFor(sid, e);
       btn.disabled = !usable;
       btn.classList.toggle('is-active', usable && e === edition);
     });
@@ -4984,18 +4985,47 @@ function setPrimaryVideoEdition(sid, edition) {
   return saveVideoEditionPrefs(prefs);
 }
 
-// CBT版を選べない科目か。他科目に含まれる科目（2B→2A、2Q→2P、2W→2E）だけで、
-// CBT版の進捗は代表科目のほうが持つ。
-// マスタが無いだけの科目（基礎医学など）はCBT版を選べる。本数を手で入れるだけ。
-function cbtEditionBlocked(sid) { return !!cbtCoveredBy(sid); }
+// 基礎医学（vol.1）に国試版の講義動画は存在しない。CBT版だけ。
+// 選択肢に出しても選べないだけでなく、版を持たない旧データを国試版として
+// 包んでしまうと実態と食い違うので、科目マスタの側で持つ。
+const NO_KOKUSHI_CATEGORY = 'cat-vol1';
+const NO_KOKUSHI_SUBJECTS = new Set(
+  (subjectCategories.find(c => c.id === NO_KOKUSHI_CATEGORY) || { subjects: [] })
+    .subjects.map(s => s.id)
+);
 
-// 設定上の主軸。他科目に含まれる科目だけは、設定によらず国試版になる。
+// その科目でその版が存在するか。
+//  - 国試版: 基礎医学には無い
+//  - CBT版: 他科目にまとめられている科目（2B→2A、2Q→2P、2W→2E）には無い
+//    （進捗は代表科目のほうが持つ）
+// CBT版のマスタが未登録なだけの科目は「有る」。本数を手で入れれば使える。
+function videoEditionAvailableFor(sid, edition) {
+  if (!sid) return true;
+  if (edition === 'kokushi') return !NO_KOKUSHI_SUBJECTS.has(sid);
+  if (edition === 'cbt') return !cbtCoveredBy(sid);
+  return false;
+}
+function availableVideoEditions(sid) {
+  return VIDEO_EDITION_IDS.filter(e => videoEditionAvailableFor(sid, e));
+}
+function cbtEditionBlocked(sid) { return !videoEditionAvailableFor(sid, 'cbt'); }
+
+// その科目に存在する版のうち、旧データを包むときに使う版。
+// 国試版が無い科目（基礎医学）の旧データは、実際にはCBT版を見た記録なので
+// CBT版として包む。
+function legacyEditionFor(sid) {
+  return videoEditionAvailableFor(sid, LEGACY_VIDEO_EDITION) ? LEGACY_VIDEO_EDITION : 'cbt';
+}
+
+// 設定上の主軸。存在しない版は選べない。
 function primaryEditionOf(sid, prefs) {
-  if (cbtEditionBlocked(sid)) return 'kokushi';
+  const avail = availableVideoEditions(sid);
+  if (avail.length === 1) return avail[0];
   const p = prefs || getVideoEditionPrefs();
   const ov = p.primary && p.primary[sid];
-  if (isVideoEdition(ov)) return ov;
-  return isVideoEdition(p.default) ? p.default : 'cbt';
+  if (isVideoEdition(ov) && avail.indexOf(ov) >= 0) return ov;
+  const def = isVideoEdition(p.default) ? p.default : 'cbt';
+  return avail.indexOf(def) >= 0 ? def : avail[0];
 }
 
 // 実際に進捗として読む版。主軸の側にまだ記録が無ければ、記録のある側へ落とす。
@@ -5038,8 +5068,9 @@ function normalizeVideoProgress(raw) {
     if ('done' in v || 'total' in v) {
       changed = true;
       const legacy = { done: Number(v.done) || 0, total: Number(v.total) || 0 };
-      const cur = entry[LEGACY_VIDEO_EDITION];
-      entry[LEGACY_VIDEO_EDITION] = cur ? { ...cur, ...legacy } : legacy;
+      const ed = legacyEditionFor(sid);
+      const cur = entry[ed];
+      entry[ed] = cur ? { ...cur, ...legacy } : legacy;
     }
     if (Object.keys(entry).length) out[sid] = entry;
     else changed = true;
@@ -5530,9 +5561,10 @@ function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
   const master = ed === 'cbt' ? cbtMasterFor(sid) : null;
   const key = sid + '|' + ed;
   const hours = master ? (master.seconds / 3600).toFixed(1) : null;
+  const only = availableVideoEditions(sid).length < 2;
   return `<div class="vid-ed-row" style="--edition-color:${color}">
-    <button type="button" class="vid-ed-pin ${isPrimary ? 'is-primary' : ''}" data-primary="${key}"
-      title="${isPrimary ? 'この版で残り時間とノルマを計算しています' : 'クリックすると、この版で残り時間とノルマを計算します'}">${isPrimary ? '◉' : '○'}</button>
+    <button type="button" class="vid-ed-pin ${isPrimary ? 'is-primary' : ''}" data-primary="${key}" ${only ? 'disabled' : ''}
+      title="${only ? 'この科目はこの版しかありません' : (isPrimary ? 'この版で残り時間とノルマを計算しています' : 'クリックすると、この版で残り時間とノルマを計算します')}">${isPrimary ? '◉' : '○'}</button>
     <span class="vid-ed-name">${videoEditionShort(ed)}</span>
     <input type="number" class="vid-done" data-sub="${sid}" data-edition="${ed}" value="${vp.done || 0}" min="0">
     <span class="vid-ed-sep">/</span>
@@ -5551,9 +5583,8 @@ function videoTrackerBlockHtml(sid) {
   const master = cbtMasterFor(sid);
   const primary = primaryEditionOf(sid);
 
-  // 主軸の版は必ず出す。もう一方は記録があるときだけ出して、行を増やしすぎない。
-  const rows = VIDEO_EDITION_IDS.filter(ed => {
-    if (ed === 'cbt' && covered) return false;
+  // 主軸の版は必ず出す。もう一方は存在していて記録があるときだけ出す。
+  const rows = availableVideoEditions(sid).filter(ed => {
     if (ed === primary) return true;
     const v = videoProgressFor(sid, ed);
     return v.total > 0 || v.done > 0;
@@ -5570,7 +5601,11 @@ function videoTrackerBlockHtml(sid) {
       <button type="button" class="vid-ed-enable" data-enable-cbt="${sid}">マスタから入れる</button>
     </div>`;
   } else if (!master && primary === 'cbt' && !cbtStarted) {
-    note = '<div class="vid-ed-note">この科目のCBT版はマスタが未登録です。全本数を手で入れてください。</div>';
+    note = `<div class="vid-ed-note">${
+      videoEditionAvailableFor(sid, 'kokushi')
+        ? 'この科目のCBT版はマスタが未登録です。全本数を手で入れてください。'
+        : 'この科目に国試版の講義動画はありません。CBT版の全本数を手で入れてください。'
+    }</div>`;
   }
 
   return `<div class="vid-ed-block">${rows.join('')}${note}</div>`;
@@ -6592,7 +6627,10 @@ const UNIT_MIN_QUESTIONS = 50;
 // （版を記録し始める前は国試版しか無かったため）。
 function logVideoEdition(log) {
   const e = log && log.video_edition;
-  return isVideoEdition(e) ? e : LEGACY_VIDEO_EDITION;
+  if (isVideoEdition(e)) return e;
+  // 版が未設定のログは国試版として扱う。ただし国試版が無い科目
+  // （基礎医学）はCBT版しか見ようがないのでCBT版として扱う。
+  return legacyEditionFor(subjectIdOfName(log && log.subject_name));
 }
 
 function buildUnitCost(logs) {
@@ -12090,10 +12128,12 @@ function openPlanWizard(onCreated) {
     // 版は既定でその科目の主軸。手で変えたらそのまま尊重する
     const edSel = $('#pw-edition');
     if (unit === 'video') {
-      const cbtOpt = edSel.querySelector('option[value="cbt"]');
-      const cbtUsable = !cbtEditionBlocked(sid);
-      if (cbtOpt) cbtOpt.disabled = !cbtUsable;
-      if (!editionTouched || (edSel.value === 'cbt' && !cbtUsable)) {
+      let cur = edSel.value;
+      VIDEO_EDITION_IDS.forEach(e => {
+        const opt = edSel.querySelector(`option[value="${e}"]`);
+        if (opt) opt.disabled = !videoEditionAvailableFor(sid, e);
+      });
+      if (!editionTouched || !videoEditionAvailableFor(sid, cur)) {
         edSel.value = resolvedVideoEditionOf(sid);
       }
     }
