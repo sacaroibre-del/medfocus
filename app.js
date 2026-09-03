@@ -4924,7 +4924,7 @@ const CBT_VIDEO_MASTER = [
   { subject: '2I', covers: [],     title: '呼吸器系',             count: 2,  seconds: 6053  },
   { subject: '2D', covers: [],     title: '内分泌・栄養・代謝系', count: 3,  seconds: 7192  },
   { subject: '2E', covers: ['2W'], title: '腎・尿路系',           count: 2,  seconds: 4850  },
-  { subject: '2A', covers: ['2B'], title: '消化器系',             count: 3,  seconds: 8482  },
+  { subject: '2B', covers: ['2A'], title: '消化器系',             count: 3,  seconds: 8482  },
   { subject: '2H', covers: [],     title: '感染症',               count: 2,  seconds: 5033  },
   { subject: '2J', covers: [],     title: '神経系',               count: 3,  seconds: 8258  },
   { subject: '2G', covers: [],     title: '血液・造血器・リンパ系', count: 2, seconds: 6106  },
@@ -5051,6 +5051,18 @@ let videoProgressLoaded = false;
 
 // 旧形式 {sid:{done,total}} を {sid:{kokushi:{done,total}}} に包む。
 // 版のキーを既に持っていればそのまま通す。壊れた値は落とす。
+// 同じ視聴を指す2つの記録を1つにまとめる。多いほうを残し、合計時間は失わない。
+function mergeVideoEntry(a, b) {
+  const merged = {
+    done: Math.max((a && a.done) || 0, (b && b.done) || 0),
+    total: Math.max((a && a.total) || 0, (b && b.total) || 0)
+  };
+  const sec = Number.isFinite(a && a.total_sec) ? a.total_sec
+            : (Number.isFinite(b && b.total_sec) ? b.total_sec : null);
+  if (sec !== null) merged.total_sec = sec;
+  return merged;
+}
+
 function normalizeVideoProgress(raw) {
   const out = {};
   let changed = false;
@@ -5072,32 +5084,40 @@ function normalizeVideoProgress(raw) {
       const cur = entry[ed];
       entry[ed] = cur ? { ...cur, ...legacy } : legacy;
     }
-    // その科目に存在しない版に入っている記録は、存在する版へ移す。
-    // 版を持たなかった頃のデータを一度国試版として包んだあとで、その科目に
-    // 国試版が無いと分かった場合（基礎医学）に、記録が画面から消えるのを防ぐ。
-    VIDEO_EDITION_IDS.forEach(e => {
-      const from = entry[e];
-      if (!from || videoEditionAvailableFor(sid, e)) return;
-      const to = availableVideoEditions(sid)[0];
-      if (!to) return;
-      delete entry[e];
-      changed = true;
-      const cur = entry[to];
-      if (!cur) { entry[to] = from; return; }
-      // 両方に記録があるときは多いほうを残す（どちらも同じ視聴の記録なので）
-      const merged = {
-        done: Math.max(cur.done || 0, from.done || 0),
-        total: Math.max(cur.total || 0, from.total || 0)
-      };
-      const sec = Number.isFinite(cur.total_sec) ? cur.total_sec
-                : (Number.isFinite(from.total_sec) ? from.total_sec : null);
-      if (sec !== null) merged.total_sec = sec;
-      entry[to] = merged;
-    });
-
     if (Object.keys(entry).length) out[sid] = entry;
     else changed = true;
   });
+
+  // CBT版で他科目にまとめられる科目にCBT版の記録が残っていたら、代表科目へ移す。
+  // マスタの割り当てを変えたとき（消化器系を 2A から 2B へ移すなど）に、
+  // それまでの記録が迷子にならないようにする。
+  Object.keys(out).forEach(sid => {
+    const rep = cbtCoveredBy(sid);
+    const from = out[sid].cbt;
+    if (!rep || !from) return;
+    delete out[sid].cbt;
+    changed = true;
+    const target = (out[rep] = out[rep] || {});
+    target.cbt = target.cbt ? mergeVideoEntry(target.cbt, from) : from;
+    if (!Object.keys(out[sid]).length) delete out[sid];
+  });
+
+  // その科目に存在しない版に残っている記録は、存在する版へ移す。
+  // 版を持たなかった頃のデータを一度国試版として包んだあとで、その科目に
+  // 国試版が無いと分かった場合（基礎医学）に、記録が画面から消えるのを防ぐ。
+  Object.keys(out).forEach(sid => {
+    VIDEO_EDITION_IDS.forEach(e => {
+      const from = out[sid][e];
+      if (!from || videoEditionAvailableFor(sid, e)) return;
+      const to = availableVideoEditions(sid)[0];
+      if (!to) return;
+      delete out[sid][e];
+      changed = true;
+      out[sid][to] = out[sid][to] ? mergeVideoEntry(out[sid][to], from) : from;
+    });
+    if (!Object.keys(out[sid]).length) delete out[sid];
+  });
+
   return { data: out, changed };
 }
 

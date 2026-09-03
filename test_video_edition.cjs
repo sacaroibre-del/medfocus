@@ -49,7 +49,9 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   eq('マスタ: 合計本数', m.reduce((s, r) => s + r.count, 0), 77);
   eq('マスタ: 合計秒数', m.reduce((s, r) => s + r.seconds, 0), 97682);
 
-  eq('マスタ: 消化器系は 2A、2B を含む', W.cbtMasterFor('2A').covers, ['2B']);
+  eq('マスタ: 消化器系は 2B 肝・胆・膵、2A 消化管を含む', W.cbtMasterFor('2B').covers, ['2A']);
+  eq('マスタ: 2A 消化管はCBT版を自分では持たない', W.cbtMasterFor('2A'), null);
+  eq('マスタ: 2A の代表科目は 2B', W.cbtCoveredBy('2A'), '2B');
   eq('マスタ: 産婦人科は 2P、2Q を含む', W.cbtMasterFor('2P').covers, ['2Q']);
   eq('マスタ: 腎・尿路系は 2E、2W を含む', W.cbtMasterFor('2E').covers, ['2W']);
   eq('マスタ: 含まれる側から代表科目を引ける', W.cbtCoveredBy('2Q'), '2P');
@@ -104,14 +106,32 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
   eq('救出: 合計時間を引き継ぐ',
      W.normalizeVideoProgress(withSec).data, { '1A': { cbt: { done: 1, total: 4, total_sec: 1200 } } });
 
-  // 代表科目にまとめられる科目にCBT版の記録が残っていたら国試版へ
-  eq('救出: 含まれる科目のCBT版は国試版へ移る',
+  // 代表科目にまとめられる科目のCBT版の記録は、代表科目のCBT版へ移す。
+  // CBT版で見た記録なので、その科目の国試版に付け替えるのは誤り
+  eq('救出: 含まれる科目のCBT版は代表科目へ移る',
      W.normalizeVideoProgress({ '2Q': { cbt: { done: 3, total: 5 } } }).data,
-     { '2Q': { kokushi: { done: 3, total: 5 } } });
+     { '2P': { cbt: { done: 3, total: 5 } } });
 
   // 臨床の科目は両方あるので動かさない
   const clinical = { '2C': { kokushi: { done: 3, total: 12 }, cbt: { done: 1, total: 4 } } };
   eq('救出: 両方ある科目は動かさない', W.normalizeVideoProgress(clinical).data, clinical);
+
+  // マスタの割り当てを 2A から 2B へ移したので、2A のCBT版の記録は 2B へ動く。
+  // 国試版は 2A に残る（消化管と肝胆膵は国試版では別の科目のまま）
+  const moved = W.normalizeVideoProgress({
+    '2A': { kokushi: { done: 4, total: 20 }, cbt: { done: 2, total: 3, total_sec: 8482 } }
+  }).data;
+  eq('割り当て変更: CBT版は 2B へ移る', moved['2B'], { cbt: { done: 2, total: 3, total_sec: 8482 } });
+  eq('割り当て変更: 国試版は 2A に残る', moved['2A'], { kokushi: { done: 4, total: 20 } });
+
+  // 移り先にすでに記録があれば多いほうを残す
+  const both2 = W.normalizeVideoProgress({
+    '2A': { cbt: { done: 3, total: 3 } },
+    '2B': { cbt: { done: 1, total: 3, total_sec: 8482 } }
+  }).data;
+  eq('割り当て変更: 移り先と合流して多いほうを残す',
+     both2['2B'].cbt, { done: 3, total: 3, total_sec: 8482 });
+  ok('割り当て変更: 移動元にCBT版は残らない', both2['2A'] === undefined);
 }
 
 // ---------- 端末間のマージ ----------
@@ -144,7 +164,8 @@ const PREFS_KOKUSHI = { default: 'kokushi', primary: {} };
      W.primaryEditionOf('2W', { default: 'cbt', primary: { '2W': 'cbt' } }), 'kokushi');
 
   eq('版の有無: 基礎医学に国試版は無い', W.availableVideoEditions('1A'), ['cbt']);
-  eq('版の有無: 含まれる科目にCBT版は無い', W.availableVideoEditions('2B'), ['kokushi']);
+  eq('版の有無: 含まれる科目にCBT版は無い', W.availableVideoEditions('2A'), ['kokushi']);
+  eq('版の有無: 代表科目には両方ある', W.availableVideoEditions('2B'), ['kokushi', 'cbt']);
   eq('版の有無: 臨床の科目は両方ある', W.availableVideoEditions('2C'), ['kokushi', 'cbt']);
   eq('版の有無: マスタが無い臨床科目も両方ある', W.availableVideoEditions('2K'), ['kokushi', 'cbt']);
   eq('主軸: 科目ごとの上書きが効く',
