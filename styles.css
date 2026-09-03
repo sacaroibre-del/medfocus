@@ -2425,6 +2425,128 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 }
 .fixtotal-btn:hover { background: rgba(245, 158, 11, 0.28); }
 
+/* 教材進捗トラッカー: 版ごとの動画行 */
+.vid-ed-block {
+  margin: 0 0 8px 0;
+  padding: 8px;
+  background: var(--color-bg-elevated);
+  border-radius: 8px;
+  border-left: 3px solid #8b5cf6;
+  font-size: 0.8rem;
+}
+.vid-ed-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+}
+.vid-ed-row + .vid-ed-row { border-top: 1px dashed var(--color-border); margin-top: 3px; padding-top: 6px; }
+.vid-ed-pin {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: none;
+  color: var(--color-text-tertiary);
+  font-size: 0.8rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.vid-ed-pin:hover { color: var(--edition-color, #8b5cf6); }
+.vid-ed-pin.is-primary { color: var(--edition-color, #8b5cf6); }
+.vid-ed-name {
+  flex: 0 0 auto;
+  min-width: 30px;
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: var(--edition-color, #8b5cf6);
+}
+.vid-ed-row input[type="number"] {
+  width: 46px;
+  text-align: center;
+  padding: 4px 2px;
+  background: var(--color-bg-input);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+  font-size: 0.8rem;
+}
+.vid-ed-total {
+  width: 46px;
+  text-align: center;
+  padding: 4px 2px;
+  border: 1px solid transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.vid-ed-sep, .vid-ed-unit { flex: 0 0 auto; font-size: 0.7rem; color: var(--color-text-tertiary); }
+.vid-ed-bar {
+  flex: 1 1 40px;
+  min-width: 30px;
+  height: 6px;
+  background: var(--color-bg-base);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.vid-ed-bar > div { height: 100%; border-radius: 3px; background: var(--edition-color, #8b5cf6); }
+.vid-ed-pct {
+  flex: 0 0 auto;
+  min-width: 32px;
+  text-align: right;
+  font-weight: 700;
+  font-size: 0.8rem;
+  color: var(--edition-color, #8b5cf6);
+}
+.vid-ed-hours { flex: 0 0 auto; font-size: 0.68rem; color: var(--color-text-tertiary); min-width: 30px; text-align: right; }
+.vid-ed-note {
+  margin-top: 6px;
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+  line-height: 1.6;
+}
+.vid-ed-enable {
+  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  background: rgba(139, 92, 246, 0.14);
+  color: #a78bfa;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.vid-ed-enable:hover { background: rgba(139, 92, 246, 0.26); }
+
+/* 終了画面の「どちらの講義動画を見たか」トグル */
+.edition-segment {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.edition-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 8px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.edition-btn:hover:not(:disabled) { border-color: var(--edition-color, #8b5cf6); }
+.edition-btn.is-active {
+  color: var(--edition-color, #8b5cf6);
+  border-color: var(--edition-color, #8b5cf6);
+  background: color-mix(in srgb, var(--edition-color, #8b5cf6) 16%, transparent);
+}
+.edition-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* 終了画面の「視聴済み本数」欄 */
 .video-count-note {
   font-size: 0.68rem;

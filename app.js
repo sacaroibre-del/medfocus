@@ -569,6 +569,11 @@ const subjectCategories = [
 // Subject name normalizer (fix case mismatches like 'anki' vs 'Anki')
 const subjectNameMap={};
 subjectCategories.forEach(c=>c.subjects.forEach(s=>{subjectNameMap[s.name.toLowerCase()]=s.name;subjectNameMap[s.id.toLowerCase()]=s.name;}));
+// 逆引き。学習ログの subject_name には科目ID（保存時）と表示名（編集時）の
+// どちらも入りうるので、どちらからでも科目IDへ戻せるようにしておく。
+const subjectIdMap={};
+subjectCategories.forEach(c=>c.subjects.forEach(s=>{subjectIdMap[s.name.toLowerCase()]=s.id;subjectIdMap[s.id.toLowerCase()]=s.id;}));
+function subjectIdOfName(v){ return v ? (subjectIdMap[String(v).toLowerCase()] || null) : null; }
 function normalizeSubjectName(name){
   if(!name)return '未設定';
   return subjectNameMap[name.toLowerCase()]||name;
@@ -579,7 +584,13 @@ function normalizeSubjectName(name){
 // ログが未分類のまま大量に残る。未分類のままだと活動を軸にした分析
 // （インプット/アウトプット比率、条件別の正答率など）がほぼ効かないので、
 // 期間と科目で絞ってまとめて設定できるようにする。
-const bulkActivity = { open: false, period: 'all', subject: '', onlyUnclassified: true, dateFrom: '', dateTo: '' };
+const bulkActivity = { open: false, period: 'all', subject: '', onlyUnclassified: true, dateFrom: '', dateTo: '', mode: 'activity' };
+// まとめて設定の対象。'activity' は活動の種類、'edition' は講義動画の版。
+// 版のほうは activity='video' のログだけが対象になる。
+const BULK_MODES = [
+  { v: 'activity', l: '活動の種類' },
+  { v: 'edition',  l: '動画の版' }
+];
 
 // 「最近の学習ログ」は7日固定だったため、まとめて設定で古いログを変えても
 // 画面上は直近1週間しか出ず、反映されたかを確認できなかった。表示範囲を
@@ -608,8 +619,13 @@ function bulkActivityTargets(logs) {
     if (fromKey && toKey && fromKey > toKey) { const t = fromKey; fromKey = toKey; toKey = t; }
   }
 
+  const editionMode = bulkActivity.mode === 'edition';
   return (logs || []).filter(l => {
-    if (bulkActivity.onlyUnclassified && l.activity) return false;
+    if (editionMode) {
+      // 版を付けられるのは講義動画のログだけ
+      if (l.activity !== 'video') return false;
+      if (bulkActivity.onlyUnclassified && isVideoEdition(l.video_edition)) return false;
+    } else if (bulkActivity.onlyUnclassified && l.activity) return false;
     if (bulkActivity.subject && normalizeSubjectName(l.subject_name) !== bulkActivity.subject) return false;
     if (fromKey || toKey) {
       const r = getLogRange(l);
@@ -622,7 +638,10 @@ function bulkActivityTargets(logs) {
   });
 }
 
-async function applyBulkActivity(ids, activity) {
+function applyBulkActivity(ids, activity) { return applyBulkPatch(ids, { activity }); }
+function applyBulkVideoEdition(ids, edition) { return applyBulkPatch(ids, { video_edition: edition }); }
+
+async function applyBulkPatch(ids, patch) {
   if (!hasDB()) { showToast(IC.x + ' デモモードでは変更できません'); return { ok: false, done: 0, total: ids.length }; }
   // .in() に載せるIDが多いとURLが長くなりすぎるので分割して投げる。
   // ログは新しい順に並んでいるため、途中で失敗すると「新しいぶんだけ変わった」
@@ -632,11 +651,15 @@ async function applyBulkActivity(ids, activity) {
   for (let i = 0; i < ids.length; i += CHUNK) {
     const part = ids.slice(i, i + CHUNK);
     const { error } = await supabase.from('study_logs')
-      .update({ activity })
+      .update(patch)
       .in('id', part)
       .eq('user_id', session.user.id);
     if (error) {
-      console.error('bulk activity update error:', error);
+      console.error('bulk update error:', error);
+      if (isMissingVideoEditionColumn(error)) {
+        videoEditionColumnMissing = true;
+        showToast(IC.x + ' 版の列がまだありません（add_video_editions.sql を実行してください）');
+      }
       invalidateCache('study_logs'); _planSyncAt = 0;
       return { ok: false, done, total: ids.length, message: error.message };
     }
@@ -664,7 +687,11 @@ ACTIVITIES.forEach(a => { ACTIVITY_MAP[a.v] = a; });
 function videoCountChip(log){
   const n = log && log.videos_watched;
   if (!Number.isFinite(Number(n)) || Number(n) <= 0) return '';
-  return `<span class="qb-count-chip" style="--chip-color:#8b5cf6">動画 ${Number(n)}本</span>`;
+  // 版が記録されていればそれを見出しにする（未設定のログは今までどおり「動画」）
+  const ed = log.video_edition;
+  const label = isVideoEdition(ed) ? videoEditionShort(ed) : '動画';
+  const color = isVideoEdition(ed) ? videoEditionColor(ed) : '#8b5cf6';
+  return `<span class="qb-count-chip" style="--chip-color:${color}">${label} ${Number(n)}本</span>`;
 }
 
 function qbCountChip(log){
@@ -691,7 +718,11 @@ function activityChip(v){
 function videoCountFieldsHtml(suffix){
   const show = selectedActivity === 'video';
   return `<div class="field video-count-field" id="video-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
-    <label>視聴済み本数（合計・任意）</label>
+    <label>どちらの講義動画を見たか</label>
+    <div class="edition-segment" id="video-edition${suffix}">
+      ${VIDEO_EDITION_IDS.map(e => `<button type="button" class="edition-btn" data-edition="${e}" data-suffix="${suffix}" style="--edition-color:${videoEditionColor(e)}">${videoEditionLabel(e)}</button>`).join('')}
+    </div>
+    <label style="margin-top:10px;display:block;">視聴済み本数（合計・任意）</label>
     <div class="qb-count-row">
       <input type="number" id="video-done${suffix}" min="0" step="1" placeholder="0" inputmode="numeric" />
       <span class="qb-count-sep">/</span>
@@ -700,6 +731,17 @@ function videoCountFieldsHtml(suffix){
     </div>
     <div class="video-count-note" id="video-note${suffix}"></div>
   </div>`;
+}
+
+// 記録フォームでいま選ばれている版。'' はその科目の主軸に従う（自動）。
+// 科目を変えると自動に戻し、主軸どおりの版が既定で選ばれるようにする。
+let selectedVideoEdition = '';
+function formVideoEdition(sid){
+  if (!sid) return LEGACY_VIDEO_EDITION;
+  // CBT版に対応するカテゴリが無い科目では、CBT版を選べない
+  if (selectedVideoEdition === 'cbt' && !cbtMasterFor(sid)) return 'kokushi';
+  if (isVideoEdition(selectedVideoEdition)) return selectedVideoEdition;
+  return resolvedVideoEditionOf(sid);
 }
 
 // 記録フォームで選ばれている科目ID。自由入力や未選択なら null。
@@ -722,44 +764,71 @@ function syncVideoCountFields(suffix){
   if (!inp || !totEl || !dEl || !noteEl) return;
 
   const sid = selectedSubjectIdForForm(suffix);
+  const edWrap = document.getElementById('video-edition' + suffix);
+  const edition = formVideoEdition(sid);
+
+  // 版のボタン。CBT版に対応するカテゴリが無い科目では CBT版を押せなくする
+  if (edWrap) {
+    edWrap.querySelectorAll('.edition-btn').forEach(btn => {
+      const e = btn.dataset.edition;
+      const usable = e !== 'cbt' || !!(sid && cbtMasterFor(sid));
+      btn.disabled = !usable;
+      btn.classList.toggle('is-active', usable && e === edition);
+    });
+  }
+
   if (!sid) {
     inp.value = ''; inp.disabled = true;
     totEl.textContent = '--'; dEl.textContent = '—'; dEl.style.color = '';
     noteEl.textContent = '科目を選ぶと入力できます（自由入力の科目は対象外）';
-    inp.dataset.subject = ''; inp.dataset.before = '';
+    inp.dataset.subject = ''; inp.dataset.edition = ''; inp.dataset.before = '';
     return;
   }
   inp.disabled = false;
-  const vp = (getVideoProgress() || {})[sid] || { done: 0, total: 0 };
+  const vp = videoProgressFor(sid, edition);
   totEl.textContent = vp.total > 0 ? vp.total + '本' : '未登録';
-  // 科目が変わったら、その科目の現在値を入れ直す
-  if (inp.dataset.subject !== sid) {
+  // 科目か版が変わったら、その組み合わせの現在値を入れ直す
+  if (inp.dataset.subject !== sid || inp.dataset.edition !== edition) {
     inp.dataset.subject = sid;
+    inp.dataset.edition = edition;
     inp.dataset.before = String(vp.done || 0);
     inp.value = String(vp.done || 0);
   }
+  const edLabel = videoEditionLabel(edition);
   const before = parseInt(inp.dataset.before, 10) || 0;
   const now = parseInt(inp.value, 10);
-  if (!Number.isFinite(now)) { dEl.textContent = '—'; dEl.style.color = ''; noteEl.textContent = `現在 ${before}本`; return; }
+  if (!Number.isFinite(now)) { dEl.textContent = '—'; dEl.style.color = ''; noteEl.textContent = `${edLabel}の現在 ${before}本`; return; }
   if (vp.total > 0 && now > vp.total) {
     dEl.textContent = '登録本数を超過'; dEl.style.color = '#ef4444';
-    noteEl.textContent = `現在 ${before}本 / 登録 ${vp.total}本`;
+    noteEl.textContent = `${edLabel}の現在 ${before}本 / 登録 ${vp.total}本`;
     return;
   }
   const diff = now - before;
   dEl.textContent = diff === 0 ? '±0' : (diff > 0 ? '+' + diff : String(diff));
   dEl.style.color = diff > 0 ? '#10b981' : (diff < 0 ? '#f59e0b' : 'var(--color-text-tertiary)');
-  noteEl.textContent = `保存すると教材進捗を ${before} → ${now}本 に更新します`;
+  noteEl.textContent = `保存すると${edLabel}の教材進捗を ${before} → ${now}本 に更新します`;
 }
 
 function wireVideoCountFields(root, suffix){
-  const inp = (root || document).querySelector('#video-done' + suffix);
+  const scope = root || document;
+  const inp = scope.querySelector('#video-done' + suffix);
   if (inp) inp.addEventListener('input', () => syncVideoCountFields(suffix));
-  const sel = (root || document).querySelector('#confirm-subject');
+  const sel = scope.querySelector('#confirm-subject');
   if (sel) sel.addEventListener('change', () => {
     const i = document.getElementById('video-done' + suffix);
     if (i) i.dataset.subject = '';   // 科目が変わったら現在値を入れ直させる
+    selectedVideoEdition = '';       // 版も主軸に従う状態へ戻す
     syncVideoCountFields(suffix);
+  });
+  scope.querySelectorAll('#video-edition' + suffix + ' .edition-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (btn.disabled) return;
+      selectedVideoEdition = btn.dataset.edition;
+      saveTimerState();
+      // 両方のフォームが DOM に載りうるので、どちらも合わせる
+      syncVideoCountFields('');
+      syncVideoCountFields('-sync');
+    });
   });
   syncVideoCountFields(suffix);
 }
@@ -767,32 +836,36 @@ function wireVideoCountFields(root, suffix){
 // 保存時に読み出す。未入力・対象外なら null。
 function readVideoCount(suffix){
   const inp = document.getElementById('video-done' + suffix);
-  if (selectedActivity !== 'video' || !inp || inp.disabled) return { subjectId: null, done: null, error: null };
+  if (selectedActivity !== 'video') return { subjectId: null, done: null, edition: null, error: null };
+  // 科目が自由入力・未選択でも、どちらの版を見たかだけは記録できる
+  const manual = isVideoEdition(selectedVideoEdition) ? selectedVideoEdition : null;
+  if (!inp || inp.disabled) return { subjectId: null, done: null, edition: manual, error: null };
   const sid = inp.dataset.subject || null;
-  if (!sid) return { subjectId: null, done: null, error: null };
+  if (!sid) return { subjectId: null, done: null, edition: manual, error: null };
+  const edition = formVideoEdition(sid);
   const raw = inp.value.trim();
-  if (raw === '') return { subjectId: null, done: null, error: null };
+  // 本数を入れていなくても、どちらの版を見たかは記録する
+  if (raw === '') return { subjectId: null, done: null, edition, error: null };
   const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0) return { subjectId: null, done: null, error: '視聴済み本数が正しくありません' };
-  const vp = (getVideoProgress() || {})[sid] || { done: 0, total: 0 };
-  if (vp.total > 0 && n > vp.total) return { subjectId: null, done: null, error: `視聴済み本数が登録本数(${vp.total}本)を超えています` };
+  if (!Number.isFinite(n) || n < 0) return { subjectId: null, done: null, edition, error: '視聴済み本数が正しくありません' };
+  const vp = videoProgressFor(sid, edition);
+  if (vp.total > 0 && n > vp.total) return { subjectId: null, done: null, edition, error: `視聴済み本数が登録本数(${vp.total}本)を超えています` };
   const before = vp.done || 0;
   // 終了画面は累計を上書きする方式なので、その回の本数は差分として求める。
   // 減らす修正のときは「この回に見た本数」としては意味を成さないので記録しない。
   const watched = n > before ? n - before : null;
-  return { subjectId: sid, done: n, before, watched, error: null };
+  return { subjectId: sid, done: n, before, watched, edition, error: null };
 }
 
 // 教材進捗の視聴済み本数を上書きする。変更がなければ何もしない。
-function applyVideoCountToProgress(subjectId, done){
+// edition を省いたときは、その科目でいま使っている版に書く。
+function applyVideoCountToProgress(subjectId, done, edition){
   if (!subjectId || !Number.isFinite(done)) return null;
-  const v = getVideoProgress();
-  const cur = v[subjectId] || { done: 0, total: 0 };
-  if ((cur.done || 0) === done) return null;
-  const before = cur.done || 0;
-  v[subjectId] = { ...cur, done };
-  saveVideoProgress(v);
-  return { subjectId, before, after: done, total: cur.total || 0 };
+  const ed = isVideoEdition(edition) ? edition : resolvedVideoEditionOf(subjectId);
+  const cur = videoProgressFor(subjectId, ed);
+  if (cur.done === done) return null;
+  updateVideoProgressEntry(subjectId, ed, { done });
+  return { subjectId, edition: ed, before: cur.done, after: done, total: cur.total };
 }
 
 function qbCountFieldsHtml(suffix){
@@ -1201,7 +1274,22 @@ function describeQbChanges(result) {
   return `${name} ${parts.join(' / ')}`;
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null) {
+// study_logs.video_edition は add_video_editions.sql で足す列。
+// SQL をまだ流していない環境でも学習記録の保存が失敗しないように、
+// 「列が無い」というエラーが返ったら列を落として1回だけやり直す。
+// 一度落としたらセッション中は送らない（毎回2往復しないため）。
+let videoEditionColumnMissing = false;
+function isMissingVideoEditionColumn(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return /video_edition/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
+function stripVideoEdition(payload) {
+  const out = { ...payload };
+  delete out.video_edition;
+  return out;
+}
+
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
   const applyQb = () => (activity === 'qb')
@@ -1233,8 +1321,17 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       started_at: startedAt || now,
       ended_at: endedAt || now
     };
+    // 版は講義動画のときだけ意味を持つ
+    if (activity === 'video' && isVideoEdition(videoEdition) && !videoEditionColumnMissing) {
+      payload.video_edition = videoEdition;
+    }
     if (breaks && breaks.length > 0) payload.breaks = JSON.stringify(breaks);
-    const { error } = await supabase.from('study_logs').insert([payload]);
+    let { error } = await supabase.from('study_logs').insert([payload]);
+    if (error && isMissingVideoEditionColumn(error)) {
+      console.warn('study_logs.video_edition が未作成のため、版なしで保存します（add_video_editions.sql を実行してください）');
+      videoEditionColumnMissing = true;
+      ({ error } = await supabase.from('study_logs').insert([stripVideoEdition(payload)]));
+    }
     if (error) {
       console.error('Supabase save error:', error);
       showToast(IC.x+' 保存に失敗しました: ' + error.message);
@@ -1264,7 +1361,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
   }
 }
 
-async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined, videosWatched = undefined) {
+async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined, videosWatched = undefined, videoEdition = undefined) {
   if (!hasDB()) return;
   // If endedAt not provided, compute from startedAt + duration
   if (!endedAt && startedAt) {
@@ -1284,8 +1381,16 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
   if (questionsSolved !== undefined) payload.questions_solved = questionsSolved;
   if (questionsCorrect !== undefined) payload.questions_correct = questionsCorrect;
   if (videosWatched !== undefined) payload.videos_watched = videosWatched;
+  if (videoEdition !== undefined && !videoEditionColumnMissing) {
+    payload.video_edition = isVideoEdition(videoEdition) ? videoEdition : null;
+  }
   if (endedAt) payload.ended_at = endedAt;
-  const { error } = await supabase.from('study_logs').update(payload).eq('id', id);
+  let { error } = await supabase.from('study_logs').update(payload).eq('id', id);
+  if (error && isMissingVideoEditionColumn(error)) {
+    console.warn('study_logs.video_edition が未作成のため、版なしで更新します（add_video_editions.sql を実行してください）');
+    videoEditionColumnMissing = true;
+    ({ error } = await supabase.from('study_logs').update(stripVideoEdition(payload)).eq('id', id));
+  }
   if (error) showToast(IC.x+' 更新に失敗しました');
   else { invalidateCache('study_logs'); _planSyncAt = 0; showToast(IC.check+' 記録を更新しました！'); }
 }
@@ -1389,6 +1494,7 @@ function saveTimerState() {
     isConfirmingLog, pendingLogDuration,
     selectedSubjectId, selectedSubjectCustom,
     selectedLocation, selectedFocusLevel, selectedPurpose, selectedActivity,
+    selectedVideoEdition,
     cumulativeStudySeconds,
     sessionStartedAt, sessionBreaks,
     lastUpdate: Date.now()
@@ -1419,6 +1525,7 @@ function loadTimerState() {
   selectedFocusLevel = state.selectedFocusLevel || 2;
   selectedPurpose = state.selectedPurpose || 'other';
   selectedActivity = state.selectedActivity || 'qb';
+  selectedVideoEdition = isVideoEdition(state.selectedVideoEdition) ? state.selectedVideoEdition : '';
   cumulativeStudySeconds = state.cumulativeStudySeconds || 0;
   sessionStartedAt = state.sessionStartedAt || null;
   sessionBreaks = state.sessionBreaks || [];
@@ -1979,8 +2086,8 @@ function finishSession(manualStop = false) {
         const endedAt = new Date().toISOString();
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
-        const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched);
+        const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition);
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -2864,13 +2971,14 @@ async function renderDashboard(){
   // 試験逆算ペースメーター（目標リングの直下に出す）
   // 逆算プランの今日のノルマ。同期に失敗してもダッシュボード全体は落とさない
   const planSync = await syncPlans(false).catch(e => { console.warn('plan sync error:', e); return null; });
-  const pacer = buildExamPacer(examCountdowns, getQBProgress(), getVideoProgress(),
-                               logs, getDailyProgressDeltas());
 
   // 「今日の一手」用。インサイトで使っている計算をそのまま持ってくる。
+  // 単価はペースメーターの残り時間にも使うので先に出す。
   const dashTargetRound = getPacerTargetRound();
   const dashUnit = buildUnitCost(logs);
-  const dashPipeline = buildPipeline(getQBProgress(), getVideoProgress());
+  const pacer = buildExamPacer(examCountdowns, getQBProgress(), primaryVideoProgress(),
+                               logs, getDailyProgressDeltas(), dashUnit);
+  const dashPipeline = buildPipeline(getQBProgress(), primaryVideoProgress());
   const dashBaseline = buildIOBaseline(dashUnit, dashPipeline.rows, getQBProgress(),
                                        dashTargetRound, getIOVideoPlan(), getIOVideoSkip());
   const dashBudget = buildTimeBudget(examCountdowns, dashBaseline, logs, logicalToday);
@@ -3026,10 +3134,16 @@ async function renderDashboard(){
         ${pacer.status === 'warning' ? `<div class="pacer-verdict warning">${IC.warn} ぎりぎりです。1日 ${Math.ceil(pacer.requiredPerDay)}問 を切らないようにしましょう。</div>` : ''}
         ${pacer.status === 'danger' ? `<div class="pacer-verdict danger">${IC.warn} このままだと ${Math.round(pacer.projectedPct)}% で本番を迎えます。1日 ${Math.ceil(pacer.requiredPerDay)}問 が必要です。</div>` : ''}
         ${pacer.status === 'unknown' ? `<div class="pacer-verdict">学習記録で「問題演習」の問題数を入れると、実績ペースと予測が出ます。</div>` : ''}
-        ${pacer.videoBlocking ? `<div class="pacer-note">${IC.warn} 講義動画が ${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。${
-          pacer.video.pace.perDay !== null
-            ? `直近7日は 1日 <strong style="color:${pacer.video.pace.perDay >= pacer.video.requiredPerDay ? '#10b981' : '#ef4444'}">${(Math.round(pacer.video.pace.perDay * 10) / 10)}本</strong> のペースです。`
-            : ''
+        ${pacer.videoBlocking ? `<div class="pacer-note">${IC.warn} 講義動画が ${
+          pacer.video.remainMin !== null
+            ? `残り <strong>${formatMinutes(Math.round(pacer.video.remainMin))}</strong>（${pacer.video.remaining}本）あります（1日 ${formatMinutes(Math.ceil(pacer.video.requiredMinPerDay))}）。`
+            : `${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。`
+        }${
+          pacer.video.pace.minPerDay !== null && pacer.video.requiredMinPerDay !== null
+            ? `直近7日は 1日 <strong style="color:${pacer.video.pace.minPerDay >= pacer.video.requiredMinPerDay ? '#10b981' : '#ef4444'}">${formatMinutes(Math.round(pacer.video.pace.minPerDay))}</strong> のペースです。`
+            : (pacer.video.pace.perDay !== null
+                ? `直近7日は 1日 <strong style="color:${pacer.video.pace.perDay >= pacer.video.requiredPerDay ? '#10b981' : '#ef4444'}">${(Math.round(pacer.video.pace.perDay * 10) / 10)}本</strong> のペースです。`
+                : '')
         }見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
       `}
     </div>`}
@@ -3549,6 +3663,26 @@ function bindBulkActivityEvents(logs) {
     bulkActivity.onlyUnclassified = e.target.checked;
     renderStudy();
   });
+  document.getElementById('bulk-mode-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip) return;
+    bulkActivity.mode = chip.dataset.mode;
+    renderStudy();
+  });
+  document.getElementById('bulk-edition-chips')?.addEventListener('click', async e => {
+    const chip = e.target.closest('.filter-chip');
+    if (!chip || chip.disabled) return;
+    const edition = chip.dataset.edition;
+    const targets = bulkActivityTargets(logs);
+    if (!targets.length) return;
+    const label = videoEditionLabel(edition);
+    if (!confirm(`${targets.length}件の講義動画を「${label}」に設定します。よろしいですか？`)) return;
+    chip.disabled = true;
+    const res = await applyBulkVideoEdition(targets.map(l => l.id), edition);
+    if (res.ok) showToast(IC.check + ` ${res.done}件を「${label}」に設定しました`);
+    else if (res.done > 0) showToast(IC.x + ` ${res.total}件中 ${res.done}件まで反映しました（${res.message || 'エラー'}）`);
+    renderStudy();
+  });
   document.getElementById('bulk-activity-chips')?.addEventListener('click', async e => {
     const chip = e.target.closest('.filter-chip');
     if (!chip || chip.disabled) return;
@@ -3772,9 +3906,11 @@ async function renderStudy(){
         ${(() => {
           if (!bulkActivity.open) {
             const un = logs.filter(l => !l.activity).length;
-            return un > 0
-              ? `<div class="bulk-hint">活動の種類が未設定のログが <strong>${un}件</strong> あります。まとめて設定すると、インサイトの活動別の分析が使えるようになります。</div>`
-              : '';
+            const noEd = logs.filter(l => l.activity === 'video' && !isVideoEdition(l.video_edition)).length;
+            const hints = [];
+            if (un > 0) hints.push(`活動の種類が未設定のログが <strong>${un}件</strong> あります。まとめて設定すると、インサイトの活動別の分析が使えるようになります。`);
+            if (noEd > 0) hints.push(`どちらの版を見たか未設定の講義動画ログが <strong>${noEd}件</strong> あります（集計では国試版として扱っています）。`);
+            return hints.length ? `<div class="bulk-hint">${hints.join('<br>')}</div>` : '';
           }
           const targets = bulkActivityTargets(logs);
           const targetMin = targets.reduce((a, b) => a + (b.duration_minutes || 0), 0);
@@ -3784,8 +3920,15 @@ async function renderStudy(){
           const loadedKeys = logs.map(l => toLocalDateKey(getLogicalDate(getLogRange(l).start))).sort();
           const oldestKey = loadedKeys[0] || '';
           const newestKey = loadedKeys[loadedKeys.length - 1] || '';
+          const editionMode = bulkActivity.mode === 'edition';
           return `
             <div class="bulk-panel">
+              <div class="bulk-row">
+                <span class="bulk-label">設定する項目</span>
+                <div class="filter-chips" id="bulk-mode-chips">
+                  ${BULK_MODES.map(x => `<button class="filter-chip ${bulkActivity.mode === x.v ? 'active' : ''}" data-mode="${x.v}">${x.l}</button>`).join('')}
+                </div>
+              </div>
               <div class="bulk-row">
                 <span class="bulk-label">期間</span>
                 <div class="filter-chips" id="bulk-period-chips">
@@ -3808,7 +3951,7 @@ async function renderStudy(){
                   <option value="">全科目</option>
                   ${subjects.map(x => `<option value="${esc(x)}" ${bulkActivity.subject === x ? 'selected' : ''}>${esc(x)}</option>`).join('')}
                 </select>
-                <label class="bulk-check"><input type="checkbox" id="bulk-unclassified" ${bulkActivity.onlyUnclassified ? 'checked' : ''}> 未分類のログだけ</label>
+                <label class="bulk-check"><input type="checkbox" id="bulk-unclassified" ${bulkActivity.onlyUnclassified ? 'checked' : ''}> ${editionMode ? '版が未設定のログだけ' : '未分類のログだけ'}</label>
               </div>
               <div class="bulk-summary">
                 対象 <strong>${targets.length}件</strong>（計 ${formatMinutes(targetMin)}）${(() => {
@@ -3820,13 +3963,23 @@ async function renderStudy(){
                   logs.length ? `／${toLocalDateKey(getLogicalDate(getLogRange(logs[logs.length - 1]).start))} 〜 ${toLocalDateKey(getLogicalDate(getLogRange(logs[0]).start))}` : ''
                 }</span>
               </div>
-              <div class="bulk-row">
-                <span class="bulk-label">この活動にする</span>
-                <div class="filter-chips" id="bulk-activity-chips">
-                  ${ACTIVITIES.map(a => `<button class="filter-chip" data-activity="${a.v}" ${targets.length === 0 ? 'disabled' : ''}>${a.l}</button>`).join('')}
+              ${editionMode ? `
+                <div class="bulk-row">
+                  <span class="bulk-label">この版にする</span>
+                  <div class="filter-chips" id="bulk-edition-chips">
+                    ${VIDEO_EDITION_IDS.map(e => `<button class="filter-chip" data-edition="${e}" ${targets.length === 0 ? 'disabled' : ''}>${videoEditionLabel(e)}</button>`).join('')}
+                  </div>
                 </div>
-              </div>
-              <div class="bulk-note">選んだ活動を対象の${targets.length}件すべてに設定します。元に戻すにはもう一度まとめて設定するか、各ログの「編集」から個別に直してください。</div>
+                <div class="bulk-note">対象は活動が「講義動画」のログだけです。選んだ版を対象の${targets.length}件すべてに設定します。版が未設定のログは、集計では国試版として扱います。</div>
+              ` : `
+                <div class="bulk-row">
+                  <span class="bulk-label">この活動にする</span>
+                  <div class="filter-chips" id="bulk-activity-chips">
+                    ${ACTIVITIES.map(a => `<button class="filter-chip" data-activity="${a.v}" ${targets.length === 0 ? 'disabled' : ''}>${a.l}</button>`).join('')}
+                  </div>
+                </div>
+                <div class="bulk-note">選んだ活動を対象の${targets.length}件すべてに設定します。元に戻すにはもう一度まとめて設定するか、各ログの「編集」から個別に直してください。</div>
+              `}
             </div>`;
         })()}
         <div class="study-log-list">${dayGroups.map(({label,logs})=>{if(!logs.length)return'';const tot=logs.reduce((s,l)=>s+l.duration_minutes,0);
@@ -3855,7 +4008,7 @@ async function renderStudy(){
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.memo)}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${esc(sub?.name||l.subject_name)}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${esc(l.memo)}" data-location="${esc(l.location)}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${esc(sub?.name||l.subject_name)}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${esc(l.memo)}" data-location="${esc(l.location)}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" data-video-edition="${l.video_edition || ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}
@@ -4182,8 +4335,8 @@ async function renderStudy(){
 
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
-      const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched);
+      const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition);
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
@@ -4301,9 +4454,14 @@ async function renderStudy(){
             <div class="qb-count-row">
               <input type="number" id="edit-log-videos" min="0" step="1" inputmode="numeric" value="${ds.videos || ''}" placeholder="0" />
               <span class="qb-count-sep">本</span>
+              <select id="edit-log-video-edition" style="flex:1 1 0;min-width:0;">
+                <option value="" ${!ds.videoEdition?'selected':''}>版は未設定</option>
+                ${VIDEO_EDITION_IDS.map(e=>`<option value="${e}" ${ds.videoEdition===e?'selected':''}>${videoEditionLabel(e)}</option>`).join('')}
+              </select>
             </div>
             <div style="font-size:0.68rem; color:var(--color-text-tertiary); margin-top:6px; line-height:1.5;">
-              ※ 1回のセッションで見た本数です。教材進捗トラッカーの累計は変わりません
+              ※ 1回のセッションで見た本数です。教材進捗トラッカーの累計は変わりません<br>
+              ※ 版が未設定のログは、集計では国試版として扱います
             </div>
           </div>
           <div class="settings-field">
@@ -4337,6 +4495,7 @@ async function renderStudy(){
       const newLoc = document.getElementById('edit-log-location').value;
       const newFoc = parseFloat(document.getElementById('edit-log-focus').value);
       const newAct = document.getElementById('edit-log-activity').value || null;
+      const newVideoEdition = document.getElementById('edit-log-video-edition').value || null;
       const videosRaw = document.getElementById('edit-log-videos').value.trim();
       const newVideos = videosRaw === '' ? null : parseInt(videosRaw, 10);
       if (newVideos !== null && (!Number.isFinite(newVideos) || newVideos < 0)) { showToast(IC.x + ' 動画の本数が正しくありません'); return; }
@@ -4355,7 +4514,7 @@ async function renderStudy(){
 
       const newStartedAt = new Date(`${newDate}T${newTime}`).toISOString();
       const newEndedAt = newEndTime ? new Date(`${newDate}T${newEndTime}`).toISOString() : null;
-      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect, newVideos);
+      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect, newVideos, newVideoEdition);
       close();
       renderStudy();
     };
@@ -4497,7 +4656,10 @@ const SNAPSHOT_PREFIX = 'medfocus_progress_snapshot_';
 const SNAPSHOT_INDEX_KEY = 'medfocus_progress_snapshot_index';
 const SNAPSHOT_MAX_DAYS = 400;
 
-function summarizeProgress(qb, video) {
+// video は主軸で解決済みの1段の形。byEditionRaw は版ごとの生データ（省略可）。
+// 総数は主軸で数え、detail には版ごとの内訳を残す。版を切り替えた日でも
+// 「どちらがどれだけ進んだか」を後から分解できるようにするため。
+function summarizeProgress(qb, video, byEditionRaw) {
   const bySubject = {};
   const totals = { qbDone:0, qbTotal:0, qbCorrect:0, videoDone:0, videoTotal:0 };
   Object.entries(qb || {}).forEach(([sid, rounds]) => {
@@ -4512,7 +4674,18 @@ function summarizeProgress(qb, video) {
     const d = v.done||0, t = v.total||0;
     if (d === 0 && t === 0) return;
     if (!bySubject[sid]) bySubject[sid] = {};
-    bySubject[sid].video = { done:d, total:t };
+    const entry = { done:d, total:t };
+    if (v.edition) entry.edition = v.edition;
+    const raw = (byEditionRaw || {})[sid];
+    if (raw) {
+      const be = {};
+      VIDEO_EDITION_IDS.forEach(e => {
+        const r = raw[e];
+        if (r && ((r.done||0) > 0 || (r.total||0) > 0)) be[e] = { done: r.done||0, total: r.total||0 };
+      });
+      if (Object.keys(be).length) entry.by_edition = be;
+    }
+    bySubject[sid].video = entry;
     totals.videoDone += d; totals.videoTotal += t;
   });
   return { totals, bySubject };
@@ -4533,7 +4706,8 @@ function getProgressSnapshots() {
 
 function saveProgressSnapshot() {
   const dateKey = toLocalDateKey(getLogicalDate(new Date()));
-  const snap = summarizeProgress(getQBProgress(), getVideoProgress());
+  const rawVideo = getVideoProgress();
+  const snap = summarizeProgress(getQBProgress(), primaryVideoProgress(rawVideo), rawVideo);
   const prev = getProgressSnapshot(dateKey);
   // 中身が変わっていなければ書き込まない（Supabase への無駄な往復を避ける）
   if (prev && JSON.stringify(prev.totals) === JSON.stringify(snap.totals)
@@ -4633,15 +4807,44 @@ function getDailyProgressDeltas() {
       const pa = a.bySubject[sid] || {}, pb = b.bySubject[sid] || {};
       const qbDone   = ((pb.qb&&pb.qb.done)||0)    - ((pa.qb&&pa.qb.done)||0);
       const qbCorrect= ((pb.qb&&pb.qb.correct)||0) - ((pa.qb&&pa.qb.correct)||0);
-      const videoDone= ((pb.video&&pb.video.done)||0) - ((pa.video&&pa.video.done)||0);
-      if (qbDone || qbCorrect || videoDone) bySubject[sid] = { qbDone, qbCorrect, videoDone };
+
+      // 版ごとの内訳がある日は版ごとに引く。主軸を切り替えた日は総数が
+      // 別の版の値に飛ぶので、単純な差だと進んでいない量が計上されてしまう。
+      const bea = (pa.video && pa.video.by_edition) || null;
+      const beb = (pb.video && pb.video.by_edition) || null;
+      let videoDone, byEdition = null;
+      if (bea || beb) {
+        byEdition = {};
+        let sum = 0;
+        VIDEO_EDITION_IDS.forEach(e => {
+          const da = ((bea && bea[e] && bea[e].done) || 0);
+          const db = ((beb && beb[e] && beb[e].done) || 0);
+          const diff = db - da;
+          if (diff) { byEdition[e] = diff; sum += diff; }
+        });
+        videoDone = sum;
+        if (!Object.keys(byEdition).length) byEdition = null;
+      } else {
+        videoDone = ((pb.video&&pb.video.done)||0) - ((pa.video&&pa.video.done)||0);
+      }
+      if (qbDone || qbCorrect || videoDone) {
+        bySubject[sid] = { qbDone, qbCorrect, videoDone };
+        if (byEdition) bySubject[sid].videoByEdition = byEdition;
+      }
     });
+    // 版ごとの内訳を持つ日は、総数の差ではなく科目ごとの差を足す。
+    // 主軸を切り替えた日は総数が別の版の値へ飛ぶので、総数の差だと
+    // 見ていない量が「その日に進んだ量」として出てしまう。
+    const hasByEdition = Object.values(bySubject).some(v => v.videoByEdition);
+    const videoDone = hasByEdition
+      ? Object.values(bySubject).reduce((sum, v) => sum + (v.videoDone || 0), 0)
+      : b.totals.videoDone - a.totals.videoDone;
     out.push({
       date: b.date,
       spanDays,
       qbDone:    b.totals.qbDone    - a.totals.qbDone,
       qbCorrect: b.totals.qbCorrect - a.totals.qbCorrect,
-      videoDone: b.totals.videoDone - a.totals.videoDone,
+      videoDone,
       bySubject
     });
   }
@@ -4693,39 +4896,279 @@ function saveQBProgress(data){
 // これが無いと1項目入力するたびにアコーディオンが閉じて入力位置を見失う。
 const qbOpenCats = new Set();
 
+// ==================== 講義動画の版（国試版 / CBT版） ====================
+// 講義動画は国試版とCBT版の両方を見る。どちらか一方へ切り替えるのではなく、
+// 「その回どちらを見たか」を記録し、進捗も版ごとに別々に持つ。
+// 残り時間・ペース・ノルマの分母になる版を科目ごとに1つ決め、これを「主軸」と呼ぶ。
+// 主軸でない側の視聴は補足視聴で、勉強時間には入るが残りは減らさない。
+const VIDEO_EDITIONS = {
+  kokushi: { id: 'kokushi', label: '国試版', short: '国試', color: '#14b8a6' },
+  cbt:     { id: 'cbt',     label: 'CBT版',  short: 'CBT',  color: '#8b5cf6' }
+};
+const VIDEO_EDITION_IDS = ['kokushi', 'cbt'];
+// 版を持たない旧データを包むときの版。版を記録し始める前は国試版しか無かった。
+const LEGACY_VIDEO_EDITION = 'kokushi';
+function isVideoEdition(v) { return VIDEO_EDITION_IDS.indexOf(v) >= 0; }
+function videoEditionLabel(v) { return (VIDEO_EDITIONS[v] || {}).label || ''; }
+function videoEditionShort(v) { return (VIDEO_EDITIONS[v] || {}).short || ''; }
+function videoEditionColor(v) { return (VIDEO_EDITIONS[v] || {}).color || '#8b5cf6'; }
+
+// CBT版（Q-Assist 医学共用試験CBT臨床医学）の構成。
+// 臓器系統で切られているので、アプリの科目（国試QBの章立て）と1対1にならない。
+// covers に入れた科目は代表科目のほうに含まれるため、CBT版の進捗を自分では持たない。
+// seconds は合計時間。産婦人科だけ1本あたり6.5分・他は40〜55分と本の重みが違うので、
+// 科目をまたいで足す計算（残り時間・ペース）は本数ではなく時間を使う。
+const CBT_VIDEO_MASTER = [
+  { subject: '2C', covers: [],     title: '循環器系',             count: 4,  seconds: 10463 },
+  { subject: '2I', covers: [],     title: '呼吸器系',             count: 2,  seconds: 6053  },
+  { subject: '2D', covers: [],     title: '内分泌・栄養・代謝系', count: 3,  seconds: 7192  },
+  { subject: '2E', covers: ['2W'], title: '腎・尿路系',           count: 2,  seconds: 4850  },
+  { subject: '2A', covers: ['2B'], title: '消化器系',             count: 3,  seconds: 8482  },
+  { subject: '2H', covers: [],     title: '感染症',               count: 2,  seconds: 5033  },
+  { subject: '2J', covers: [],     title: '神経系',               count: 3,  seconds: 8258  },
+  { subject: '2G', covers: [],     title: '血液・造血器・リンパ系', count: 2, seconds: 6106  },
+  { subject: '2F', covers: [],     title: '免疫・アレルギー疾患', count: 1,  seconds: 2878  },
+  { subject: '2R', covers: [],     title: '眼・視覚系',           count: 1,  seconds: 2357  },
+  { subject: '2S', covers: [],     title: '耳鼻・咽喉・口腔系',   count: 1,  seconds: 2435  },
+  { subject: '2V', covers: [],     title: '皮膚系',               count: 1,  seconds: 2095  },
+  { subject: '2U', covers: [],     title: '精神系',               count: 1,  seconds: 2116  },
+  { subject: '2T', covers: [],     title: '運動器（筋骨格）系',   count: 1,  seconds: 3356  },
+  { subject: '2P', covers: ['2Q'], title: '産婦人科',             count: 47, seconds: 18304 },
+  { subject: '2O', covers: [],     title: '小児科',               count: 3,  seconds: 7704  }
+];
+const CBT_MASTER_BY_SUBJECT = {};
+const CBT_COVERED_BY = {};   // 含まれる側の科目ID → 代表科目ID
+CBT_VIDEO_MASTER.forEach(m => {
+  CBT_MASTER_BY_SUBJECT[m.subject] = m;
+  (m.covers || []).forEach(c => { CBT_COVERED_BY[c] = m.subject; });
+});
+// マスタ全体。トラッカーの「CBT版の総数をマスタで揃える」で回す。
+function cbtVideoMasterRows() { return CBT_VIDEO_MASTER.slice(); }
+function cbtMasterFor(sid) { return CBT_MASTER_BY_SUBJECT[sid] || null; }
+// CBT版で他科目に含まれる科目か（2B→2A、2Q→2P、2W→2E）
+function cbtCoveredBy(sid) { return CBT_COVERED_BY[sid] || null; }
+
+// ---------- 科目ごとの主軸 ----------
+// 「どちらを見るか」ではなく「どちらで残りを数えるか」の設定。
+// 主軸でない版もいつでも記録できる。
+const VIDEO_EDITION_PREFS_KEY = 'medfocus_video_edition_prefs';
+let videoEditionPrefsLoaded = false;
+function defaultVideoEditionPrefs() { return { default: 'cbt', primary: {} }; }
+function normalizeVideoEditionPrefs(raw) {
+  const out = defaultVideoEditionPrefs();
+  if (!raw || typeof raw !== 'object') return out;
+  if (isVideoEdition(raw.default)) out.default = raw.default;
+  Object.entries(raw.primary || {}).forEach(([sid, ed]) => {
+    if (isVideoEdition(ed)) out.primary[sid] = ed;
+  });
+  return out;
+}
+function getVideoEditionPrefs() {
+  try {
+    return normalizeVideoEditionPrefs(JSON.parse(localStorage.getItem(VIDEO_EDITION_PREFS_KEY) || 'null'));
+  } catch (e) { return defaultVideoEditionPrefs(); }
+}
+function saveVideoEditionPrefs(prefs) {
+  const clean = normalizeVideoEditionPrefs(prefs);
+  try { localStorage.setItem(VIDEO_EDITION_PREFS_KEY, JSON.stringify(clean)); } catch (e) {}
+  if (hasDB()) {
+    supabase.from('profiles').update({ video_edition_prefs: JSON.stringify(clean) }).eq('id', session.user.id)
+      .then(({ error }) => { if (error) console.warn('video prefs sync error:', error.message); });
+  }
+  return clean;
+}
+function setPrimaryVideoEdition(sid, edition) {
+  const prefs = getVideoEditionPrefs();
+  if (isVideoEdition(edition)) prefs.primary[sid] = edition;
+  else delete prefs.primary[sid];
+  return saveVideoEditionPrefs(prefs);
+}
+
+// 設定上の主軸。CBT版のカテゴリが無い科目と、他科目に含まれる科目は、
+// 設定によらず国試版になる（CBT版の進捗を自分では持たないため）。
+function primaryEditionOf(sid, prefs) {
+  if (cbtCoveredBy(sid)) return 'kokushi';
+  if (!cbtMasterFor(sid)) return 'kokushi';
+  const p = prefs || getVideoEditionPrefs();
+  const ov = p.primary && p.primary[sid];
+  if (isVideoEdition(ov)) return ov;
+  return isVideoEdition(p.default) ? p.default : 'cbt';
+}
+
+// 実際に進捗として読む版。主軸の側にまだ記録が無ければ、記録のある側へ落とす。
+// トラッカーでCBT版の総数を入れるまでは、今までどおり国試版の数字が出る。
+function resolvedVideoEditionOf(sid, raw, prefs) {
+  const byEd = (raw || getVideoProgress())[sid] || {};
+  const has = e => {
+    const v = byEd[e];
+    return !!v && ((Number(v.total) || 0) > 0 || (Number(v.done) || 0) > 0);
+  };
+  const primary = primaryEditionOf(sid, prefs);
+  if (has(primary)) return primary;
+  const other = VIDEO_EDITION_IDS.filter(e => e !== primary).find(has);
+  return other || primary;
+}
+
 // ==================== 動画進捗（QAssist 等の講義動画） ====================
 // QB と同じ科目ID（1A〜3D）を単位に「視聴済み本数 / 全本数」を持つ。
 // これがあって初めて「動画は進んでいるが QB が追いついていない」ズレが数値になる。
+// 保存形式(v2)は科目の下に版を1段挟む:
+//   { "2C": { "kokushi": {done,total}, "cbt": {done,total,total_sec} } }
 let videoProgressLoaded = false;
-function getVideoProgress(){try{return JSON.parse(localStorage.getItem('medfocus_video_progress')||'{}');}catch(e){return {};}}
+
+// 旧形式 {sid:{done,total}} を {sid:{kokushi:{done,total}}} に包む。
+// 版のキーを既に持っていればそのまま通す。壊れた値は落とす。
+function normalizeVideoProgress(raw) {
+  const out = {};
+  let changed = false;
+  Object.entries(raw || {}).forEach(([sid, v]) => {
+    if (!v || typeof v !== 'object') { changed = true; return; }
+    const entry = {};
+    VIDEO_EDITION_IDS.forEach(e => {
+      const src = v[e];
+      if (!src || typeof src !== 'object') return;
+      const item = { done: Number(src.done) || 0, total: Number(src.total) || 0 };
+      if (Number.isFinite(Number(src.total_sec))) item.total_sec = Number(src.total_sec);
+      entry[e] = item;
+    });
+    // done/total が科目の直下にある＝版を持たない旧形式
+    if ('done' in v || 'total' in v) {
+      changed = true;
+      const legacy = { done: Number(v.done) || 0, total: Number(v.total) || 0 };
+      const cur = entry[LEGACY_VIDEO_EDITION];
+      entry[LEGACY_VIDEO_EDITION] = cur ? { ...cur, ...legacy } : legacy;
+    }
+    if (Object.keys(entry).length) out[sid] = entry;
+    else changed = true;
+  });
+  return { data: out, changed };
+}
+
+// 同じ科目・同じ版どうしで、視聴済み本数が多いほうを残す（端末間のマージ）。
+function mergeVideoProgress(base, extra) {
+  const out = {};
+  const sids = new Set([...Object.keys(base || {}), ...Object.keys(extra || {})]);
+  sids.forEach(sid => {
+    const a = (base || {})[sid] || {}, b = (extra || {})[sid] || {};
+    const entry = {};
+    VIDEO_EDITION_IDS.forEach(e => {
+      if (a[e] && b[e]) entry[e] = (b[e].done || 0) > (a[e].done || 0) ? b[e] : a[e];
+      else if (a[e]) entry[e] = a[e];
+      else if (b[e]) entry[e] = b[e];
+    });
+    if (Object.keys(entry).length) out[sid] = entry;
+  });
+  return out;
+}
+
+function getVideoProgress() {
+  try {
+    return normalizeVideoProgress(JSON.parse(localStorage.getItem('medfocus_video_progress') || '{}')).data;
+  } catch (e) { return {}; }
+}
+
+// 主軸だけを、版を持たなかった頃と同じ1段の形で返す。
+// 分析・ダッシュボード・逆算プランはすべてこれを読む。
+function primaryVideoProgress(raw, prefs) {
+  const src = raw || getVideoProgress();
+  const p = prefs || getVideoEditionPrefs();
+  const out = {};
+  Object.keys(src).forEach(sid => {
+    const ed = resolvedVideoEditionOf(sid, src, p);
+    const v = src[sid][ed];
+    if (!v) return;
+    out[sid] = {
+      done: v.done || 0,
+      total: v.total || 0,
+      total_sec: Number.isFinite(Number(v.total_sec)) ? Number(v.total_sec) : null,
+      edition: ed
+    };
+  });
+  return out;
+}
+
+// 両方の版を並べて返す。トラッカーと補足視聴の集計で使う。
+function allVideoProgress(raw, prefs) {
+  const src = raw || getVideoProgress();
+  const p = prefs || getVideoEditionPrefs();
+  const out = {};
+  Object.keys(src).forEach(sid => {
+    const byEdition = {};
+    VIDEO_EDITION_IDS.forEach(e => { if (src[sid][e]) byEdition[e] = src[sid][e]; });
+    out[sid] = {
+      primary: primaryEditionOf(sid, p),
+      resolved: resolvedVideoEditionOf(sid, src, p),
+      byEdition
+    };
+  });
+  return out;
+}
+
+// 1科目・1版ぶんの現在値。無ければ 0 で返す。
+function videoProgressFor(sid, edition, raw) {
+  const src = raw || getVideoProgress();
+  const v = (src[sid] || {})[edition] || {};
+  return {
+    done: Number(v.done) || 0,
+    total: Number(v.total) || 0,
+    total_sec: Number.isFinite(Number(v.total_sec)) ? Number(v.total_sec) : null
+  };
+}
+
+// 版を指定して1科目ぶんを書き換える。他の版には触らない。
+function updateVideoProgressEntry(sid, edition, patch) {
+  if (!sid) return null;
+  const ed = isVideoEdition(edition) ? edition : LEGACY_VIDEO_EDITION;
+  const all = getVideoProgress();
+  const cur = (all[sid] || {})[ed] || { done: 0, total: 0 };
+  const next = { ...cur, ...patch };
+  all[sid] = { ...(all[sid] || {}), [ed]: next };
+  saveVideoProgress(all);
+  return next;
+}
+
 async function loadVideoFromSupabase(){
   if(!supabase||!session||videoProgressLoaded)return;
   try{
-    const{data,error}=await supabase.from('profiles').select('video_progress').eq('id',session.user.id).single();
+    const{data,error}=await supabase.from('profiles').select('video_progress,video_edition_prefs').eq('id',session.user.id).single();
     if(error){
       console.warn('video load error:',error.message);
-    } else if(data?.video_progress){
-      const remote=typeof data.video_progress==='string'?JSON.parse(data.video_progress):data.video_progress;
-      const local=getVideoProgress();
-      const merged={...remote};
-      Object.entries(local).forEach(([sub,v])=>{
-        if(!merged[sub])merged[sub]=v;
-        else if((v.done||0)>(merged[sub].done||0))merged[sub]=v;
-      });
-      localStorage.setItem('medfocus_video_progress',JSON.stringify(merged));
     } else {
-      const local=getVideoProgress();
-      if(Object.keys(local).length>0){
-        await supabase.from('profiles').update({video_progress:JSON.stringify(local)}).eq('id',session.user.id);
+      // 主軸の設定。リモートにあれば取り込む（無ければローカルのまま）
+      if (data?.video_edition_prefs && !videoEditionPrefsLoaded) {
+        try {
+          const rp = typeof data.video_edition_prefs === 'string'
+            ? JSON.parse(data.video_edition_prefs) : data.video_edition_prefs;
+          localStorage.setItem(VIDEO_EDITION_PREFS_KEY, JSON.stringify(normalizeVideoEditionPrefs(rp)));
+        } catch(e) { console.warn('video prefs parse error:', e); }
+      }
+      videoEditionPrefsLoaded = true;
+
+      if(data?.video_progress){
+        const parsed=typeof data.video_progress==='string'?JSON.parse(data.video_progress):data.video_progress;
+        const remote=normalizeVideoProgress(parsed);
+        const local=getVideoProgress();
+        const merged=mergeVideoProgress(remote.data, local);
+        localStorage.setItem('medfocus_video_progress',JSON.stringify(merged));
+        // 旧形式のまま置かれていたぶんは、包み直した形で書き戻す
+        if(remote.changed && hasDB()){
+          await supabase.from('profiles').update({video_progress:JSON.stringify(merged)}).eq('id',session.user.id);
+        }
+      } else {
+        const local=getVideoProgress();
+        if(Object.keys(local).length>0){
+          await supabase.from('profiles').update({video_progress:JSON.stringify(local)}).eq('id',session.user.id);
+        }
       }
     }
     videoProgressLoaded=true;
   }catch(e){console.warn('video load error:',e);}
 }
 function saveVideoProgress(data){
-  localStorage.setItem('medfocus_video_progress',JSON.stringify(data));
+  const clean = normalizeVideoProgress(data).data;
+  localStorage.setItem('medfocus_video_progress',JSON.stringify(clean));
   if(hasDB()){
-    supabase.from('profiles').update({video_progress:JSON.stringify(data)}).eq('id',session.user.id)
+    supabase.from('profiles').update({video_progress:JSON.stringify(clean)}).eq('id',session.user.id)
       .then(({error})=>{ if(error){ console.warn('video sync error:',error.message); } });
   }
   saveProgressSnapshot();
@@ -4795,6 +5238,15 @@ function recentVideoPace(allLogs, snapshotDeltas, days) {
   const since = new Date(today); since.setDate(since.getDate() - (days - 1));
   const sinceKey = toLocalDateKey(since);
 
+  // 本数だけでは版ごとの1本の長さの違いを吸収できないので、時間も併せて出す。
+  let minutes = 0;
+  (allLogs || []).forEach(l => {
+    if (l.activity !== 'video' || !l.started_at) return;
+    if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) < sinceKey) return;
+    minutes += l.duration_minutes || 0;
+  });
+  const minPerDay = minutes > 0 ? minutes / days : null;
+
   let logged = 0, hasLogged = false;
   (allLogs || []).forEach(l => {
     const n = Number(l.videos_watched);
@@ -4802,19 +5254,19 @@ function recentVideoPace(allLogs, snapshotDeltas, days) {
     if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) < sinceKey) return;
     logged += n; hasLogged = true;
   });
-  if (hasLogged) return { perDay: logged / days, total: logged, source: 'session', days };
+  if (hasLogged) return { perDay: logged / days, total: logged, source: 'session', days, minPerDay, minutes };
 
   let snap = 0, hasSnap = false;
   (snapshotDeltas || []).forEach(d => {
     if (d.date < sinceKey) return;
     if (d.videoDone > 0) { snap += d.videoDone; hasSnap = true; }
   });
-  if (hasSnap) return { perDay: snap / days, total: snap, source: 'snapshot', days };
+  if (hasSnap) return { perDay: snap / days, total: snap, source: 'snapshot', days, minPerDay, minutes };
 
-  return { perDay: null, total: 0, source: null, days };
+  return { perDay: null, total: 0, source: null, days, minPerDay, minutes };
 }
 
-function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
+function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas, unit) {
   const today = getLogicalDate(new Date()); today.setHours(0,0,0,0);
   const future = (exams || [])
     .filter(e => e && e.exam_date)
@@ -4847,8 +5299,15 @@ function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
   // 動画は本数で管理する。セッションに videos_watched を記録するようになったので
   // QBと同じくログから実績ペースを出し、無い場合だけスナップショット差分に落とす。
   const videoPace = recentVideoPace(allLogs, snapshotDeltas, 7);
-  let vDone = 0, vTotal = 0;
-  Object.values(video || {}).forEach(v => { vDone += v.done || 0; vTotal += v.total || 0; });
+  let vDone = 0, vTotal = 0, vRemainMin = 0, vMinKnown = true;
+  Object.entries(video || {}).forEach(([sid, v]) => {
+    vDone += v.done || 0; vTotal += v.total || 0;
+    if (!((v.total || 0) > 0)) return;
+    // 残りは本数でなく時間で見る。1本の長さが版と科目でまるで違うため
+    const mpv = minutesPerVideoFor(v.edition || LEGACY_VIDEO_EDITION, unit, sid);
+    if (mpv === null) { vMinKnown = false; return; }
+    vRemainMin += Math.max(0, (v.total || 0) - (v.done || 0)) * mpv;
+  });
   const videoRemaining = Math.max(0, vTotal - vDone);
 
   return {
@@ -4856,6 +5315,8 @@ function buildExamPacer(exams, qb, video, allLogs, snapshotDeltas) {
     qb: qbT, pace, requiredPerDay, projectedDone, projectedPct, status,
     video: { done: vDone, total: vTotal, remaining: videoRemaining,
              requiredPerDay: daysLeft > 0 ? videoRemaining / daysLeft : videoRemaining,
+             remainMin: vMinKnown ? vRemainMin : null,
+             requiredMinPerDay: vMinKnown ? (daysLeft > 0 ? vRemainMin / daysLeft : vRemainMin) : null,
              pace: videoPace,
              pct: vTotal > 0 ? (vDone / vTotal) * 100 : null },
     // 動画を見ていない範囲はQBに進めないため、動画が残っているとQBの必要ペースは実質もっと厳しい
@@ -4973,7 +5434,7 @@ function volSummaryInnerHtml(agg, opts) {
 // 入力欄には触れず、そこから計算される表示（バー・％・バッジ・vol集計）だけを差し替える。
 function refreshQbDerived() {
   const qb = getQBProgress();
-  const video = getVideoProgress();
+  const video = primaryVideoProgress();
   const set = (sel, fn) => { const el = document.querySelector(sel); if (el) fn(el); };
 
   subjectCategories.filter(c => c.id.startsWith('cat-vol')).forEach(cat => {
@@ -4985,10 +5446,16 @@ function refreshQbDerived() {
     });
 
     cat.subjects.forEach(s => {
+      // 主軸の版（＝分析で使う版）。未回収バッジの判定もこれで行う
       const vp = video[s.id] || { done: 0, total: 0 };
       const vPct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
-      set(`[data-vidfill="${s.id}"]`, el => { el.style.width = vPct + '%'; });
-      set(`[data-vidpct="${s.id}"]`, el => { el.textContent = vp.total > 0 ? vPct + '%' : '---'; });
+      // バーと％は版ごとに1本ずつある
+      VIDEO_EDITION_IDS.forEach(ed => {
+        const e = videoProgressFor(s.id, ed);
+        const p = e.total > 0 ? Math.round(e.done / e.total * 100) : 0;
+        set(`[data-vidfill="${s.id}|${ed}"]`, el => { el.style.width = p + '%'; });
+        set(`[data-vidpct="${s.id}|${ed}"]`, el => { el.textContent = e.total > 0 ? p + '%' : '---'; });
+      });
 
       const rounds = qb[s.id] || {};
       Object.entries(rounds).forEach(([rk, r]) => {
@@ -5023,12 +5490,88 @@ function refreshQbDerived() {
   });
 }
 
+// CBT版を使っている科目のうち、総本数がマスタと食い違うもの。
+// 本数と合計時間は対で持っているので、ずれたままだと残り時間の見積もりが狂う。
+function cbtTotalsOutOfSync(raw) {
+  const src = raw || getVideoProgress();
+  const out = [];
+  cbtVideoMasterRows().forEach(m => {
+    const cur = (src[m.subject] || {}).cbt;
+    if (!cur || !((cur.total || 0) > 0)) return;   // まだ使っていない科目は対象外
+    if (cur.total !== m.count || cur.total_sec !== m.seconds) {
+      out.push({ subjectId: m.subject, name: subjectNameOf(m.subject),
+                 from: cur.total || 0, to: m.count });
+    }
+  });
+  return out;
+}
+
+// 総本数と合計時間だけをマスタに揃える。視聴済み本数は触らない。
+function syncCbtTotalsFromMaster() {
+  const off = cbtTotalsOutOfSync();
+  off.forEach(f => {
+    const m = cbtMasterFor(f.subjectId);
+    if (m) updateVideoProgressEntry(f.subjectId, 'cbt', { total: m.count, total_sec: m.seconds });
+  });
+  return off.length;
+}
+
+// 教材進捗トラッカーの動画ブロック。版ごとに1行ずつ出し、主軸にピンを立てる。
+// CBT版の総数はマスタ由来なので編集させない（本数と合計時間が対になっているため）。
+function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
+  const vp = videoProgressFor(sid, ed);
+  const pct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
+  const color = videoEditionColor(ed);
+  const master = ed === 'cbt' ? cbtMasterFor(sid) : null;
+  const key = sid + '|' + ed;
+  const hours = master ? (master.seconds / 3600).toFixed(1) : null;
+  return `<div class="vid-ed-row" style="--edition-color:${color}">
+    <button type="button" class="vid-ed-pin ${isPrimary ? 'is-primary' : ''}" data-primary="${key}"
+      title="${isPrimary ? 'この版で残り時間とノルマを計算しています' : 'クリックすると、この版で残り時間とノルマを計算します'}">${isPrimary ? '◉' : '○'}</button>
+    <span class="vid-ed-name">${videoEditionShort(ed)}</span>
+    <input type="number" class="vid-done" data-sub="${sid}" data-edition="${ed}" value="${vp.done || 0}" min="0">
+    <span class="vid-ed-sep">/</span>
+    ${master
+      ? `<span class="vid-ed-total" title="${esc(master.title)}（マスタ）">${master.count}</span>`
+      : `<input type="number" class="vid-total" data-sub="${sid}" data-edition="${ed}" value="${vp.total || 0}" min="0">`}
+    <span class="vid-ed-unit">本</span>
+    <div class="vid-ed-bar"><div data-vidfill="${key}" style="width:${pct}%"></div></div>
+    <span class="vid-ed-pct" data-vidpct="${key}">${vp.total > 0 ? pct + '%' : '---'}</span>
+    ${hours ? `<span class="vid-ed-hours">${hours}h</span>` : ''}
+  </div>`;
+}
+
+function videoTrackerBlockHtml(sid) {
+  const covered = cbtCoveredBy(sid);
+  const master = cbtMasterFor(sid);
+  const primary = primaryEditionOf(sid);
+  const hasCbt = videoProgressFor(sid, 'cbt').total > 0;
+
+  const rows = [videoTrackerEditionRowHtml(sid, 'kokushi', primary === 'kokushi')];
+  if (master && hasCbt) rows.push(videoTrackerEditionRowHtml(sid, 'cbt', primary === 'cbt'));
+
+  let note = '';
+  if (covered) {
+    note = `<div class="vid-ed-note">CBT版では ${esc(subjectNameOf(covered))} にまとめられています。CBT版の進捗はそちらで管理してください。</div>`;
+  } else if (master && !hasCbt) {
+    const hours = (master.seconds / 3600).toFixed(1);
+    note = `<div class="vid-ed-note">
+      CBT版に「${esc(master.title)}」（${master.count}本・${hours}時間）があります。
+      <button type="button" class="vid-ed-enable" data-enable-cbt="${sid}">CBT版を使う</button>
+    </div>`;
+  } else if (!master) {
+    note = '<div class="vid-ed-note">この科目はCBT版に対応するカテゴリがないため、国試版だけで数えます。</div>';
+  }
+
+  return `<div class="vid-ed-block">${rows.join('')}${note}</div>`;
+}
+
 async function renderQBProgress(){
   await loadQBFromSupabase();
   await loadVideoFromSupabase();
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
-  const video=getVideoProgress();
+  const video=primaryVideoProgress();
 
   const volCats = subjectCategories.filter(c=>c.id.startsWith('cat-vol'));
   const volAgg = {};
@@ -5047,6 +5590,19 @@ async function renderQBProgress(){
           <span class="fixtotal-sample">${sample}${mm.length > 4 ? ` 他${mm.length - 4}件` : ''}</span>
         </div>
         <button class="fixtotal-btn" id="btn-fix-totals">1周目に揃える</button>
+      </div>`;
+    })()}
+    ${(() => {
+      const off = cbtTotalsOutOfSync();
+      if (!off.length) return '';
+      const sample = off.slice(0, 4).map(f => `${f.name} ${f.from}→${f.to}本`).join('、');
+      return `<div class="fixtotal-bar">
+        <div class="fixtotal-text">
+          <strong>${IC.warn} CBT版の総本数がマスタと違う科目が ${off.length} 件あります</strong>
+          <span>CBT版の本数と合計時間は対で持っているので、マスタに合わせておかないと残り時間がずれます。</span>
+          <span class="fixtotal-sample">${sample}${off.length > 4 ? ` 他${off.length - 4}件` : ''}</span>
+        </div>
+        <button class="fixtotal-btn" id="btn-sync-cbt-totals">マスタで揃える</button>
       </div>`;
     })()}
     <div class="baseline-bar">
@@ -5093,19 +5649,7 @@ async function renderQBProgress(){
                   <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
                 </span>
               </div>
-              <div style="margin:0 0 8px 0;padding:8px;background:var(--color-bg-elevated);border-radius:8px;font-size:0.8rem;border-left:3px solid #8b5cf6;">
-                <div class="qb-metric-row">
-                  <span class="qb-metric-label" style="color:#a78bfa;font-weight:700;">動画</span>
-                  <input type="number" class="vid-done" data-sub="${s.id}" value="${vp.done||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
-                  <span>/</span>
-                  <input type="number" class="vid-total" data-sub="${s.id}" value="${vp.total||0}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
-                  <span style="font-size:0.7rem;color:var(--color-text-tertiary);">本</span>
-                  <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                    <div data-vidfill="${s.id}" style="height:100%;width:${vPct}%;background:#8b5cf6;border-radius:3px;"></div>
-                  </div>
-                  <span data-vidpct="${s.id}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:#a78bfa;">${vp.total>0?vPct+'%':'---'}</span>
-                </div>
-              </div>
+              ${videoTrackerBlockHtml(s.id)}
               ${roundKeys.length>0?roundKeys.map(rk=>{
                 const r=rounds[rk];const pct=r.total>0?Math.round(r.done/r.total*100):0;
                 const correct=r.correct||0;const accPct=r.done>0?Math.round(correct/r.done*100):0;
@@ -5155,6 +5699,43 @@ async function renderQBProgress(){
     renderQBProgress();
   });
 
+  document.getElementById('btn-sync-cbt-totals')?.addEventListener('click', () => {
+    const off = cbtTotalsOutOfSync();
+    if (!off.length) return;
+    const lines = off.slice(0, 12).map(f => `  ${f.name}: ${f.from} → ${f.to}本`).join('\n');
+    const more = off.length > 12 ? `\n  ...他 ${off.length - 12} 件` : '';
+    if (!confirm(`次の ${off.length} 件のCBT版の総本数をマスタに揃えます。\n\n${lines}${more}\n\n視聴済み本数は変更しません。よろしいですか？`)) return;
+    const n = syncCbtTotalsFromMaster();
+    showToast(IC.check + ` ${n}件をマスタに揃えました`);
+    renderQBProgress();
+  });
+
+  // 主軸の切り替え。残り時間とノルマの分母がこの版になる
+  ct.querySelectorAll('[data-primary]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const [sid, ed] = String(btn.dataset.primary).split('|');
+      if (primaryEditionOf(sid) === ed) return;
+      setPrimaryVideoEdition(sid, ed);
+      showToast(IC.check + ` ${subjectNameOf(sid)} の残りを${videoEditionLabel(ed)}で数えます`);
+      renderQBProgress();
+    });
+  });
+
+  // CBT版を使い始める。総本数と合計時間をマスタから入れ、視聴済みは0から
+  ct.querySelectorAll('[data-enable-cbt]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const sid = btn.dataset.enableCbt;
+      const m = cbtMasterFor(sid);
+      if (!m) return;
+      const hours = (m.seconds / 3600).toFixed(1);
+      if (!confirm(`${subjectNameOf(sid)} でCBT版「${m.title}」（${m.count}本・${hours}時間）を使い始めます。\n\n視聴済みは0本から始まります。国試版の実績はそのまま残ります。\nこの科目の残り時間とノルマはCBT版で数えるようになります。\n\nよろしいですか？`)) return;
+      updateVideoProgressEntry(sid, 'cbt', { done: 0, total: m.count, total_sec: m.seconds });
+      setPrimaryVideoEdition(sid, 'cbt');
+      showToast(IC.check + ` ${subjectNameOf(sid)} でCBT版を使い始めました。進捗の基準を取り直すことをおすすめします`);
+      renderQBProgress();
+    });
+  });
+
   document.getElementById('btn-reset-baseline')?.addEventListener('click', async () => {
     if(!confirm('今日より前の進捗スナップショットを削除し、現在の値を新しい初期値にします。\n\n学習記録・QB進捗・動画進捗そのものは削除されません。よろしいですか？')) return;
     const n = await resetProgressBaseline();
@@ -5187,11 +5768,9 @@ async function renderQBProgress(){
   ct.querySelectorAll('.vid-done,.vid-total').forEach(inp=>{
     inp.addEventListener('change',()=>{
       const sub=inp.dataset.sub;
-      const d=getVideoProgress();
-      if(!d[sub])d[sub]={done:0,total:0};
-      if(inp.classList.contains('vid-done'))d[sub].done=parseInt(inp.value)||0;
-      else d[sub].total=parseInt(inp.value)||0;
-      saveVideoProgress(d);
+      const ed=inp.dataset.edition||resolvedVideoEditionOf(sub);
+      const n=parseInt(inp.value)||0;
+      updateVideoProgressEntry(sub, ed, inp.classList.contains('vid-done')?{done:n}:{total:n});
       refreshQbDerived();   // 全再描画しない（開いている vol とフォーカスを保つ）
     });
   });
@@ -5399,6 +5978,8 @@ function buildPipeline(qb, video) {
     rows.push({
       id: sid,
       name: idToName[sid] || sid,
+      videoEdition: v.edition || LEGACY_VIDEO_EDITION,
+      videoTotalSec: Number.isFinite(Number(v.total_sec)) ? Number(v.total_sec) : null,
       videoDone: v.done || 0, videoTotal: v.total || 0,
       videoPct: v.total > 0 ? (v.done / v.total) * 100 : null,
       qb1Done: r1 ? (r1.done || 0) : 0, qb1Total: r1 ? (r1.total || 0) : 0,
@@ -5997,22 +6578,67 @@ function buildGoalHistory(allLogs, logicalToday, days = GOAL_HISTORY_DAYS) {
 const UNIT_MIN_VIDEOS = 5;      // 単価を出すのに要る最低サンプル
 const UNIT_MIN_QUESTIONS = 50;
 
+// ログに記録された版。未設定のログは国試版として扱う
+// （版を記録し始める前は国試版しか無かったため）。
+function logVideoEdition(log) {
+  const e = log && log.video_edition;
+  return isVideoEdition(e) ? e : LEGACY_VIDEO_EDITION;
+}
+
 function buildUnitCost(logs) {
   let vMin = 0, vCount = 0, vSessions = 0, qMin = 0, qCount = 0, qSessions = 0;
+  // 動画1本あたりの長さは版でまるで違う（CBT版の産婦人科は1本6.5分、国試版は40分台）。
+  // 混ぜた単価で残り時間を出すと実態から外れるので、版ごとにも持っておく。
+  const byEdition = {};
+  VIDEO_EDITION_IDS.forEach(e => { byEdition[e] = { min: 0, count: 0, sessions: 0 }; });
+
   logs.forEach(l => {
     const m = l.duration_minutes || 0;
     const vw = Number(l.videos_watched), qs = Number(l.questions_solved);
-    if (l.activity === 'video' && Number.isFinite(vw) && vw > 0) { vMin += m; vCount += vw; vSessions++; }
+    if (l.activity === 'video' && Number.isFinite(vw) && vw > 0) {
+      vMin += m; vCount += vw; vSessions++;
+      const b = byEdition[logVideoEdition(l)];
+      if (b) { b.min += m; b.count += vw; b.sessions++; }
+    }
     if (l.activity === 'qb' && Number.isFinite(qs) && qs > 0) { qMin += m; qCount += qs; qSessions++; }
   });
+
+  const video = {};
+  VIDEO_EDITION_IDS.forEach(e => {
+    const b = byEdition[e];
+    video[e] = {
+      minPerVideo: b.count > 0 ? b.min / b.count : null,
+      samples: b.count, sessions: b.sessions,
+      has: b.count >= UNIT_MIN_VIDEOS
+    };
+  });
+
   return {
     minPerVideo: vCount > 0 ? vMin / vCount : null,
     videoSamples: vCount, videoSessions: vSessions,
     minPerQuestion: qCount > 0 ? qMin / qCount : null,
     questionSamples: qCount, questionSessions: qSessions,
     hasVideo: vCount >= UNIT_MIN_VIDEOS,
-    hasQuestion: qCount >= UNIT_MIN_QUESTIONS
+    hasQuestion: qCount >= UNIT_MIN_QUESTIONS,
+    video
   };
+}
+
+// 版1本あたりの所要分。CBT版はマスタに合計時間があるので実測より優先する
+// （マスタは全カテゴリぶんの実数で、実測より母数が大きく安定しているため）。
+// 国試版は実測、実測が足りなければ全体の実測に落とす。
+function minutesPerVideoFor(edition, unit, subjectId) {
+  if (edition === 'cbt') {
+    const m = subjectId ? cbtMasterFor(subjectId) : null;
+    if (m && m.count > 0) return m.seconds / 60 / m.count;
+    const rows = cbtVideoMasterRows();
+    const count = rows.reduce((s, r) => s + r.count, 0);
+    const sec = rows.reduce((s, r) => s + r.seconds, 0);
+    if (count > 0) return sec / 60 / count;
+  }
+  const byEd = unit && unit.video && unit.video[edition];
+  if (byEd && byEd.has && byEd.minPerVideo !== null) return byEd.minPerVideo;
+  return unit && unit.hasVideo ? unit.minPerVideo : null;
 }
 
 // 1〜2周目は全問、3周目以降は「間違えたことのある問題」を中心に回す運用に合わせて、
@@ -6156,21 +6782,78 @@ function buildIOBaseline(unit, pipelineRows, qbProgress, targetRound, videoPlan,
   // 見る予定の本数。登録総数を超える指定は総数で頭打ちにする。
   const videoPlanned = videoPlan !== null && videoPlan !== undefined
     ? Math.min(videoPlan, videoTotal) : videoTotal;
-  if (!unit.hasVideo || !unit.hasQuestion || videoPlanned <= 0 || plan.total <= 0) {
+
+  // 動画の所要時間は科目ごとに出す。1本あたりの長さが版で大きく違うため
+  // （CBT版の産婦人科は1本6.5分、国試版や他カテゴリは40分台）。
+  // 本数×一律の単価で足すと、短いクリップの多い科目に引きずられる。
+  let videoTotalMin = 0, videoDoneMin = 0, videoCostKnown = true;
+  videoRows.forEach(r => {
+    if (!(r.videoTotal > 0)) return;
+    const mpv = minutesPerVideoFor(r.videoEdition, unit, r.id);
+    if (mpv === null) { videoCostKnown = false; return; }
+    videoTotalMin += r.videoTotal * mpv;
+    videoDoneMin += Math.min(r.videoDone || 0, r.videoTotal) * mpv;
+  });
+
+  if (!videoCostKnown || !unit.hasQuestion || videoPlanned <= 0 || plan.total <= 0) {
     return { hasData: false, progress, plan, targetRound, videoTotal, videoPlanned, skippedVideoTotal, videoRows: rows };
   }
+  // 見る予定を本数で絞っているときは、時間もその割合で縮める
+  const planRatio = videoTotal > 0 ? videoPlanned / videoTotal : 1;
   // 講義動画は見る予定のぶんを1回。QBは目標周回ぶん。
-  const vMin = videoPlanned * unit.minPerVideo;
+  const vMin = videoTotalMin * planRatio;
   const qMin = plan.total * unit.minPerQuestion;
   const total = vMin + qMin;
   return {
     hasData: true, progress, plan, targetRound,
     videoTotal, videoPlanned, skippedVideoTotal, videoRows: rows,
     qbTotal: plan.total, vMin, qMin,
+    videoTotalMin, videoDoneMin,
     videoPlanPct: videoTotal > 0 ? videoPlanned / videoTotal * 100 : null,
     videoShare: total > 0 ? vMin / total * 100 : null,
-    remainVideoMin: Math.max(0, videoPlanned - videoDone) * unit.minPerVideo,
+    remainVideoMin: Math.max(0, vMin - videoDoneMin),
     remainQbMin: plan.remaining * unit.minPerQuestion
+  };
+}
+
+// ==================== 補足視聴（主軸でない版を見た時間） ====================
+// 主軸でない版を見た時間は、勉強時間には入るが「残り」は減らない。
+// 何も出さないと「3時間やったのに残りが変わらない」と読めてしまうので、
+// 独立した数字として出して、主軸の進捗と切り分けて見せる。
+const SUPPLEMENTAL_WINDOW_DAYS = 30;
+
+function buildSupplementalVideo(allLogs, logicalToday, days = SUPPLEMENTAL_WINDOW_DAYS, prefs) {
+  const since = new Date(logicalToday); since.setDate(since.getDate() - (days - 1));
+  const sinceKey = toLocalDateKey(since);
+  const p = prefs || getVideoEditionPrefs();
+
+  let totalMin = 0, supplementalMin = 0, primaryMin = 0, unknownMin = 0;
+  const bySubject = {};
+  (allLogs || []).forEach(l => {
+    if (l.activity !== 'video' || !l.started_at) return;
+    const k = toLocalDateKey(getLogicalDate(new Date(l.started_at)));
+    if (k < sinceKey) return;
+    const min = l.duration_minutes || 0;
+    if (min <= 0) return;
+    totalMin += min;
+
+    // 科目が特定できないログは主軸と比べようがない
+    const sid = subjectIdOfName(l.subject_name);
+    if (!sid) { unknownMin += min; return; }
+    const ed = logVideoEdition(l);
+    const primary = primaryEditionOf(sid, p);
+    if (ed === primary) { primaryMin += min; return; }
+    supplementalMin += min;
+    const e = (bySubject[sid] = bySubject[sid] || { id: sid, name: subjectNameOf(sid), min: 0, edition: ed, primary });
+    e.min += min;
+  });
+
+  const rows = Object.values(bySubject).sort((a, b) => b.min - a.min);
+  return {
+    hasData: totalMin > 0,
+    days, totalMin, supplementalMin, primaryMin, unknownMin,
+    pct: totalMin > 0 ? supplementalMin / totalMin * 100 : null,
+    rows
   };
 }
 
@@ -7674,7 +8357,7 @@ async function renderInsights(){
   const hasAccData = acc.ranked.length > 0 || acc.subjects.length > 0;
 
   // ===== Phase 2: パイプライン / 未回収在庫 / インプット・アウトプット比 =====
-  const pipeline = buildPipeline(getQBProgress(), getVideoProgress());
+  const pipeline = buildPipeline(getQBProgress(), primaryVideoProgress());
   const backlog  = buildBacklog(pipeline.rows, allLogs, new Date());
   const backlogDated = backlog.filter(b => b.daysSince !== null);
   const oldestBacklog = backlogDated.length > 0 ? backlogDated[0] : null;
@@ -7696,6 +8379,8 @@ async function renderInsights(){
   const comeback = buildComebackStats(allLogs);
   const videoLag = buildVideoQbLag(logs, logicalToday);
   const subjectMix = buildSubjectMix(logs);
+  // 主軸でない版を見た時間。フィルタに関係なく直近30日で見る
+  const supplemental = buildSupplementalVideo(allLogs, logicalToday);
   const sameDayMix = buildSameDayMix(logs);
   const sessionLen = buildSessionLengthStats(logs);
   const allNighter = buildAllNighterImpact(getSleepLogs(), allLogs, logicalToday);
@@ -7725,7 +8410,7 @@ async function renderInsights(){
     roundGains, sameDayMix, scatterPoints, sessionCount, sessionLen, shortCooldownDays,
     sleepAvgHours, sleepDailyData, sleepDebtHours, sleepHoursArr, sleepMaxHours, sleepMinHours,
     sleepSlotCompare, sortedLocations, sortedSubjectFocus, sortedSubjects, startTimeDiff,
-    streakActive, studyDays, studyStreak, subjectBudget, subjectMix, thisWeekAvgFocus,
+    streakActive, studyDays, studyStreak, subjectBudget, subjectMix, supplemental, thisWeekAvgFocus,
     thisWeekAvgStart, thisWeekDailyAvg, thisWeekLag, thisWeekLateNight, thisWeekSleepAvg,
     timeBudget, totalMin, trendData, trendDataAssig, trendDataCBT, trendDataExam,
     trendDataOther, trendLabels, unitCost, videoLag, wakeStabilitySD, wakeStabilityStatus,
@@ -8028,9 +8713,31 @@ function insightsBreaksHTML(d) {
 
 // 目標と実績
 function insightsGoalHTML(d) {
-  const { goalHistory, timeBudget } = d;
+  const { goalHistory, timeBudget, supplemental } = d;
   return `
   ${insightGroupOpenHTML('goal', '目標と実績', '曜日ごとに目標が実態に合っているか', insightIcons.target, 'var(--color-accent-green)')}
+  <!-- Section N2: 補足視聴（主軸でない版） -->
+  ${!supplemental.hasData || supplemental.supplementalMin <= 0 ? '' : `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.113s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:${videoEditionColor('kokushi')}">${IC.book}</div>
+      <div><div class="section-title">補足視聴</div><div class="section-subtitle">直近${supplemental.days}日間・主軸でない版を見た時間</div></div>
+    </div>
+    <div class="break-verdict break-verdict-muted">
+      <div>講義動画 ${formatMinutes(supplemental.totalMin)} のうち、<strong>${formatMinutes(supplemental.supplementalMin)}（${Math.round(supplemental.pct)}%）</strong>が主軸でない版でした。この時間は勉強時間には入りますが、<strong>残り時間は減りません</strong>（残りは主軸の版だけで数えているため）。</div>
+    </div>
+    <div class="break-table">
+      ${supplemental.rows.slice(0, 6).map(r => `
+        <div class="break-row">
+          <span class="break-row-label">${esc(r.name)}</span>
+          <span class="break-row-val">${formatMinutes(r.min)}</span>
+          <span class="break-row-note">${videoEditionLabel(r.edition)}を視聴（主軸は${videoEditionLabel(r.primary)}）</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="break-note">よく見るほうを主軸にしたい科目は、教材進捗トラッカーの◉で切り替えられます。切り替えると、その科目の残り時間とノルマがその版で計算されます。</div>
+  </div>` }
+
   <!-- Section N: 試験までの時間の逆算 -->
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.111s">
     <div class="section-header">
@@ -10187,7 +10894,13 @@ function planLogField(plan) {
 function planLogMatches(plan, log) {
   if (!plan || !plan.subject_id || !log) return false;
   const want = subjectNameMap[String(plan.subject_id).toLowerCase()];
-  return !!want && normalizeSubjectName(log.subject_name) === want;
+  if (!want || normalizeSubjectName(log.subject_name) !== want) return false;
+  // 講義動画のプランに版が入っていれば、その版のログだけを消化に数える。
+  // 版が無いプラン（版を持つ前に作ったもの）は今までどおり版を問わない。
+  if (plan.unit === 'video' && isVideoEdition(plan.video_edition)) {
+    return logVideoEdition(log) === plan.video_edition;
+  }
+  return true;
 }
 
 // 開始日以降のログを論理日で束ねて { dateKey: 消化量 } にする
@@ -10245,12 +10958,13 @@ function planScheduleDiffers(tasks, schedule, todayKey) {
 }
 
 // 教材進捗トラッカーから「この科目の残り」を引く。ウィザードの総量の初期値に使う。
-function planVolumeSuggestion(unit, subjectId, targetRound) {
+function planVolumeSuggestion(unit, subjectId, targetRound, videoEdition) {
   if (!subjectId) return null;
   if (unit === 'video') {
-    const v = (getVideoProgress() || {})[subjectId];
+    const ed = isVideoEdition(videoEdition) ? videoEdition : resolvedVideoEditionOf(subjectId);
+    const v = videoProgressFor(subjectId, ed);
     if (!v || !(v.total > 0)) return null;
-    return { total: v.total, done: v.done || 0, remaining: Math.max(0, v.total - (v.done || 0)), label: '本' };
+    return { total: v.total, done: v.done || 0, remaining: Math.max(0, v.total - (v.done || 0)), label: '本', edition: ed };
   }
   const rounds = (getQBProgress() || {})[subjectId];
   const base = baseTotalForSubject(rounds);
@@ -11074,6 +11788,10 @@ async function createPlan(input, schedule) {
     target_round: input.target_round || null,
     status: 'active', memo: input.memo || null
   };
+  // 講義動画のプランは、どちらの版の消化を数えるかを持つ
+  if (row.unit === 'video' && isVideoEdition(input.video_edition) && !videoEditionColumnMissing) {
+    row.video_edition = input.video_edition;
+  }
   if (!hasDB()) {
     const plan = Object.assign({ id: generateUID(), created_at: new Date().toISOString() }, row);
     const tasks = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ id: generateUID() }, t));
@@ -11082,8 +11800,14 @@ async function createPlan(input, schedule) {
     showToast(IC.check + ' プランを作成しました');
     return plan;
   }
-  const { data: plan, error } = await supabase.from('study_plans')
+  let { data: plan, error } = await supabase.from('study_plans')
     .insert([Object.assign({ user_id: session.user.id }, row)]).select().single();
+  if (error && isMissingVideoEditionColumn(error)) {
+    console.warn('study_plans.video_edition が未作成のため、版なしで作成します（add_video_editions.sql を実行してください）');
+    videoEditionColumnMissing = true;
+    ({ data: plan, error } = await supabase.from('study_plans')
+      .insert([Object.assign({ user_id: session.user.id }, stripVideoEdition(row))]).select().single());
+  }
   if (error) { console.error('createPlan error:', error); showToast(IC.x + ' 作成に失敗しました: ' + error.message); return null; }
   const rows = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ user_id: session.user.id }, t));
   if (rows.length) {
@@ -11240,7 +11964,7 @@ function planCardHTML(plan, tasks, todayKey) {
       <div class="plan-title">${esc(plan.title)}</div>
       ${planStatusBadge(plan, prog)}
     </div>
-    <div class="plan-meta">${planUnitName(plan.unit)}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
+    <div class="plan-meta">${planUnitName(plan.unit)}${plan.unit === 'video' && isVideoEdition(plan.video_edition) ? `（${videoEditionLabel(plan.video_edition)}）` : ''}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
       ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
     ${bar}${stats}
     <div class="plan-actions">
@@ -11306,6 +12030,10 @@ function openPlanWizard(onCreated) {
             <label>周回</label>
             <select id="pw-round" style="width:100%">${[1,2,3,4,5].map(n => `<option value="${n}">${n}周目</option>`).join('')}</select>
           </div>
+          <div class="settings-field" style="flex:1; min-width:0; display:none;" id="pw-edition-field">
+            <label>版</label>
+            <select id="pw-edition" style="width:100%">${VIDEO_EDITION_IDS.map(e => `<option value="${e}">${videoEditionLabel(e)}</option>`).join('')}</select>
+          </div>
         </div>
         <div class="settings-field" style="margin-bottom:12px;">
           <label>総量 <span id="pw-volume-unit" style="color:var(--color-text-tertiary);font-weight:400">（問）</span></label>
@@ -11345,21 +12073,36 @@ function openPlanWizard(onCreated) {
 
   let unit = 'q';
   let titleTouched = false;
+  let editionTouched = false;
   const syncPrefill = () => {
     const sid = $('#pw-subject').value;
     const round = Number($('#pw-round').value) || 1;
     $('#pw-round-field').style.display = unit === 'q' ? '' : 'none';
+    $('#pw-edition-field').style.display = unit === 'video' ? '' : 'none';
+    // 版は既定でその科目の主軸。手で変えたらそのまま尊重する
+    const edSel = $('#pw-edition');
+    if (unit === 'video') {
+      const cbtOpt = edSel.querySelector('option[value="cbt"]');
+      const cbtUsable = !!cbtMasterFor(sid);
+      if (cbtOpt) cbtOpt.disabled = !cbtUsable;
+      if (!editionTouched || (edSel.value === 'cbt' && !cbtUsable)) {
+        edSel.value = resolvedVideoEditionOf(sid);
+      }
+    }
     $('#pw-volume-unit').textContent = `（${planUnitLabel(unit)}）`;
-    const sug = planVolumeSuggestion(unit, sid, round);
+    const sug = planVolumeSuggestion(unit, sid, round, unit === 'video' ? edSel.value : null);
     const volInput = $('#pw-volume');
     if (sug) {
       volInput.value = sug.remaining > 0 ? sug.remaining : sug.total;
-      $('#pw-volume-hint').textContent = `教材進捗より: 全 ${sug.total}${sug.label}・消化 ${sug.done}${sug.label}・残り ${sug.remaining}${sug.label}`;
+      $('#pw-volume-hint').textContent = `${sug.edition ? videoEditionLabel(sug.edition) + 'の' : ''}教材進捗より: 全 ${sug.total}${sug.label}・消化 ${sug.done}${sug.label}・残り ${sug.remaining}${sug.label}`;
     } else {
-      $('#pw-volume-hint').textContent = '教材進捗に登録が無いので手で入力してください';
+      $('#pw-volume-hint').textContent = unit === 'video'
+        ? 'この版の教材進捗に登録が無いので手で入力してください'
+        : '教材進捗に登録が無いので手で入力してください';
     }
     if (!titleTouched) {
-      $('#pw-title').value = `${subjectNameOf(sid)} ${planUnitName(unit)}${unit === 'q' ? ` ${round}周目` : ''}`;
+      const edTag = unit === 'video' ? ` ${videoEditionLabel($('#pw-edition').value)}` : '';
+      $('#pw-title').value = `${subjectNameOf(sid)} ${planUnitName(unit)}${edTag}${unit === 'q' ? ` ${round}周目` : ''}`;
     }
   };
   modal.querySelectorAll('[data-pw-unit]').forEach(b => b.addEventListener('click', () => {
@@ -11370,6 +12113,7 @@ function openPlanWizard(onCreated) {
   }));
   $('#pw-subject').onchange = syncPrefill;
   $('#pw-round').onchange = syncPrefill;
+  $('#pw-edition').onchange = () => { editionTouched = true; syncPrefill(); };
   $('#pw-title').oninput = () => { titleTouched = true; };
   syncPrefill();
 
@@ -11377,6 +12121,7 @@ function openPlanWizard(onCreated) {
     title: $('#pw-title').value.trim(),
     unit, subject_id: $('#pw-subject').value,
     target_round: unit === 'q' ? Number($('#pw-round').value) || 1 : null,
+    video_edition: unit === 'video' ? $('#pw-edition').value : null,
     totalVolume: $('#pw-volume').value === '' ? null : Number($('#pw-volume').value),
     startDate: $('#pw-start').value, dueDate: $('#pw-due').value,
     excludeWeekdays: [...modal.querySelectorAll('[data-dow]')].filter(c => !c.checked).map(c => Number(c.dataset.dow)),
@@ -11464,6 +12209,7 @@ function todayPlanCardHTML(sync) {
   const active = sync.plans.filter(p => p.status === 'active');
   if (!active.length) return '';
   const today = sync.todayKey;
+  // その日にやる分のないプラン（休みの日）は載せない。今日のタスクか節目があるものだけ
   const rows = active.map(plan => {
     const mine = sync.tasks.filter(t => t.plan_id === plan.id);
     const prog = planProgress(plan, mine, today);
@@ -11471,17 +12217,15 @@ function todayPlanCardHTML(sync) {
     const color = subjectColorOf(plan.subject_id);
     const todayTask = mine.find(t => !t.extra && t.kind === 'quota' && String(t.due_date).slice(0, 10) === today);
     const milestone = mine.find(t => !t.extra && t.kind === 'milestone' && String(t.due_date).slice(0, 10) === today);
+    if (!todayTask && !milestone) return '';
     let main, sub;
     if (todayTask) {
       const done = prog.todayDone >= prog.todayTarget;
       main = `<span class="${done ? 'is-done' : ''}">${prog.todayDone > 0 ? `${prog.todayDone} / ` : ''}${prog.todayTarget}${unit}</span>${done ? ' <span class="tp-ok">✓</span>' : ''}`;
       sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日${prog.behind > 0 ? `・<span class="tp-warn">遅れ ${prog.behind}${unit}</span>` : ''}`;
-    } else if (milestone) {
+    } else {
       main = `<span>節目</span>`;
       sub = esc(milestone.title || '');
-    } else {
-      main = `<span class="tp-rest">今日は休み</span>`;
-      sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日`;
     }
     return `<div class="tp-row" style="--plan:${esc(color)}">
       <div class="tp-bar"></div>
@@ -11492,6 +12236,7 @@ function todayPlanCardHTML(sync) {
       <div class="tp-main">${main}</div>
     </div>`;
   }).join('');
+  if (!rows) return '';
   return `<div class="card today-plan-card animate-slide-up" style="animation-delay:.08s">
     <div class="card-header">
       <div class="card-title">${IC.target}今日のノルマ</div>
