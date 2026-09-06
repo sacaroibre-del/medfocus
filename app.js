@@ -10992,15 +10992,19 @@ function buildPlanSchedule(input) {
 
 // 再逆算。完了ぶんを引いた残量を、今日から締切までの稼働日へ配り直す。
 // 過去の未完了タスクは呼び出し側で消さずに残す（何日遅れているかが見えることに意味があるため）。
-function rebuildPlanSchedule(plan, tasks, todayKey) {
-  const p = plan || {};
-  const today = todayKey || todayPlanKey();
-  // 完了印が付いていれば予定量ぶん、そうでなければ入力済みの実績ぶんを消化とみなす
-  const doneAmount = (tasks || []).reduce((s, t) => {
+// 完了印が付いていれば予定量ぶん、そうでなければ入力済みの実績ぶんを消化とみなす
+function planDoneAmount(tasks) {
+  return (tasks || []).reduce((s, t) => {
     const target = Number(t.target_amount) || 0;
     const done = Number(t.done_amount) || 0;
     return s + (t.completed ? Math.max(target, done) : done);
   }, 0);
+}
+
+function rebuildPlanSchedule(plan, tasks, todayKey) {
+  const p = plan || {};
+  const today = todayKey || todayPlanKey();
+  const doneAmount = planDoneAmount(tasks);
 
   const total = Number(p.total_volume);
   const hasVolume = Number.isFinite(total) && total > 0;
@@ -11162,6 +11166,157 @@ function planVolumeSuggestion(unit, subjectId, targetRound, videoEdition) {
   const done = r ? (r.done || 0) : 0;
   return { total: base, done, remaining: Math.max(0, base - done), label: '問',
            rounds: Object.keys(rounds || {}).map(k => parseInt(k, 10)).filter(Number.isFinite).sort((a, b) => a - b) };
+}
+
+
+// ==================== 逆算プラン: 優先順位と順番詰め ====================
+// プランが増えると、どの日も「全部の科目を少しずつ」になって焦点がぼける。
+// 満遍なく割るのをやめ、優先順位の高いものからその日の学習時間を埋めていく。
+//
+// 優先順位のルール:
+//   1. 科目のまとまりは、その科目でいちばん早い締切の順
+//   2. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
+//   3. あとは締切・周回・作成順で決定的に並べる
+// vol.4（多肢選択・4連問）は元の科目と同じまとまりに入れる。循環器の動画→問題演習→
+// 4連問と続くのが自然で、別の科目として離れると順番が崩れるため。
+
+// 科目の並び順（subjectCategories に出てくる順）。知らない科目は末尾。
+const SUBJECT_ORDER_INDEX = {};
+(function buildSubjectOrder() {
+  let n = 0;
+  subjectCategories.forEach(c => c.subjects.forEach(s => {
+    const k = s.id.toLowerCase();
+    if (!(k in SUBJECT_ORDER_INDEX)) SUBJECT_ORDER_INDEX[k] = n++;
+  }));
+})();
+function subjectOrderIndex(id) {
+  const k = String(id || '').toLowerCase();
+  return k in SUBJECT_ORDER_INDEX ? SUBJECT_ORDER_INDEX[k] : 9999;
+}
+
+// 同じ科目のプランをまとめるための鍵。vol.4 は元の科目に寄せる。
+function planGroupKey(plan) {
+  const sid = plan && plan.subject_id;
+  return String(baseSubjectIdOf(sid) || sid || '').toLowerCase() || '(none)';
+}
+// 同じ科目の中の順。講義動画が先、問題演習が後。
+function planUnitRank(unit) { return unit === 'video' ? 0 : 1; }
+
+// 優先順位どおりに並べ替えた配列を返す（元の配列は変えない）。
+function planPriorityOrder(plans) {
+  const list = (plans || []).slice();
+  // 科目ごとに「いちばん早い締切」を出し、それで科目のまとまりを並べる
+  const groupDue = {};
+  list.forEach(p => {
+    const g = planGroupKey(p);
+    const due = String(p.due_date || '').slice(0, 10) || '9999-12-31';
+    if (!groupDue[g] || due < groupDue[g]) groupDue[g] = due;
+  });
+  return list
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => {
+      const ga = planGroupKey(a.p), gb = planGroupKey(b.p);
+      if (ga !== gb) {
+        const c = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
+        if (c) return c;
+        const s = subjectOrderIndex(baseSubjectIdOf(a.p.subject_id) || a.p.subject_id)
+                - subjectOrderIndex(baseSubjectIdOf(b.p.subject_id) || b.p.subject_id);
+        if (s) return s;
+        return ga.localeCompare(gb);
+      }
+      const u = planUnitRank(a.p.unit) - planUnitRank(b.p.unit);
+      if (u) return u;
+      const d = String(a.p.due_date || '').localeCompare(String(b.p.due_date || ''));
+      if (d) return d;
+      const r = (Number(a.p.target_round) || 0) - (Number(b.p.target_round) || 0);
+      if (r) return r;
+      return a.i - b.i;   // 入力順で決着（並びがブレないように）
+    })
+    .map(x => x.p);
+}
+
+// プラン1単位あたりの所要分。見積もれなければ null（＝順番詰めの対象から外す）。
+// 講義動画は版で1本の長さがまるで違うので、版が分かっていればそちらを使う。
+function planMinutesPerUnit(plan, unitCost) {
+  const u = unitCost || {};
+  if (!plan) return null;
+  if (plan.unit === 'video') {
+    const ed = isVideoEdition(plan.video_edition) ? plan.video_edition : null;
+    const m = ed ? minutesPerVideoFor(ed, u, baseSubjectIdOf(plan.subject_id)) : (u.hasVideo ? u.minPerVideo : null);
+    return Number.isFinite(m) && m > 0 ? m : null;
+  }
+  const q = u.hasQuestion ? u.minPerQuestion : null;
+  return Number.isFinite(q) && q > 0 ? q : null;
+}
+
+// 1日にそのプランを進める上限（単位）。手入力があればそれを使う。
+function planDailyCapacity(plan) {
+  const n = Number(plan && plan.daily_capacity);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : null;
+}
+
+const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
+
+// 順番詰めの本体。
+// input: {
+//   entries: [{ plan, remaining, startKey, minPerUnit, dailyCap, excludeWeekdays }] （優先順位順）
+//   todayKey, goalMinutesOf(dateKey) -> その日に使える分
+// }
+// 返り値: { byPlan: { [id]: { items, finishKey, dueKey, overdue, overDays, unplaced } }, order, warnings }
+//
+// その日の学習時間を上から順に食わせ、余った時間だけ次のプランへ回す。
+// 1日ぶんの時間で1単位も入らないプラン（1本50分・目標30分など）は、その日の
+// 先頭に来たときだけ1単位置く。置かないと永遠に進まないため。
+function buildSequencedPlanSchedules(input) {
+  const o = input || {};
+  const todayKey = o.todayKey || todayPlanKey();
+  const goalMinutesOf = typeof o.goalMinutesOf === 'function' ? o.goalMinutesOf : (() => 0);
+  const queue = (o.entries || [])
+    .map(e => Object.assign({}, e, { left: Math.max(0, Math.floor(Number(e.remaining) || 0)), items: [], finishKey: null }))
+    .filter(e => e.left > 0 && Number.isFinite(e.minPerUnit) && e.minPerUnit > 0);
+
+  const warnings = [];
+  let dayKey = todayKey;
+  for (let d = 0; d < PLAN_SEQUENCE_MAX_DAYS && queue.some(e => e.left > 0); d++) {
+    const date = parseDateKey(dayKey);
+    const dow = date ? date.getDay() : -1;
+    let budget = Math.max(0, Number(goalMinutesOf(dayKey)) || 0);
+    let placedToday = 0;
+    for (const e of queue) {
+      if (e.left <= 0) continue;
+      if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
+      if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;        // その曜日は休み
+      const byTime = Math.floor(budget / e.minPerUnit);
+      const byCap = e.dailyCap === null || e.dailyCap === undefined ? Infinity : e.dailyCap;
+      let take = Math.min(e.left, byTime, byCap);
+      // その日まだ何も置けていないなら、時間が足りなくても1単位は進める
+      if (take <= 0 && placedToday === 0 && byCap >= 1 && budget > 0) take = 1;
+      if (take <= 0) continue;
+      e.items.push({ dateKey: dayKey, targetAmount: take });
+      e.left -= take;
+      if (e.left === 0) e.finishKey = dayKey;
+      budget = Math.max(0, budget - take * e.minPerUnit);
+      placedToday += take;
+      if (budget <= 0) break;   // その日の時間を使い切った
+    }
+    dayKey = shiftDateKey(dayKey, 1);
+  }
+
+  const byPlan = {};
+  const order = [];
+  queue.forEach(e => {
+    const dueKey = String(e.plan && e.plan.due_date || '').slice(0, 10);
+    const overdue = !!(e.finishKey && dueKey && e.finishKey > dueKey);
+    const overDays = overdue ? diffDateKeys(e.finishKey, dueKey) : 0;
+    if (overdue) warnings.push({ planId: e.plan.id, title: e.plan.title, dueKey, finishKey: e.finishKey, overDays });
+    order.push(e.plan.id);
+    byPlan[e.plan.id] = {
+      items: e.items, finishKey: e.finishKey, dueKey, overdue, overDays,
+      // 期間内に置ききれなかったぶん（暴走よけに当たった場合）
+      unplaced: e.left
+    };
+  });
+  return { byPlan, order, warnings };
 }
 
 // ==================== カレンダー: 純関数 ====================
@@ -11966,21 +12121,62 @@ function scheduleToTaskRows(plan, schedule, seqOffset) {
   }));
 }
 
-async function createPlan(input, schedule) {
+// study_plans.daily_capacity は add_plan_daily_capacity.sql で足す列。
+// video_edition と同じく、SQL をまだ流していない環境でも保存が落ちないようにする。
+let planCapacityColumnMissing = false;
+function isMissingDailyCapacityColumn(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return /daily_capacity/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
+// 「その列が無い」と言われたら覚えておく。以後そのセッションでは送らない。
+function notePlanColumnMissing(error) {
+  if (isMissingVideoEditionColumn(error)) {
+    console.warn('study_plans.video_edition が未作成です（add_video_editions.sql を実行してください）');
+    videoEditionColumnMissing = true; return true;
+  }
+  if (isMissingDailyCapacityColumn(error)) {
+    console.warn('study_plans.daily_capacity が未作成です（add_plan_daily_capacity.sql を実行してください）');
+    planCapacityColumnMissing = true; return true;
+  }
+  return false;
+}
+function stripMissingPlanColumns(row) {
+  const out = Object.assign({}, row);
+  if (videoEditionColumnMissing) delete out.video_edition;
+  if (planCapacityColumnMissing) delete out.daily_capacity;
+  return out;
+}
+// 任意列を落としながら最大3回まで試す（未作成の列が2つあっても通るように）。
+async function writePlanRow(run, row) {
+  let res = await run(stripMissingPlanColumns(row));
+  for (let i = 0; i < 2 && res.error && notePlanColumnMissing(res.error); i++) {
+    res = await run(stripMissingPlanColumns(row));
+  }
+  return res;
+}
+
+// フォームの入力を study_plans の行にする。作成と更新で同じ形にする。
+function planRowFromInput(input, schedule, startKey) {
   const row = {
     title: input.title, subject_id: input.subject_id || null,
-    start_date: schedule.startKey, due_date: schedule.dueKey,
+    start_date: startKey, due_date: schedule.dueKey,
     total_volume: schedule.totalVolume, unit: input.unit || 'q',
     exclude_weekdays: schedule.excludeWeekdays || [],
     milestone_count: input.milestone_count || null,
     auto_redistribute: input.auto_redistribute !== false,
     target_round: input.target_round || null,
-    status: 'active', memo: input.memo || null
+    memo: input.memo || null
   };
   // 講義動画のプランは、どちらの版の消化を数えるかを持つ
-  if (row.unit === 'video' && isVideoEdition(input.video_edition) && !videoEditionColumnMissing) {
-    row.video_edition = input.video_edition;
-  }
+  if (row.unit === 'video' && isVideoEdition(input.video_edition)) row.video_edition = input.video_edition;
+  // 1日に進める量の手入力。空なら実測から自動で見積もる
+  const cap = Number(input.daily_capacity);
+  row.daily_capacity = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : null;
+  return row;
+}
+
+async function createPlan(input, schedule) {
+  const row = Object.assign(planRowFromInput(input, schedule, schedule.startKey), { status: 'active' });
   if (!hasDB()) {
     const plan = Object.assign({ id: generateUID(), created_at: new Date().toISOString() }, row);
     const tasks = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ id: generateUID() }, t));
@@ -11989,14 +12185,8 @@ async function createPlan(input, schedule) {
     showToast(IC.check + ' プランを作成しました');
     return plan;
   }
-  let { data: plan, error } = await supabase.from('study_plans')
-    .insert([Object.assign({ user_id: session.user.id }, row)]).select().single();
-  if (error && isMissingVideoEditionColumn(error)) {
-    console.warn('study_plans.video_edition が未作成のため、版なしで作成します（add_video_editions.sql を実行してください）');
-    videoEditionColumnMissing = true;
-    ({ data: plan, error } = await supabase.from('study_plans')
-      .insert([Object.assign({ user_id: session.user.id }, stripVideoEdition(row))]).select().single());
-  }
+  const { data: plan, error } = await writePlanRow(
+    r => supabase.from('study_plans').insert([Object.assign({ user_id: session.user.id }, r)]).select().single(), row);
   if (error) { console.error('createPlan error:', error); showToast(IC.x + ' 作成に失敗しました: ' + error.message); return null; }
   const rows = scheduleToTaskRows(plan, schedule, 0).map(t => Object.assign({ user_id: session.user.id }, t));
   if (rows.length) {
@@ -12006,6 +12196,26 @@ async function createPlan(input, schedule) {
   invalidateCache('study_plans'); invalidateCache('plan_tasks');
   showToast(IC.check + ' プランを作成しました');
   return plan;
+}
+
+// 登録済みプランの編集。ノルマは呼び出し側で replaceFutureTasks して置き換える。
+// start_date はフォームの値をそのまま残す（schedule.startKey は今日へ寄せられており、
+// それを保存すると開始日より前の学習ログが消化に数えられなくなるため）。
+async function updatePlan(plan, input, schedule) {
+  const row = planRowFromInput(input, schedule, input.startDate || plan.start_date);
+  if (!hasDB()) {
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY)
+      .map(p => p.id === plan.id ? Object.assign({}, p, row) : p));
+    showToast(IC.check + ' プランを更新しました');
+    return Object.assign({}, plan, row);
+  }
+  const { error } = await writePlanRow(
+    r => supabase.from('study_plans')
+      .update(Object.assign({}, r, { updated_at: new Date().toISOString() })).eq('id', plan.id), row);
+  if (error) { console.error('updatePlan error:', error); showToast(IC.x + ' 更新に失敗しました: ' + error.message); return null; }
+  invalidateCache('study_plans');
+  showToast(IC.check + ' プランを更新しました');
+  return Object.assign({}, plan, row);
 }
 
 // 今日以降のタスクを消して、逆算し直した結果で置き換える。過去の行は残す。
@@ -12071,6 +12281,69 @@ async function deletePlan(id) {
   showToast(IC.check + ' プランを削除しました');
 }
 
+// ---------- 優先順位どおりに順番へ詰める ----------
+// 1件しか無いときは詰める相手がいないので、今までどおり期間へ均す
+// （1件で詰めると締切より大幅に早く終わる形になり、「逆算」の意味が薄れるため）。
+const PLAN_SEQUENCE_MIN_PLANS = 2;
+
+// その日に使える分。曜日別の目標学習時間（当日の上書きも含む）をそのまま使う。
+function planGoalMinutesOf(dateKey) {
+  const d = parseDateKey(dateKey);
+  if (!d) return 0;
+  const n = Number(getGoalForDate(d));
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// 順番詰めの入口。state は syncPlans が組んだ { plan, mine, canAuto } の配列。
+// 単価を見積もれないプラン（実測が足りない・版が不明）は対象から外し、
+// 今までどおり期間へ均す。詰められるものと均されるものが混ざる形になるが、
+// 何も予定が出ないよりは良い。外れたことは planSequenceNoteHTML が出す。
+function buildPlanSequence(state, todayKey, unitCost) {
+  const entries = [];
+  (state || []).forEach(st => {
+    if (!st.canAuto) return;
+    const remaining = Math.max(0, (Number(st.plan.total_volume) || 0) - planDoneAmount(st.mine));
+    if (remaining <= 0) return;
+    const minPerUnit = planMinutesPerUnit(st.plan, unitCost);
+    if (!minPerUnit) { st.noEstimate = true; return; }
+    const start = String(st.plan.start_date || '').slice(0, 10);
+    entries.push({
+      plan: st.plan, remaining, minPerUnit,
+      startKey: start && start > todayKey ? start : todayKey,
+      dailyCap: planDailyCapacity(st.plan),
+      excludeWeekdays: (st.plan.exclude_weekdays || []).map(Number)
+    });
+  });
+  if (entries.length < PLAN_SEQUENCE_MIN_PLANS) return null;
+  return buildSequencedPlanSchedules({
+    entries: planPriorityOrder(entries.map(e => e.plan))
+      .map(p => entries.find(e => e.plan.id === p.id)),
+    todayKey, goalMinutesOf: planGoalMinutesOf
+  });
+}
+
+// 順番詰めの結果を、保存・差分比較で使えるスケジュールの形に直す。
+// 1件も置けなかったとき（目標学習時間が全部0など）は ok:false を返す。
+// 空のまま 'complete' にすると、終わっていないプランが完了扱いになってしまう。
+function sequencedScheduleFor(plan, res, todayKey) {
+  const items = (res.items || []).map((it, i) => ({
+    seq: i + 1, dateKey: it.dateKey, kind: 'quota',
+    targetAmount: it.targetAmount, pct: null, title: plan.title || 'プラン'
+  }));
+  return {
+    ok: items.length > 0, mode: 'quota', items,
+    todayKey, warnings: [], sequenced: true,
+    finishKey: res.finishKey, overdue: res.overdue
+  };
+}
+
+// 順番詰めの結果をそのまま使ってよいか。
+// 残量を全部置けたときだけ使う。途中で暴走よけに当たった中途半端な並びより、
+// 今までどおり期間へ均したほうが予定として読める。
+function canUseSequenced(res) {
+  return !!(res && res.items && res.items.length && !res.unplaced);
+}
+
 // ---------- 同期：実績を重ね、遅れていれば残りを配り直す ----------
 // カレンダーとプラン一覧の両方がここを通る。30秒はキャッシュして無駄な書き込みを避ける。
 let _planSyncAt = 0, _planSyncResult = null;
@@ -12081,26 +12354,42 @@ async function syncPlans(force) {
   const byPlan = {};
   tasksRaw.forEach(t => { (byPlan[t.plan_id] = byPlan[t.plan_id] || []).push(t); });
 
-  const tasks = [];
   const plansById = {};
-  const rebuilt = [];
+  // 先に全プランの実績を重ねてから配り直す。順番詰めは「他のプランがどれだけ
+  // 残っているか」を見て決めるので、1件ずつ完結させると順番が組めない。
+  const state = [];
   for (const plan of plans) {
     plansById[plan.id] = plan;
     const doneByDay = planDoneByDayFromLogs(plan, logs);
-    let mine = planApplyLogs(plan, byPlan[plan.id] || [], doneByDay);
-    const canAuto = plan.status === 'active' && plan.auto_redistribute !== false && Number(plan.total_volume) > 0;
-    if (canAuto) {
-      const sched = rebuildPlanSchedule(plan, mine, today);
+    state.push({
+      plan, doneByDay,
+      mine: planApplyLogs(plan, byPlan[plan.id] || [], doneByDay),
+      canAuto: plan.status === 'active' && plan.auto_redistribute !== false && Number(plan.total_volume) > 0,
+      noEstimate: false
+    });
+  }
+  const sequence = buildPlanSequence(state, today, buildUnitCost(logs));
+
+  const tasks = [];
+  const rebuilt = [];
+  for (const st of state) {
+    const plan = st.plan;
+    let mine = st.mine;
+    if (st.canAuto) {
+      const seqRes = sequence && sequence.byPlan[plan.id];
+      const sched = canUseSequenced(seqRes) ? sequencedScheduleFor(plan, seqRes, today)
+                                            : rebuildPlanSchedule(plan, mine, today);
       if (sched.ok && planScheduleDiffers(mine, sched, today)) {
         const fresh = await replaceFutureTasks(plan, sched, today);
-        mine = planApplyLogs(plan, fresh, doneByDay);
+        mine = planApplyLogs(plan, fresh, st.doneByDay);
         rebuilt.push(plan.title);
         if (sched.mode === 'complete') { await updatePlanStatus(plan.id, 'done'); plan.status = 'done'; }
       }
     }
     tasks.push(...mine);
   }
-  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today };
+  const noEstimate = state.filter(s => s.noEstimate).map(s => s.plan.id);
+  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate };
   _planSyncAt = Date.now();
   return _planSyncResult;
 }
@@ -12113,7 +12402,8 @@ function planStatusBadge(plan, prog) {
   return '<span class="plan-badge ok">順調</span>';
 }
 
-function planCardHTML(plan, tasks, todayKey) {
+// seq は syncPlans が返す順番詰めの結果（そのプランのぶん）。無ければ従来どおり。
+function planCardHTML(plan, tasks, todayKey, seq) {
   const prog = planProgress(plan, tasks, todayKey);
   const unit = planUnitLabel(plan.unit);
   const color = subjectColorOf(plan.subject_id);
@@ -12121,9 +12411,10 @@ function planCardHTML(plan, tasks, todayKey) {
   const hasVolume = prog.hasVolume;
 
   // 当初の1日あたり／いまの1日あたり
-  const initial = hasVolume ? buildPlanSchedule({ startDate: plan.start_date, dueDate: plan.due_date,
+  const initial = hasVolume && !(seq && seq.finishKey) ? buildPlanSchedule({ startDate: plan.start_date, dueDate: plan.due_date,
     totalVolume: plan.total_volume, excludeWeekdays: plan.exclude_weekdays, todayKey: plan.start_date }) : null;
-  const now = hasVolume && plan.status === 'active' ? rebuildPlanSchedule(plan, tasks, todayKey) : null;
+  const sequenced = !!(seq && seq.finishKey);
+  const now = hasVolume && plan.status === 'active' && !sequenced ? rebuildPlanSchedule(plan, tasks, todayKey) : null;
   const perDayNow = now && now.ok && now.mode === 'quota' ? now.perDay : null;
   const perDayInit = initial && initial.ok ? initial.perDay : null;
   const fmt = v => v === null || v === undefined ? '–' : (Math.round(v * 10) / 10) + unit;
@@ -12133,10 +12424,16 @@ function planCardHTML(plan, tasks, todayKey) {
     <div class="plan-bar-label"><strong>${prog.done}</strong> / ${prog.total}${unit} <span>${Math.round(prog.pct || 0)}%</span></div>` :
     `<div class="plan-bar-label">マイルストーン方式（${tasks.filter(t => t.kind === 'milestone').length}地点）</div>`;
 
+  // 順番詰めのときは「1日あたり」が一定でないので、終わる見込みの日に差し替える
+  const finish = sequenced ? parseDateKey(seq.finishKey) : null;
+  const paceCell = finish
+    ? `<div><div class="plan-stat-num ${seq.overdue ? 'warn' : ''}">${finish.getMonth() + 1}/${finish.getDate()}</div><div class="plan-stat-label">終わる見込み</div></div>`
+    : `<div><div class="plan-stat-num">${fmt(perDayNow)}</div><div class="plan-stat-label">1日あたり${perDayInit !== null ? `（当初 ${fmt(perDayInit)}）` : ''}</div></div>`;
+
   const stats = hasVolume ? `
     <div class="plan-stats">
       <div><div class="plan-stat-num">${prog.todayTarget}${unit}</div><div class="plan-stat-label">今日のノルマ${prog.todayDone ? `（実績 ${prog.todayDone}）` : ''}</div></div>
-      <div><div class="plan-stat-num">${fmt(perDayNow)}</div><div class="plan-stat-label">1日あたり${perDayInit !== null ? `（当初 ${fmt(perDayInit)}）` : ''}</div></div>
+      ${paceCell}
       <div><div class="plan-stat-num ${prog.behind > 0 ? 'warn' : ''}">${prog.behind > 0 ? prog.behind + unit : '0'}</div><div class="plan-stat-label">遅れ</div></div>
       <div><div class="plan-stat-num">${prog.daysLeft}</div><div class="plan-stat-label">残り日数</div></div>
     </div>` : `
@@ -12155,8 +12452,9 @@ function planCardHTML(plan, tasks, todayKey) {
     </div>
     <div class="plan-meta">${planUnitName(plan.unit)}${plan.unit === 'video' && isVideoEdition(plan.video_edition) ? `（${videoEditionLabel(plan.video_edition)}）` : ''}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
       ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
-    ${bar}${stats}
+    ${bar}${stats}${seq && seq.overdue ? `<div class="plan-warn">${IC.warn} 優先順位どおりに詰めると締切に ${seq.overDays}日 間に合いません。順番を変えるか、締切か総量を見直してください。</div>` : ''}
     <div class="plan-actions">
+      <button class="btn-log-action" data-plan-edit>編集</button>
       ${active && hasVolume ? '<button class="btn-log-action" data-plan-rebuild>再逆算</button>' : ''}
       ${active ? '<button class="btn-log-action" data-plan-status="done">完了にする</button>' : '<button class="btn-log-action" data-plan-status="active">再開</button>'}
       ${plan.status !== 'archived' ? '<button class="btn-log-action" data-plan-status="archived">アーカイブ</button>' : ''}
@@ -12184,31 +12482,38 @@ function planPreviewHTML(sched, unit) {
   return head + `<div class="plan-preview-list">${rows}</div>`;
 }
 
-// 作成ウィザード。入力 → プレビュー → 確定。
-function openPlanWizard(onCreated) {
+// 作成／編集ウィザード。入力 → プレビュー → 確定。
+// existing を渡すと編集になる。編集では入力欄を上書きしない（科目や周回を
+// 変えたときだけ、教材進捗からの初期値を入れ直す）。
+function openPlanWizard(onDone, existing) {
   const todayKey = todayPlanKey();
+  const isEdit = !!(existing && existing.id);
+  const ex = existing || {};
   const modal = document.createElement('div');
   modal.className = 'modal-overlay animate-fade-in';
   modal.style.zIndex = '2000';
+  const exclude = new Set((ex.exclude_weekdays || []).map(Number));
   const subjectOptions = subjectCategories.filter(c => c.id !== 'cat-other').map(c =>
-    `<optgroup label="${esc(c.name)}">${c.subjects.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
+    `<optgroup label="${esc(c.name)}">${c.subjects.map(s =>
+      `<option value="${s.id}" ${ex.subject_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
   const dowBoxes = CAL_DOW_LABELS.map((d, i) =>
-    `<label class="plan-dow"><input type="checkbox" data-dow="${i}" checked /> ${d}</label>`).join('');
+    `<label class="plan-dow"><input type="checkbox" data-dow="${i}" ${exclude.has(i) ? '' : 'checked'} /> ${d}</label>`).join('');
   const defaultDue = shiftDateKey(todayKey, 30);
+  const initUnit = ex.unit === 'video' ? 'video' : 'q';
 
   modal.innerHTML = `
     <div class="modal-content animate-slide-up" style="max-width:520px;">
       <div class="modal-header">
-        <div class="modal-title">逆算プランを作る</div>
+        <div class="modal-title">${isEdit ? '逆算プランを編集' : '逆算プランを作る'}</div>
         <button class="modal-close" data-pw-close>✕</button>
       </div>
       <div class="modal-body" id="pw-step1">
         <div class="settings-field" style="margin-bottom:12px;">
           <label>やること</label>
           <div class="cal-seg" style="display:inline-flex">
-            ${PLAN_UNITS.map((u, i) => `<button data-pw-unit="${u.id}" class="${i === 0 ? 'active' : ''}">${u.label}</button>`).join('')}
+            ${PLAN_UNITS.map(u => `<button data-pw-unit="${u.id}" class="${u.id === initUnit ? 'active' : ''}">${u.label}</button>`).join('')}
           </div>
-          <div class="plan-hint" id="pw-unit-hint">${PLAN_UNITS[0].hint}</div>
+          <div class="plan-hint" id="pw-unit-hint">${(PLAN_UNITS.find(u => u.id === initUnit) || PLAN_UNITS[0]).hint}</div>
         </div>
         <div style="display:flex; gap:12px; margin-bottom:12px;">
           <div class="settings-field" style="flex:2; min-width:0;">
@@ -12217,32 +12522,37 @@ function openPlanWizard(onCreated) {
           </div>
           <div class="settings-field" style="flex:1; min-width:0;" id="pw-round-field">
             <label>周回</label>
-            <select id="pw-round" style="width:100%">${[1,2,3,4,5].map(n => `<option value="${n}">${n}周目</option>`).join('')}</select>
+            <select id="pw-round" style="width:100%">${[1,2,3,4,5].map(n => `<option value="${n}" ${Number(ex.target_round) === n ? 'selected' : ''}>${n}周目</option>`).join('')}</select>
           </div>
           <div class="settings-field" style="flex:1; min-width:0; display:none;" id="pw-edition-field">
             <label>版</label>
-            <select id="pw-edition" style="width:100%">${VIDEO_EDITION_IDS.map(e => `<option value="${e}">${videoEditionLabel(e)}</option>`).join('')}</select>
+            <select id="pw-edition" style="width:100%">${VIDEO_EDITION_IDS.map(e => `<option value="${e}" ${ex.video_edition === e ? 'selected' : ''}>${videoEditionLabel(e)}</option>`).join('')}</select>
           </div>
         </div>
         <div class="settings-field" style="margin-bottom:12px;">
           <label>総量 <span id="pw-volume-unit" style="color:var(--color-text-tertiary);font-weight:400">（問）</span></label>
-          <input type="number" id="pw-volume" min="1" step="1" placeholder="例: 340" style="margin-bottom:0" />
+          <input type="number" id="pw-volume" min="1" step="1" placeholder="例: 340" value="${ex.total_volume ?? ''}" style="margin-bottom:0" />
           <div class="plan-hint" id="pw-volume-hint"></div>
         </div>
         <div class="settings-field" style="margin-bottom:12px;">
+          <label>1日に進める量 <span style="color:var(--color-text-tertiary);font-weight:400">（任意）</span></label>
+          <input type="number" id="pw-capacity" min="1" step="1" placeholder="空欄なら自動" value="${ex.daily_capacity ?? ''}" style="margin-bottom:0" />
+          <div class="plan-hint">複数のプランは優先順位の高いものから順に、その日の目標学習時間を埋めていきます。空欄なら実測（1問・1本あたりの分）から自動で見積もります。</div>
+        </div>
+        <div class="settings-field" style="margin-bottom:12px;">
           <label>タイトル</label>
-          <input type="text" id="pw-title" maxlength="80" style="margin-bottom:0" />
+          <input type="text" id="pw-title" maxlength="80" value="${esc(ex.title || '')}" style="margin-bottom:0" />
         </div>
         <div style="display:flex; gap:12px; margin-bottom:12px;">
-          <div class="settings-field" style="flex:1;"><label>開始日</label><input type="date" id="pw-start" value="${todayKey}" style="margin-bottom:0" /></div>
-          <div class="settings-field" style="flex:1;"><label>締切日</label><input type="date" id="pw-due" value="${defaultDue}" style="margin-bottom:0" /></div>
+          <div class="settings-field" style="flex:1;"><label>開始日</label><input type="date" id="pw-start" value="${String(ex.start_date || todayKey).slice(0, 10)}" style="margin-bottom:0" /></div>
+          <div class="settings-field" style="flex:1;"><label>締切日</label><input type="date" id="pw-due" value="${String(ex.due_date || defaultDue).slice(0, 10)}" style="margin-bottom:0" /></div>
         </div>
         <div class="settings-field" style="margin-bottom:12px;">
           <label>勉強する曜日</label>
           <div class="plan-dow-row">${dowBoxes}</div>
         </div>
         <label style="display:flex; align-items:center; gap:8px; font-size:var(--font-size-sm); margin-bottom:16px; cursor:pointer;">
-          <input type="checkbox" id="pw-auto" checked style="width:auto; margin:0" /> 遅れたら残りを自動で配り直す
+          <input type="checkbox" id="pw-auto" ${ex.auto_redistribute === false ? '' : 'checked'} style="width:auto; margin:0" /> 遅れたら残りを自動で配り直す
         </label>
         <button class="btn btn-primary" id="pw-next" style="width:100%; justify-content:center;">逆算する →</button>
       </div>
@@ -12250,7 +12560,7 @@ function openPlanWizard(onCreated) {
         <div id="pw-preview"></div>
         <div style="display:flex; gap:8px; margin-top:16px;">
           <button class="btn btn-secondary" id="pw-back" style="flex:1; justify-content:center;">← 戻る</button>
-          <button class="btn btn-primary" id="pw-create" style="flex:2; justify-content:center;">この内容で作成</button>
+          <button class="btn btn-primary" id="pw-create" style="flex:2; justify-content:center;">${isEdit ? 'この内容で更新' : 'この内容で作成'}</button>
         </div>
       </div>
     </div>`;
@@ -12260,9 +12570,12 @@ function openPlanWizard(onCreated) {
   $('[data-pw-close]').onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
 
-  let unit = 'q';
+  let unit = initUnit;
   let titleTouched = false;
   let editionTouched = false;
+  // 編集の初回は保存済みの値をそのまま出す。科目・周回・版を変えたときだけ
+  // 教材進捗からの初期値を入れ直す（開いただけで総量やタイトルが化けないように）。
+  let keepSaved = isEdit;
   const syncPrefill = () => {
     const sid = $('#pw-subject').value;
     const round = Number($('#pw-round').value) || 1;
@@ -12276,7 +12589,7 @@ function openPlanWizard(onCreated) {
         const opt = edSel.querySelector(`option[value="${e}"]`);
         if (opt) opt.disabled = !videoEditionAvailableFor(sid, e);
       });
-      if (!editionTouched || !videoEditionAvailableFor(sid, cur)) {
+      if ((!editionTouched && !keepSaved) || !videoEditionAvailableFor(sid, cur)) {
         edSel.value = resolvedVideoEditionOf(sid);
       }
     }
@@ -12284,17 +12597,18 @@ function openPlanWizard(onCreated) {
     const sug = planVolumeSuggestion(unit, sid, round, unit === 'video' ? edSel.value : null);
     const volInput = $('#pw-volume');
     if (sug) {
-      volInput.value = sug.remaining > 0 ? sug.remaining : sug.total;
+      if (!keepSaved) volInput.value = sug.remaining > 0 ? sug.remaining : sug.total;
       $('#pw-volume-hint').textContent = `${sug.edition ? videoEditionLabel(sug.edition) + 'の' : ''}教材進捗より: 全 ${sug.total}${sug.label}・消化 ${sug.done}${sug.label}・残り ${sug.remaining}${sug.label}`;
     } else {
       $('#pw-volume-hint').textContent = unit === 'video'
         ? 'この版の教材進捗に登録が無いので手で入力してください'
         : '教材進捗に登録が無いので手で入力してください';
     }
-    if (!titleTouched) {
+    if (!titleTouched && !keepSaved) {
       const edTag = unit === 'video' ? ` ${videoEditionLabel($('#pw-edition').value)}` : '';
       $('#pw-title').value = `${subjectNameOf(sid)} ${planUnitName(unit)}${edTag}${unit === 'q' ? ` ${round}周目` : ''}`;
     }
+    keepSaved = false;
   };
   modal.querySelectorAll('[data-pw-unit]').forEach(b => b.addEventListener('click', () => {
     unit = b.dataset.pwUnit;
@@ -12314,6 +12628,7 @@ function openPlanWizard(onCreated) {
     target_round: unit === 'q' ? Number($('#pw-round').value) || 1 : null,
     video_edition: unit === 'video' ? $('#pw-edition').value : null,
     totalVolume: $('#pw-volume').value === '' ? null : Number($('#pw-volume').value),
+    daily_capacity: $('#pw-capacity').value === '' ? null : Number($('#pw-capacity').value),
     startDate: $('#pw-start').value, dueDate: $('#pw-due').value,
     excludeWeekdays: [...modal.querySelectorAll('[data-dow]')].filter(c => !c.checked).map(c => Number(c.dataset.dow)),
     auto_redistribute: $('#pw-auto').checked
@@ -12324,6 +12639,7 @@ function openPlanWizard(onCreated) {
     const inp = readInput();
     if (!inp.title) { showToast(IC.warn + ' タイトルを入力してください'); return; }
     if (inp.totalVolume !== null && !(inp.totalVolume > 0)) { showToast(IC.warn + ' 総量は1以上にしてください'); return; }
+    if (inp.daily_capacity !== null && !(inp.daily_capacity > 0)) { showToast(IC.warn + ' 1日に進める量は1以上にしてください'); return; }
     lastInput = inp;
     lastSched = buildPlanSchedule({ title: inp.title, startDate: inp.startDate, dueDate: inp.dueDate,
       totalVolume: inp.totalVolume, unit: inp.unit, excludeWeekdays: inp.excludeWeekdays, todayKey });
@@ -12335,13 +12651,39 @@ function openPlanWizard(onCreated) {
   $('#pw-create').onclick = async function () {
     if (!lastSched || !lastSched.ok) return;
     this.disabled = true;
-    const plan = await createPlan(lastInput, lastSched);
+    let plan;
+    if (isEdit) {
+      plan = await updatePlan(existing, lastInput, lastSched);
+      // 締切・総量・曜日が変わったら、今日以降のノルマを組み直す
+      if (plan) await replaceFutureTasks(plan, lastSched, todayKey);
+    } else {
+      plan = await createPlan(lastInput, lastSched);
+    }
     this.disabled = false;
     if (!plan) return;
     _planSyncAt = 0;
     close();
-    if (onCreated) onCreated(plan);
+    if (onDone) onDone(plan);
   };
+}
+
+// いま何の順番で詰めているかを見せる。順番が勝手に決まる仕組みなので、
+// 結果だけ出して理由が見えないと「なぜ今日これなのか」が分からなくなる。
+function planSequenceNoteHTML(sync) {
+  const seq = sync && sync.sequence;
+  if (!seq || !seq.order || seq.order.length < 2) return '';
+  const names = seq.order.map(id => {
+    const p = sync.plansById[id];
+    return p ? esc(p.title) : '';
+  }).filter(Boolean);
+  const noEst = (sync.noEstimate || []).map(id => sync.plansById[id]).filter(Boolean);
+  return `<div class="plan-seq-note">
+    <div class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています</div>
+    <div class="plan-seq-order">${names.map((n, i) => `<span class="plan-seq-chip">${i + 1}. ${n}</span>`).join('')}</div>
+    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは締切の早い順です。
+      その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
+    ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないため順番詰めの対象外です（今までどおり期間へ均します）。学習記録に「解いた問題数」「見た本数」を入れると対象になります。</div>` : ''}
+  </div>`;
 }
 
 async function renderPlans() {
@@ -12367,15 +12709,22 @@ async function renderPlans() {
         <div class="cal-spacer"></div>
         <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
       </div>
-      ${plans.length ? `<div class="plan-list">${plans.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey)).join('')}</div>`
+      ${planSequenceNoteHTML(sync)}
+      ${plans.length ? `<div class="plan-list">${plans.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey,
+          sync.sequence && sync.sequence.byPlan[p.id])).join('')}</div>`
         : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`}`;
 
     root.querySelector('[data-plan-new]').onclick = () => openPlanWizard(() => draw(true));
     root.querySelectorAll('.plan-card').forEach(card => {
       const id = card.dataset.planId;
       const plan = sync.plansById[id];
+      card.querySelector('[data-plan-edit]')?.addEventListener('click', () => {
+        openPlanWizard(() => draw(true), plan);
+      });
       card.querySelector('[data-plan-rebuild]')?.addEventListener('click', async () => {
-        const sched = rebuildPlanSchedule(plan, byPlan[id] || [], sync.todayKey);
+        const seqRes = sync.sequence && sync.sequence.byPlan[id];
+        const sched = canUseSequenced(seqRes) ? sequencedScheduleFor(plan, seqRes, sync.todayKey)
+                                              : rebuildPlanSchedule(plan, byPlan[id] || [], sync.todayKey);
         if (!sched.ok) { showToast(IC.warn + ' 逆算できません（締切が過去か稼働日なし）'); return; }
         await replaceFutureTasks(plan, sched, sync.todayKey);
         if (sched.mode === 'complete') await updatePlanStatus(id, 'done');
