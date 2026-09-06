@@ -11574,12 +11574,16 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 //  - その日に進める講義動画は1科目まで。1日に2科目見終わると翌日のQBが
 //    2科目ぶん重なり、「まとめて全科目のQB」に近づく。
 //
+// spentTodayMin は今日すでに勉強した分。今日の枠から引く。引かないと、今日のぶんを
+// 終えるたびに翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
+//
 // 1日ぶんの時間で1単位も入らないプラン（1本50分・目標30分など）は、その日の
 // 先頭に来たときだけ1単位置く。置かないと永遠に進まないため。
 function buildSequencedPlanSchedules(input) {
   const o = input || {};
   const todayKey = o.todayKey || todayPlanKey();
   const goalMinutesOf = typeof o.goalMinutesOf === 'function' ? o.goalMinutesOf : (() => 0);
+  const spentTodayMin = Math.max(0, Number(o.spentTodayMin) || 0);
   const queue = (o.entries || [])
     .map(e => Object.assign({}, e, {
       left: Math.max(0, Math.floor(Number(e.remaining) || 0)),
@@ -11602,11 +11606,14 @@ function buildSequencedPlanSchedules(input) {
   for (let d = 0; d < PLAN_SEQUENCE_MAX_DAYS && queue.some(e => e.left > 0); d++) {
     const date = parseDateKey(dayKey);
     const dow = date ? date.getDay() : -1;
+    // dayBudget はその日の目標学習時間。「1科目ぶんが1日に収まるか」の基準に使う。
+    // budget は実際に残っている時間で、今日だけは勉強済みの分を引く。
     const dayBudget = Math.max(0, Number(goalMinutesOf(dayKey)) || 0);
-    let budget = dayBudget;
+    const fresh = dayKey !== todayKey || spentTodayMin <= 0;   // まだ手つかずの日か
+    let budget = Math.max(0, dayBudget - (dayKey === todayKey ? spentTodayMin : 0));
     let videoGroupToday = null;   // その日に進める講義動画の科目（1科目まで）
     for (const e of queue) {
-      if (dayBudget <= 0) break;                                        // 目標学習時間0の日は休み
+      if (budget <= 0) break;        // 休養日、または今日ぶんをもう勉強し終えている
       if (e.left <= 0) continue;
       if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
       if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;        // その曜日は休み
@@ -11616,15 +11623,23 @@ function buildSequencedPlanSchedules(input) {
         if (videoGroupToday && videoGroupToday !== e.groupKey) continue;  // 動画は1日1科目
         if (budget <= 0) continue;                                       // 時間を使い切ったら翌日へ
       }
-      // 動画: 科目ぶんが1日に収まるならまとめて。収まらない科目だけ予算ぶんずつ。
+      // 動画: 科目ぶんが1日に収まるならまとめて。収まらない科目だけ残り時間ぶんずつ。
+      //   1本も入らないときは、まだ手つかずの日にかぎり1本置く（1本が1日より長い科目が
+      //   永遠に進まなくなるため）。途中まで勉強した日には足さない。
       // 問題演習: 分割せず、残り全問を置く（その日の残り時間は見ない）。
       let take = isVideo
-        ? (e.left * e.minPerUnit <= dayBudget ? e.left : Math.max(1, Math.floor(budget / e.minPerUnit)))
+        ? (e.left * e.minPerUnit <= dayBudget
+            ? e.left
+            : Math.max(fresh ? 1 : 0, Math.floor(budget / e.minPerUnit)))
         : e.left;
       // 手で入れた「1日に進める量」はまとめ置きより優先する
       if (e.dailyCap) take = Math.min(take, e.dailyCap);
       take = Math.min(take, e.left);
       if (take <= 0) continue;
+      // まとめ置きで枠を超えてよいのは、まだ手つかずの日だけ。途中まで勉強した日に
+      // 「残り39分」へ114分ぶんの科目を足すと、やるほど今日のタスクが増えてしまう。
+      // 残り時間に収まらないものは翌日へ回す。
+      if (!fresh && take * e.minPerUnit > budget) continue;
       e.items.push({ dateKey: dayKey, targetAmount: take });
       e.left -= take;
       if (e.left === 0) e.finishKey = dayKey;
@@ -12633,6 +12648,17 @@ function planGoalMinutesOf(dateKey) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// 今日すでに勉強した分（プランに紐づかない学習も含む）。今日の枠から引く。
+// 「1日の目標学習時間」は全部の勉強を合わせた枠なので、Anki や自由入力の分も数える。
+function planSpentMinutesOn(logs, dateKey) {
+  return (logs || []).reduce((s, l) => {
+    if (!l || !l.started_at) return s;
+    const d = new Date(l.started_at);
+    if (isNaN(d)) return s;
+    return toLocalDateKey(getLogicalDate(d)) === dateKey ? s + (Number(l.duration_minutes) || 0) : s;
+  }, 0);
+}
+
 // そのプランで最後に進捗があった日。完了済みの講義動画プランは順番詰めの対象に
 // 入らないので、ここで見終わった日を拾わないと「翌日からQB」が効かなくなる
 // （今日見終わった科目のQBが今日に置かれてしまう）。
@@ -12650,7 +12676,7 @@ function planLastProgressKey(tasks) {
 // 単価を見積もれないプラン（実測が足りない・版が不明）は対象から外し、
 // 今までどおり期間へ均す。詰められるものと均されるものが混ざる形になるが、
 // 何も予定が出ないよりは良い。外れたことは planSequenceNoteHTML が出す。
-function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
+function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentTodayMin) {
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
   const inProgress = new Set();   // 着手して途中の科目
@@ -12684,7 +12710,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
   return buildSequencedPlanSchedules({
     entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
       .map(p => entries.find(e => e.plan.id === p.id)),
-    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt
+    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, spentTodayMin
   });
 }
 
@@ -12741,7 +12767,10 @@ async function syncPlans(force) {
     qb: getQBProgress(), video: primaryVideoProgress(), unitCost,
     lastTouched: buildSubjectLastTouched(logs), todayKey: today
   });
-  const sequence = buildPlanSequence(state, today, unitCost, subjectPriority);
+  // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
+  // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
+  const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
+                                     planSpentMinutesOn(logs, today));
 
   const tasks = [];
   const rebuilt = [];

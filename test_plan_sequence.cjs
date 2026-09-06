@@ -365,6 +365,56 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
        .map(p => p.id), ['due', 'started']);
 })();
 
+// ---------- 今日すでに勉強した分を引く ----------
+(function noTreadmill() {
+  // 進めるたびに翌日ぶんが今日へ降りてくると、やってもやっても今日が減らない。
+  const entries = [
+    { plan: plan({ id: 'vA', subject_id: '2C', unit: 'video', due_date: '2026-11-30' }),
+      remaining: 3, minPerUnit: 47, startKey: '2026-09-06' },     // 141分
+    { plan: plan({ id: 'vB', subject_id: '2J', unit: 'video', due_date: '2026-11-30' }),
+      remaining: 3, minPerUnit: 38, startKey: '2026-09-06' }      // 114分
+  ];
+  const run = spent => W.buildSequencedPlanSchedules({
+    entries, todayKey: '2026-09-06', goalMinutesOf: () => 180, spentTodayMin: spent });
+  const todayOf = (res, id) => res.byPlan[id].items.filter(i => i.dateKey === '2026-09-06');
+
+  const morning = run(0);
+  eq('手つかずの日は科目ぶんをまとめて置く', todayOf(morning, 'vA').map(i => i.targetAmount), [3]);
+
+  // 20分だけ勉強した日: 残り160分に141分は収まるので、今日の予定は変わらない
+  const little = run(20);
+  eq('少し勉強しただけなら今日の予定は変わらない',
+     todayOf(little, 'vA').map(i => i.targetAmount), [3]);
+
+  // 今日ぶん(141分)をこなした後: 残り39分に114分は収まらないので今日には足さない
+  const afterPlan = run(141);
+  eq('今日ぶんをこなしたら今日には足さない', todayOf(afterPlan, 'vB'), []);
+  ok('次の科目は翌日から',
+     morning.byPlan['vB'].items.length > 0 && afterPlan.byPlan['vB'].items[0].dateKey > '2026-09-06',
+     afterPlan.byPlan['vB'].items[0]);
+
+  // 目標を使い切ったら今日には何も置かない
+  const spentAll = run(200);
+  ok('使い切った日には何も置かない',
+     ['vA', 'vB'].every(id => todayOf(spentAll, id).length === 0));
+  ok('残りは翌日以降に置かれる',
+     ['vA', 'vB'].every(id => spentAll.byPlan[id].items.length > 0));
+})();
+
+(function spentMinutes() {
+  const T = '2026-09-06';
+  const logs = [
+    { duration_minutes: 60, started_at: T + 'T10:00:00Z' },
+    { duration_minutes: 45, started_at: T + 'T14:00:00Z' },
+    { duration_minutes: 90, started_at: '2026-09-05T14:00:00Z' }
+  ];
+  eq('今日ぶんだけ足す', W.planSpentMinutesOn(logs, T), 105);
+  eq('別の日は0', W.planSpentMinutesOn(logs, '2026-09-04'), 0);
+  eq('ログが無くても落ちない', W.planSpentMinutesOn(null, T), 0);
+  eq('日付が壊れたログは飛ばす',
+     W.planSpentMinutesOn([{ duration_minutes: 10, started_at: 'not-a-date' }], T), 0);
+})();
+
 // ---------- 保存できる形に直す ----------
 (function scheduleShape() {
   const res = { items: [{ dateKey: '2026-09-06', targetAmount: 5 }], finishKey: '2026-09-06', overdue: false };
