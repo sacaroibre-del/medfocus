@@ -170,22 +170,51 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   eq('動画の無い科目は初日から解ける', noVideo.byPlan['solo'].items[0].dateKey, '2026-09-06');
 })();
 
-(function strictPriorityNoSqueezeIn() {
-  // 単価の大きいプラン（動画40分/本）が入りきらない端数の時間に、単価の小さい
-  // プラン（QB 2分/問）が滑り込むと、動画がいつまでも後ろへ押し出される。
-  const entries = [
-    { plan: plan({ id: 'vid', subject_id: '2C', unit: 'video', due_date: '2026-11-30' }),
-      remaining: 10, minPerUnit: 40, startKey: '2026-09-06' },
-    { plan: plan({ id: 'other', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
-      remaining: 200, minPerUnit: 2, startKey: '2026-09-06' }
-  ];
-  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 180 });
-  const vEnd = res.byPlan['vid'].finishKey;
-  eq('動画は1日4本ずつ進む（180分÷40分）', res.byPlan['vid'].items.map(i => i.targetAmount), [4, 4, 2]);
-  ok('動画が残っている日に下位のQBを入れない',
-     res.byPlan['other'].items.every(i => i.dateKey >= vEnd), res.byPlan['other'].items.slice(0, 3));
+(function oneVideoSubjectPerDay() {
+  // CBT版の動画は1科目2〜3本と短く、制限しないと1日に何科目も見終わってしまう。
+  // 見終わるたびにその科目のQBは翌日待ちになるので、
+  // 「全科目の動画 → まとめて全科目のQB」に崩れる。1日1科目に絞る。
+  const vid = (id, sid, n) => ({ plan: plan({ id, subject_id: sid, unit: 'video', due_date: '2026-11-30' }),
+    remaining: n, minPerUnit: 40, startKey: '2026-09-06' });
+  const qb = (id, sid, n) => ({ plan: plan({ id, subject_id: sid, unit: 'q', due_date: '2026-11-30' }),
+    remaining: n, minPerUnit: 2, startKey: '2026-09-06' });
+  const res = W.buildSequencedPlanSchedules({
+    entries: [vid('vA', '2C', 2), qb('qA', '2C', 40), vid('vB', '2J', 2), qb('qB', '2J', 40),
+              vid('vC', '2O', 2), qb('qC', '2O', 40)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  // 日ごとに、講義動画の科目がいくつ入ったかを数える
+  const videoGroupsByDay = {};
+  ['vA', 'vB', 'vC'].forEach(id => res.byPlan[id].items.forEach(i => {
+    (videoGroupsByDay[i.dateKey] = videoGroupsByDay[i.dateKey] || new Set()).add(id);
+  }));
+  ok('1日に進める講義動画は1科目まで',
+     Object.values(videoGroupsByDay).every(s => s.size === 1),
+     Object.entries(videoGroupsByDay).map(([k, s]) => k + ':' + [...s].join(',')));
 
-  // 1日の上限で止まったときだけは、余った時間を次へ回す（上限とはそういう意味）
+  // 全部の動画を見終わってからQBに移る形になっていないこと
+  const lastVideoDay = ['vA', 'vB', 'vC']
+    .map(id => res.byPlan[id].finishKey).sort().pop();
+  const firstQbDay = ['qA', 'qB', 'qC']
+    .map(id => res.byPlan[id].items[0].dateKey).sort()[0];
+  ok('最後の動画を見終わる前にQBが始まっている', firstQbDay < lastVideoDay,
+     { 最初のQB: firstQbDay, 最後の動画: lastVideoDay });
+
+  // 各科目は「動画 → 翌日以降にQB」を保つ
+  [['vA', 'qA'], ['vB', 'qB'], ['vC', 'qC']].forEach(([v, q]) => {
+    ok(`${v} の翌日以降に ${q}`, res.byPlan[q].items[0].dateKey > res.byPlan[v].finishKey,
+       { 動画完了: res.byPlan[v].finishKey, QB開始: res.byPlan[q].items[0].dateKey });
+  });
+
+  // 動画が1科目ぶんで余った時間は、動画を見終わった科目のQBで埋める
+  const qbDays = new Set(['qA', 'qB', 'qC'].flatMap(id => res.byPlan[id].items.map(i => i.dateKey)));
+  const videoDays = new Set(Object.keys(videoGroupsByDay));
+  ok('QBと別科目の動画が同じ日に並ぶ日がある',
+     [...qbDays].some(d => videoDays.has(d)), { QB: [...qbDays], 動画: [...videoDays] });
+})();
+
+(function manualCapPassesLeftoverOn() {
+  // 1日の上限で止まったときは、余った時間を次のプランへ回す（上限とはそういう意味）
   const capped = W.buildSequencedPlanSchedules({
     entries: [
       { plan: plan({ id: 'a', subject_id: '2C', unit: 'q', due_date: '2026-11-30' }),
