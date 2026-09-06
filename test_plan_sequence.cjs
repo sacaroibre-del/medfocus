@@ -403,14 +403,24 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
 
   // 複数領域にまたがる科目は、その全部から受け取る
   ok('循環器は D領域だけでなく E領域からも受け取る', q('2C') > q('2A') * 0.99 && q('2C') > 10, q('2C'));
-  eq('またがっている領域が分かる', W.cbtExamInfoOf('2C').domains, ['D', 'E']);
+  eq('またがっている領域が分かる', W.cbtExamInfoOf('2C').domains, ['D', 'E', 'F']);
   eq('単一領域の科目', W.cbtExamInfoOf('1B').domains, ['C']);
 
   // 科目数の偏りで順位が壊れていないこと（E領域を5科目で割ると感染症が循環器を超えていた）
   ok('メジャー内科 > 全身系 > マイナー', q('2C') > q('2H') && q('2H') > q('2R'),
      { 循環器: q('2C'), 感染症: q('2H'), 眼科: q('2R') });
   ok('メジャー内科どうしは同じ', Math.abs(q('2C') - q('2I')) < 0.001);
-  ok('公衆衛生がA・B領域を独占しない（3Bにも配る）', q('3D') < 32, q('3D'));
+  ok('公衆衛生がA・B領域を独占しない（3A・3B・3Cにも配る）', q('3D') < 32, q('3D'));
+
+  // vol.3（総論）は F領域 + A・B領域 = 全体の30% を数科目で分けるため、
+  // そのままだと診療の知識・技能や症候・病態がメジャー内科を上回ってしまう。
+  // F領域を臓器科目へ配って抑えている。ここが崩れると優先順位が総論に偏る。
+  ok('診療の知識・技能はメジャー内科を上回らない', q('3B') <= q('2C'), { '3B': q('3B'), '2C': q('2C') });
+  ok('症候・病態もメジャー内科を上回らない', q('3A') <= q('2C'), { '3A': q('3A'), '2C': q('2C') });
+  ok('身体診察もメジャー内科を上回らない', q('3C') <= q('2C'), { '3C': q('3C'), '2C': q('2C') });
+  const volPct = pre => ALL.filter(id => id.startsWith(pre)).reduce((s, id) => s + W.cbtExamInfoOf(id).pct, 0);
+  ok('vol.3 全体で2割を超えない', volPct('3') < 20, volPct('3'));
+  ok('vol.2（臓器別の臨床）が過半を占める', volPct('2') > 50, volPct('2'));
 
   // 比重は影響度を支配しないよう頭打ちにする
   ALL.forEach(id => {
@@ -428,8 +438,11 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   const rounds = { '1': { done: 0, total: 100, correct: 0 } };
   const r = prio({ qb: { '2C': rounds, '2R': rounds }, lastTouched: { '2C': TODAY, '2R': TODAY } });
   eq('出題の多い科目が先', r.ranked.map(x => x.id), ['2C', '2R']);
-  eq('出題数は表に出せる',
-     [Math.round(r.bySubject['2C'].examQuestions), Math.round(r.bySubject['2R'].examQuestions)], [12, 4]);
+  eq('出題数はマスタと一致する',
+     [r.bySubject['2C'].examQuestions, r.bySubject['2R'].examQuestions],
+     [W.cbtExamInfoOf('2C').questions, W.cbtExamInfoOf('2R').questions]);
+  ok('メジャー内科の出題数はマイナーより多い',
+     r.bySubject['2C'].examQuestions > r.bySubject['2R'].examQuestions);
   ok('影響度の比は比重の比になる',
      Math.abs(r.bySubject['2C'].score / r.bySubject['2R'].score
               - W.cbtExamWeightOf('2C') / W.cbtExamWeightOf('2R')) < 1e-9);
