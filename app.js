@@ -11554,16 +11554,16 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 // 返り値: { byPlan: { [id]: { items, finishKey, dueKey, overdue, overDays, unplaced } }, order, warnings }
 //
 // 目指す形は「1日 ＝ 見終わった科目のQB ＋ 別の科目の講義動画」。
-// これは同じ科目に対する制約1つで足りる:
+// 1日の学習時間は目安として使い、そこで機械的に切らない。時間で切ると
+// 「52問のうち今日は29問」「3本のうち今日は2本」と中途半端に割れて、
+// 科目の区切りと予定の区切りが合わなくなる。
 //
-//   同じ科目では、講義動画を全部見終わった翌日からQBを始める。
-//   見ていない範囲をQBで解くことになるため、同じ日に混ぜない。
-//
-// 科目数そのものは絞らない。1日に何科目の動画を見終わってもよく、その日の
-// 学習時間を埋めきるまで詰める。翌日にはそれらのQBが上位に来るので、
-// 「全科目の動画を見てから、まとめて全科目のQB」には崩れない。
-// 動画を1日1科目に絞る案も測ったが、動画を見終わる日が半分空くだけだった
-// （14日・空き64分/日 → 制限なしで10日・空き18分/日）。
+//  - 問題演習は分割しない。その科目の動画を見終わった翌日に、残り全問を置く。
+//    予算を超えてもよい（その科目を1日で終える意味のほうが大きい）。
+//  - 講義動画はキリのいいところまで。その科目ぶんが1日に収まるならまとめて置き、
+//    収まらない科目（産婦人科47本など）だけ、予算ぶんずつ連続した日に分ける。
+//  - その日に進める講義動画は1科目まで。1日に2科目見終わると翌日のQBが
+//    2科目ぶん重なり、「まとめて全科目のQB」に近づく。
 //
 // 1日ぶんの時間で1単位も入らないプラン（1本50分・目標30分など）は、その日の
 // 先頭に来たときだけ1単位置く。置かないと永遠に進まないため。
@@ -11589,31 +11589,34 @@ function buildSequencedPlanSchedules(input) {
   for (let d = 0; d < PLAN_SEQUENCE_MAX_DAYS && queue.some(e => e.left > 0); d++) {
     const date = parseDateKey(dayKey);
     const dow = date ? date.getDay() : -1;
-    let budget = Math.max(0, Number(goalMinutesOf(dayKey)) || 0);
-    let placedToday = 0;
+    const dayBudget = Math.max(0, Number(goalMinutesOf(dayKey)) || 0);
+    let budget = dayBudget;
+    let videoGroupToday = null;   // その日に進める講義動画の科目（1科目まで）
     for (const e of queue) {
+      if (dayBudget <= 0) break;                                        // 目標学習時間0の日は休み
       if (e.left <= 0) continue;
       if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
       if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;        // その曜日は休み
       if (waitingForVideo(e, dayKey)) continue;                         // 同じ科目の動画が先
-      // 1日に見終わる講義動画は1科目まで。何科目も見終えると、その全部のQBが
-      // 翌日待ちになり「全科目の動画 → 全科目のQB」に崩れる。
-      // ただし着手までは止めない。見終わった科目のQBは翌日待ちで、その日に
-      // 他へ回せる仕事が無くなりやすいため、次の科目の動画で埋める。
-      // 「終わらせない範囲まで」なので、翌日に持ち越す科目が増えることもない。
-      const byTime = Math.floor(budget / e.minPerUnit);
-      const byCap = e.dailyCap === null || e.dailyCap === undefined ? Infinity : e.dailyCap;
-      let take = Math.min(e.left, byTime, byCap);
-      // その日まだ何も置けていないなら、時間が足りなくても1単位は進める
-      if (take <= 0 && placedToday === 0 && byCap >= 1 && budget > 0) take = 1;
-      if (take > 0) {
-        e.items.push({ dateKey: dayKey, targetAmount: take });
-        e.left -= take;
-        if (e.left === 0) e.finishKey = dayKey;
-        budget = Math.max(0, budget - take * e.minPerUnit);
-        placedToday += take;
+      const isVideo = e.plan.unit === 'video';
+      if (isVideo) {
+        if (videoGroupToday && videoGroupToday !== e.groupKey) continue;  // 動画は1日1科目
+        if (budget <= 0) continue;                                       // 時間を使い切ったら翌日へ
       }
-      if (budget <= 0) break;   // その日の時間を使い切った
+      // 動画: 科目ぶんが1日に収まるならまとめて。収まらない科目だけ予算ぶんずつ。
+      // 問題演習: 分割せず、残り全問を置く（その日の残り時間は見ない）。
+      let take = isVideo
+        ? (e.left * e.minPerUnit <= dayBudget ? e.left : Math.max(1, Math.floor(budget / e.minPerUnit)))
+        : e.left;
+      // 手で入れた「1日に進める量」はまとめ置きより優先する
+      if (e.dailyCap) take = Math.min(take, e.dailyCap);
+      take = Math.min(take, e.left);
+      if (take <= 0) continue;
+      e.items.push({ dateKey: dayKey, targetAmount: take });
+      e.left -= take;
+      if (e.left === 0) e.finishKey = dayKey;
+      if (isVideo) videoGroupToday = e.groupKey;
+      budget -= take * e.minPerUnit;
     }
     dayKey = shiftDateKey(dayKey, 1);
   }

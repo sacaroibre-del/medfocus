@@ -109,18 +109,32 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   const days = id => res.byPlan[id].items.map(i => `${i.dateKey}:${i.targetAmount}`);
   eq('循環器の動画を最初の2日で終わらせる',
      days('circ-vid'), ['2026-09-06:3', '2026-09-07:3']);
-  eq('循環器の問題演習は動画が終わった翌日から',
-     days('circ-qb'), ['2026-09-08:40', '2026-09-09:40']);
+  // 問題演習は分割しない。動画を見終わった翌日に80問まとめて置く
+  eq('循環器の問題演習は動画が終わった翌日に全問',
+     days('circ-qb'), ['2026-09-08:80']);
   eq('小児の動画はそのあと',
-     days('peds-vid'), ['2026-09-10:3', '2026-09-11:1']);
+     days('peds-vid'), ['2026-09-09:3', '2026-09-10:1']);
 
   ok('初日に小児の動画は入らない（満遍なくにしない）',
      res.byPlan['peds-vid'].items.every(i => i.dateKey > '2026-09-07'));
-  eq('循環器の2つは締切に間に合う',
-     [res.byPlan['circ-vid'].overdue, res.byPlan['circ-qb'].overdue], [false, false]);
-  ok('小児は締切を1日超えるので警告が出る', res.byPlan['peds-vid'].overdue === true);
-  eq('超過日数', res.byPlan['peds-vid'].overDays, 1);
-  eq('警告は超過したプランだけ', res.warnings.map(w => w.planId), ['peds-vid']);
+  eq('全部が締切に間に合う',
+     ['circ-vid', 'circ-qb', 'peds-vid'].map(id => res.byPlan[id].overdue), [false, false, false]);
+  eq('警告は出ない', res.warnings, []);
+})();
+
+(function warnsWhenOverdue() {
+  // 締切までに置ききれないプランは、順番を変えずに警告で知らせる
+  const entries = [
+    { plan: plan({ id: 'first', subject_id: '2C', unit: 'video', due_date: '2026-09-30' }),
+      remaining: 20, minPerUnit: 40, startKey: '2026-09-06' },
+    { plan: plan({ id: 'late', subject_id: '2O', unit: 'video', due_date: '2026-09-08' }),
+      remaining: 4, minPerUnit: 40, startKey: '2026-09-06' }
+  ];
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 120 });
+  ok('後ろに回った科目が締切を超える', res.byPlan['late'].overdue === true,
+     { 完了: res.byPlan['late'].finishKey, 締切: res.byPlan['late'].dueKey });
+  ok('超過日数が出る', res.byPlan['late'].overDays > 0, res.byPlan['late'].overDays);
+  eq('警告は超過したプランだけ', res.warnings.map(w => w.planId), ['late']);
 })();
 
 (function budgetIsNotWasted() {
@@ -312,6 +326,8 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   eq('1件も置けない', res.byPlan['a'].items, []);
   eq('残量はそのまま残る', res.byPlan['a'].unplaced, 40);
   ok('この結果は採用しない', W.canUseSequenced(res.byPlan['a']) === false);
+  // 問題演習は分割せず残り全問を置くが、目標学習時間0の日は休みなので置かない
+  ok('休養日には問題演習も置かない', res.byPlan['b'].items.length === 0);
 })();
 
 // ---------- 科目の優先度（学習状況から） ----------
