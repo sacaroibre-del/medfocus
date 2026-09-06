@@ -575,13 +575,17 @@ const subjectCategories = [
 // 一方、学習時間は元の科目へ寄せる。時間まで分けると「循環器に何時間かけたか」が
 // 科目とvol.4に散らばって答えられなくなるため。
 //   → 時間は 2C 循環器 に足し、問題数は 4連問 2C に足す。
+// key は本の区分の記号（4A=多肢選択問題、4B=4連問）。科目IDはこれと元の科目をつないで
+// '4A2C'（多肢選択の2C）、'4B2C'（4連問の2C）にする。
+// questionTotal はそのセクション全体の問題数。科目ごとの内訳は本を見ながら手で入れるので、
+// 「登録済みが全体の何問ぶんか」を出して入れ忘れに気づけるようにするために持つ。
 const QB_SECTIONS = [
-  { key:'M', catId:'cat-vol4-multi',  name:'vol.4 多肢選択問題', short:'多肢選択', color:'#F5B041' },
-  { key:'R', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866' }
+  { key:'4A', catId:'cat-vol4-multi',  name:'vol.4 多肢選択問題', short:'多肢選択', color:'#F5B041', questionTotal:360 },
+  { key:'4B', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866', questionTotal:484 }
 ];
 // vol.4 の科目は vol.1〜3 の科目から機械的に作る（本の並びが同じなので手で持たない）。
 const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
-// '4r2c' / '4連問 2c 循環器' → セクション定義・元の科目ID。
+// '4b2c' / '4連問 2c 循環器' → セクション定義・元の科目ID。
 // 学習ログの subject_name には科目IDと表示名のどちらも入りうるので両方を鍵にする。
 const QB_SECTION_BY_KEY = {};
 const QB_SECTION_BASE_ID = {};
@@ -590,7 +594,7 @@ const QB_SECTION_BASE_ID = {};
     .filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
     .reduce((acc, c) => acc.concat(c.subjects), []);
   QB_SECTIONS.forEach(sec => {
-    const subjects = base.map(s => ({ id: '4' + sec.key + s.id, name: sec.short + ' ' + s.name }));
+    const subjects = base.map(s => ({ id: sec.key + s.id, name: sec.short + ' ' + s.name }));
     subjects.forEach((sub, i) => {
       [sub.id, sub.name].forEach(k => {
         QB_SECTION_BY_KEY[k.toLowerCase()] = sec;
@@ -598,7 +602,9 @@ const QB_SECTION_BASE_ID = {};
       });
     });
     // qbOnly: 講義動画を持たない（問題集なので教材進捗トラッカーでは QB の行だけ出す）
-    subjectCategories.push({ id: sec.catId, name: sec.name, color: sec.color, qbOnly: true, subjects });
+    // masterTotal: 本に載っている全問題数。登録済みの総数と比べて出す
+    subjectCategories.push({ id: sec.catId, name: sec.name, color: sec.color,
+                             qbOnly: true, masterTotal: sec.questionTotal, subjects });
   });
 })();
 
@@ -5529,7 +5535,12 @@ function volRoundAggregate(qb, video, cat) {
     rounds,
     video: { done: vDone, total: vTotal, pct: vTotal > 0 ? Math.round(vDone / vTotal * 100) : 0 },
     // 見出しに出す代表値は「1周目の到達率」。周の合算ではない
-    headlinePct: rounds.length ? rounds[0].pct : 0
+    headlinePct: rounds.length ? rounds[0].pct : 0,
+    // 科目ごとに手で入れた総数の合計と、本に載っている全問題数（マスタがある vol だけ）。
+    // 到達率の分母は今までどおり登録済みの総数なので、マスタと開いていると
+    // 「まだ登録していない範囲がある」ことに気づけないため、別に出す。
+    registeredTotal: volTotal,
+    masterTotal: Number.isFinite(cat.masterTotal) ? cat.masterTotal : null
   };
 }
 
@@ -5562,7 +5573,12 @@ function volSummaryInnerHtml(agg, opts) {
     `${r.round}周 ${r.done}/${r.total}問${r.accPct !== null ? `(正答${r.accPct}%)` : ''}`));
   const counts = showCounts
     ? `<div class="vol-round-counts">${countParts.join('・')}</div>` : '';
-  return vid + rows + counts;
+  // 本の全問題数が分かっている vol は、科目ごとに入れた総数の合計と並べて出す。
+  // 到達率の分母は登録済みの総数なので、これが無いと入れ忘れに気づけない。
+  const master = agg.masterTotal ? `<div class="vol-master-total${
+    agg.registeredTotal === agg.masterTotal ? ' is-complete' : ''
+  }">登録済み ${agg.registeredTotal}/${agg.masterTotal}問</div>` : '';
+  return vid + rows + counts + master;
 }
 
 // 入力のたびに renderQBProgress() で作り直すと、開いていた vol が閉じ、

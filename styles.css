@@ -2278,6 +2278,18 @@ i.io-other { background: #64748b; }
   line-height: 1.6;
 }
 
+/* 本の全問題数が分かっている vol（vol.4）で「登録済み / 全問題数」を出す。
+   到達率の分母は科目ごとに入れた総数なので、まだ入れていない範囲があることを
+   ここでだけ示す。揃ったら色を落として主張を弱める。 */
+.vol-master-total {
+  font-size: 0.66rem;
+  color: var(--color-accent-yellow);
+  text-align: center;
+  margin-top: 4px;
+  line-height: 1.6;
+}
+.vol-master-total.is-complete { color: var(--color-text-tertiary); }
+
 /* 教材進捗トラッカーの入力行。折り返すと％が単独行に落ちて読みにくいので1行に保つ */
 .qb-metric-row {
   display: flex;
