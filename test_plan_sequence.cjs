@@ -170,47 +170,46 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   eq('動画の無い科目は初日から解ける', noVideo.byPlan['solo'].items[0].dateKey, '2026-09-06');
 })();
 
-(function oneVideoSubjectPerDay() {
-  // CBT版の動画は1科目2〜3本と短く、制限しないと1日に何科目も見終わってしまう。
-  // 見終わるたびにその科目のQBは翌日待ちになるので、
-  // 「全科目の動画 → まとめて全科目のQB」に崩れる。1日1科目に絞る。
+(function rollingVideoThenQb() {
+  // 元の不具合: 「全科目の動画を見てから、まとめて全科目のQB」になっていた。
+  // 動画→翌日にQB のゲートだけで、動画とQBが日ごとに噛み合う形になる。
   const vid = (id, sid, n) => ({ plan: plan({ id, subject_id: sid, unit: 'video', due_date: '2026-11-30' }),
     remaining: n, minPerUnit: 40, startKey: '2026-09-06' });
   const qb = (id, sid, n) => ({ plan: plan({ id, subject_id: sid, unit: 'q', due_date: '2026-11-30' }),
     remaining: n, minPerUnit: 2, startKey: '2026-09-06' });
   const res = W.buildSequencedPlanSchedules({
-    entries: [vid('vA', '2C', 2), qb('qA', '2C', 40), vid('vB', '2J', 2), qb('qB', '2J', 40),
-              vid('vC', '2O', 2), qb('qC', '2O', 40)],
+    entries: [vid('vA', '2C', 4), qb('qA', '2C', 40), vid('vB', '2J', 4), qb('qB', '2J', 40),
+              vid('vC', '2O', 4), qb('qC', '2O', 40)],
     todayKey: '2026-09-06', goalMinutesOf: () => 180
   });
-  // 日ごとに、講義動画の科目がいくつ入ったかを数える
-  const videoGroupsByDay = {};
-  ['vA', 'vB', 'vC'].forEach(id => res.byPlan[id].items.forEach(i => {
-    (videoGroupsByDay[i.dateKey] = videoGroupsByDay[i.dateKey] || new Set()).add(id);
-  }));
-  ok('1日に進める講義動画は1科目まで',
-     Object.values(videoGroupsByDay).every(s => s.size === 1),
-     Object.entries(videoGroupsByDay).map(([k, s]) => k + ':' + [...s].join(',')));
 
-  // 全部の動画を見終わってからQBに移る形になっていないこと
-  const lastVideoDay = ['vA', 'vB', 'vC']
-    .map(id => res.byPlan[id].finishKey).sort().pop();
-  const firstQbDay = ['qA', 'qB', 'qC']
-    .map(id => res.byPlan[id].items[0].dateKey).sort()[0];
-  ok('最後の動画を見終わる前にQBが始まっている', firstQbDay < lastVideoDay,
-     { 最初のQB: firstQbDay, 最後の動画: lastVideoDay });
-
-  // 各科目は「動画 → 翌日以降にQB」を保つ
+  // 各科目は「動画を見終わった翌日以降にQB」を保つ
   [['vA', 'qA'], ['vB', 'qB'], ['vC', 'qC']].forEach(([v, q]) => {
     ok(`${v} の翌日以降に ${q}`, res.byPlan[q].items[0].dateKey > res.byPlan[v].finishKey,
        { 動画完了: res.byPlan[v].finishKey, QB開始: res.byPlan[q].items[0].dateKey });
   });
 
-  // 動画が1科目ぶんで余った時間は、動画を見終わった科目のQBで埋める
+  // 全科目の動画を見終わるのを待ってからQBに入る形になっていないこと
+  const lastVideoDay = ['vA', 'vB', 'vC'].map(id => res.byPlan[id].finishKey).sort().pop();
+  const firstQbDay = ['qA', 'qB', 'qC'].map(id => res.byPlan[id].items[0].dateKey).sort()[0];
+  ok('最後の動画を見終わる前にQBが始まっている', firstQbDay < lastVideoDay,
+     { 最初のQB: firstQbDay, 最後の動画: lastVideoDay });
+
+  // QBと別科目の動画が同じ日に並ぶ（1日 ＝ 見終わった科目のQB ＋ 別の科目の動画）
+  const videoDays = new Set(['vA', 'vB', 'vC'].flatMap(id => res.byPlan[id].items.map(i => i.dateKey)));
   const qbDays = new Set(['qA', 'qB', 'qC'].flatMap(id => res.byPlan[id].items.map(i => i.dateKey)));
-  const videoDays = new Set(Object.keys(videoGroupsByDay));
-  ok('QBと別科目の動画が同じ日に並ぶ日がある',
-     [...qbDays].some(d => videoDays.has(d)), { QB: [...qbDays], 動画: [...videoDays] });
+  ok('QBと動画が同じ日に並ぶ日がある', [...qbDays].some(d => videoDays.has(d)),
+     { QB: [...qbDays].sort(), 動画: [...videoDays].sort() });
+
+  // 学習時間を余らせない（1日180分・動画40分/本・QB2分/問なら端数まで使える）
+  const perDay = {};
+  ['vA', 'vB', 'vC'].forEach(id => res.byPlan[id].items.forEach(i =>
+    { perDay[i.dateKey] = (perDay[i.dateKey] || 0) + i.targetAmount * 40; }));
+  ['qA', 'qB', 'qC'].forEach(id => res.byPlan[id].items.forEach(i =>
+    { perDay[i.dateKey] = (perDay[i.dateKey] || 0) + i.targetAmount * 2; }));
+  const days = Object.keys(perDay).sort();
+  ok('最終日以外は1日の学習時間をほぼ使い切る',
+     days.slice(0, -1).every(d => perDay[d] >= 140), perDay);
 })();
 
 (function manualCapPassesLeftoverOn() {

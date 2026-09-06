@@ -11554,22 +11554,16 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 // 返り値: { byPlan: { [id]: { items, finishKey, dueKey, overdue, overDays, unplaced } }, order, warnings }
 //
 // 目指す形は「1日 ＝ 見終わった科目のQB ＋ 別の科目の講義動画」。
-// そのために2つ制約を置く。
+// これは同じ科目に対する制約1つで足りる:
 //
-//  1. 同じ科目では、講義動画を全部見終わった翌日からQBを始める。
-//     見ていない範囲をQBで解くことになるため、同じ日に混ぜない。
-//  2. その日に進める講義動画は1科目まで。
-//     CBT版の動画は1科目2〜3本と短く、1日に何科目も見終わってしまう。
-//     見終わるたびにその科目のQBは翌日待ちになるので、制限しないと
-//     「全科目の動画を見てから、まとめて全科目のQB」に崩れる。
-//     2科目まで許して端数を埋めることも試したが、本数の多い科目（産婦人科47本）が
-//     毎日の端数に散って「満遍なく」に戻るのでやめた。
+//   同じ科目では、講義動画を全部見終わった翌日からQBを始める。
+//   見ていない範囲をQBで解くことになるため、同じ日に混ぜない。
 //
-// 問題演習は科目数を制限しない。動画が1科目ぶんで余った時間は、すでに動画を
-// 見終わっている科目のQBで埋めたほうがよい（捨てる理由がない）。
-//
-// この形だと、動画を見終わる日は1日を埋めきらずに空きが出る（その科目のQBは
-// 翌日待ちで、他の科目の動画にも移らないため）。集中を優先した結果として受け入れる。
+// 科目数そのものは絞らない。1日に何科目の動画を見終わってもよく、その日の
+// 学習時間を埋めきるまで詰める。翌日にはそれらのQBが上位に来るので、
+// 「全科目の動画を見てから、まとめて全科目のQB」には崩れない。
+// 動画を1日1科目に絞る案も測ったが、動画を見終わる日が半分空くだけだった
+// （14日・空き64分/日 → 制限なしで10日・空き18分/日）。
 //
 // 1日ぶんの時間で1単位も入らないプラン（1本50分・目標30分など）は、その日の
 // 先頭に来たときだけ1単位置く。置かないと永遠に進まないため。
@@ -11597,7 +11591,6 @@ function buildSequencedPlanSchedules(input) {
     const dow = date ? date.getDay() : -1;
     let budget = Math.max(0, Number(goalMinutesOf(dayKey)) || 0);
     let placedToday = 0;
-    let videoGroupToday = null;   // その日に進める講義動画の科目（1科目まで）
     for (const e of queue) {
       if (e.left <= 0) continue;
       if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
@@ -11608,8 +11601,6 @@ function buildSequencedPlanSchedules(input) {
       // ただし着手までは止めない。見終わった科目のQBは翌日待ちで、その日に
       // 他へ回せる仕事が無くなりやすいため、次の科目の動画で埋める。
       // 「終わらせない範囲まで」なので、翌日に持ち越す科目が増えることもない。
-      // 講義動画はその日1科目まで（「今日はこの科目の動画」を1つに決める）
-      if (e.plan.unit === 'video' && videoGroupToday && videoGroupToday !== e.groupKey) continue;
       const byTime = Math.floor(budget / e.minPerUnit);
       const byCap = e.dailyCap === null || e.dailyCap === undefined ? Infinity : e.dailyCap;
       let take = Math.min(e.left, byTime, byCap);
@@ -11619,7 +11610,6 @@ function buildSequencedPlanSchedules(input) {
         e.items.push({ dateKey: dayKey, targetAmount: take });
         e.left -= take;
         if (e.left === 0) e.finishKey = dayKey;
-        if (e.plan.unit === 'video') videoGroupToday = e.groupKey;
         budget = Math.max(0, budget - take * e.minPerUnit);
         placedToday += take;
       }
