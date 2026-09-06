@@ -11364,6 +11364,23 @@ const CBT_EXAM_WEIGHT = (function buildCbtBlueprint() {
   return out;
 })();
 
+// 直前の詰め込みが効く科目。出題数が多くても、早くから時間を割く必要は薄い。
+// 「本番でどれだけ問われるか」と「早く始める必要があるか」は別の軸で、
+// 出題数のほうを下げて辻褄を合わせると CBT出題数の列が実態と食い違ってしまう。
+// 係数だけを分けて持ち、影響度に掛ける（1未満 ＝ 後回しでよい）。
+// 積み上げが要る科目（循環器の心電図、神経の解剖など）は 1 のまま。
+const CBT_CRAM_FACTOR = {
+  '3D': 0.5   // 公衆衛生: 問題を解いて覚えるだけなので直前でよい
+};
+// 表示に出す閾値。これを下回る科目に「直前型」と付ける
+const CBT_CRAM_MARK_BELOW = 1;
+
+function cbtCramFactorOf(sid) {
+  const base = String(baseSubjectIdOf(sid) || sid || '').toUpperCase();
+  const n = Number(CBT_CRAM_FACTOR[base]);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+}
+
 // 出題比重が影響度を支配しないように、平均からの倍率を 0.5〜2.0 に抑える。
 // 領域内の按分は概算なので、そこの誤差でいきなり順番がひっくり返らないようにする。
 const CBT_WEIGHT_MIN = 0.5;
@@ -11389,7 +11406,7 @@ function cbtExamWeightOf(sid) {
 // 締切だけでは、同じ試験日に向けたプランどうしの順番が決まらない。
 // 「いま手をつけて効く順」を実績から出して、締切が並んだときの順番に使う。
 //
-//   影響度(分) = 残り時間 × 誤答率 × 放置係数 × 出題比重
+//   影響度(分) = 残り時間 × 誤答率 × 放置係数 × 出題比重 × 詰め込み係数
 //
 //  - 残り時間: 教材進捗の残り（QBの残問題数 × 分/問 ＋ 動画の残本数 × 分/本）。
 //              終わっている科目ほど小さくなる。
@@ -11399,6 +11416,8 @@ function cbtExamWeightOf(sid) {
 //              一度も手をつけていない科目は最大の 2.0（いちばん遠いので先に触る）。
 //  - 出題比重: CBT本番でどれだけ問われるか（CBT_EXAM_WEIGHT）。平均の何倍かを
 //              0.5〜2.0 に抑えたもの。教材の量と試験での重要度は別物なので分けて掛ける。
+//  - 詰め込み係数: 直前でも間に合う科目を下げる（CBT_CRAM_FACTOR）。出題数の多さと
+//              早く始める必要があるかは別の軸なので、出題数を下げずにここで調整する。
 const SUBJECT_STALE_CAP_DAYS = 90;
 const SUBJECT_STALE_MAX = 2;
 const SUBJECT_UNKNOWN_WRONG_RATE = 0.5;
@@ -11429,7 +11448,7 @@ function subjectStaleFactor(lastKey, todayKey) {
 // input: { qb, video, unitCost, lastTouched, todayKey, targetRound }
 // 返り値: { bySubject: { [sid]: row }, ranked: [row], totalWeightMin }
 //   row = { id, name, remainMin, materialMin, materialPct,
-//           examQuestions, examPct, examDomain, examWeight,
+//           examQuestions, examPct, examDomain, examWeight, cramFactor,
 //           accuracy, wrongRate, lastKey, staleDays, staleFactor, score }
 function buildSubjectPriority(input) {
   const o = input || {};
@@ -11474,6 +11493,7 @@ function buildSubjectPriority(input) {
     const staleFactor = subjectStaleFactor(lastKey, today);
     const exam = cbtExamInfoOf(b.id);
     const examWeight = cbtExamWeightOf(b.id);
+    const cramFactor = cbtCramFactorOf(b.id);
     return {
       id: b.id, name: subjectNameOf(b.id),
       remainMin: b.remainMin,
@@ -11484,11 +11504,11 @@ function buildSubjectPriority(input) {
       examQuestions: exam ? exam.questions : null,
       examPct: exam ? exam.pct : null,
       examDomain: exam ? exam.domain : null,
-      examWeight,
+      examWeight, cramFactor,
       accuracy, wrongRate, solved: b.solved,
       lastKey, staleDays: lastKey ? Math.max(0, diffDateKeys(today, lastKey) || 0) : null,
       staleFactor,
-      score: b.remainMin * wrongRate * staleFactor * examWeight
+      score: b.remainMin * wrongRate * staleFactor * examWeight * cramFactor
     };
   }).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
@@ -12986,7 +13006,8 @@ function subjectPriorityTableHTML(sync) {
     <div class="plan-prio-scroll"><table class="plan-prio-table">
       <thead><tr><th>科目</th><th>残り</th><th>CBT出題数<span class="dim">（目安）</span></th><th>正答率</th><th>最後に学習</th><th>影響度</th></tr></thead>
       <tbody>${rows.map(r => `<tr>
-        <td>${esc(r.name)}</td>
+        <td>${esc(r.name)}${r.cramFactor < CBT_CRAM_MARK_BELOW
+              ? ` <span class="dim" title="直前の詰め込みが効くので、影響度を${r.cramFactor}倍にしています">直前型</span>` : ''}</td>
         <td>${hours(r.remainMin)}</td>
         <td>${r.examQuestions === null ? '<span class="dim">—</span>'
               : `${r.examQuestions.toFixed(1)}問<span class="dim">（${r.examPct.toFixed(1)}%・${r.examDomain}領域）</span>`}</td>
@@ -12995,11 +13016,13 @@ function subjectPriorityTableHTML(sync) {
         <td><strong>${hours(r.score)}</strong></td>
       </tr>`).join('')}</tbody>
     </table></div>
-    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数 × 出題比重。
+    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数 × 出題比重 × 詰め込み係数。
       「まだ間違えるであろう分量」の見積もりで、大きい科目から先に埋めます。
       放置係数は最後に学習した日から90日で最大2倍（未着手は2倍）。
       正答率が未入力の科目は誤答率50%として扱います。
-      出題比重は下の出題数が平均の何倍かで、0.5〜2.0倍に抑えています。</div>
+      出題比重は下の出題数が平均の何倍かで、0.5〜2.0倍に抑えています。
+      「直前型」は出題数が多くても直前の詰め込みで間に合う科目で、影響度を下げています
+      （出題数そのものは下げません）。</div>
     <div class="plan-seq-hint">CBT出題数はコア・カリキュラムの領域別割合（A・B 32問／C 48問／D 112問／E 64問／F 64問・計320問）を、
       科目の重み（メジャー／準メジャー／マイナー）で按分した概算です。領域内の科目別内訳は公表されていないため、
       ここは目安として扱ってください。</div>

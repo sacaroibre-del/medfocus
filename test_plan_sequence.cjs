@@ -433,6 +433,25 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   eq('多肢選択 2R も元の科目と同じ', W.cbtExamWeightOf('4A2R'), W.cbtExamWeightOf('2R'));
 })();
 
+(function cramFactor() {
+  eq('公衆衛生は直前型', W.cbtCramFactorOf('3D'), 0.5);
+  eq('積み上げが要る科目はそのまま', W.cbtCramFactorOf('2C'), 1);
+  eq('対応の無い科目もそのまま', W.cbtCramFactorOf('anki'), 1);
+  eq('4連問も元の科目に従う', W.cbtCramFactorOf('4B3D'), W.cbtCramFactorOf('3D'));
+
+  // 出題数そのものは下げない。下げると「CBT出題数」の列が実態と食い違う
+  ok('出題数は据え置き', W.cbtExamInfoOf('3D').questions > 15, W.cbtExamInfoOf('3D').questions);
+  ok('出題比重も据え置き', W.cbtExamWeightOf('3D') > 1.5, W.cbtExamWeightOf('3D'));
+
+  // 影響度だけが下がる
+  const rounds = { '1': { done: 0, total: 200, correct: 0 } };
+  const r = prio({ qb: { '3D': rounds, '2C': rounds }, lastTouched: {} });
+  eq('影響度は詰め込み係数のぶん下がる',
+     Math.round(r.bySubject['3D'].score / r.bySubject['2C'].score * 1000) / 1000,
+     Math.round(W.cbtExamWeightOf('3D') * 0.5 / W.cbtExamWeightOf('2C') * 1000) / 1000);
+  eq('係数も行に出せる', r.bySubject['3D'].cramFactor, 0.5);
+})();
+
 (function examWeightAffectsScore() {
   // 残り・正答率・放置を揃えると、出題比重の差だけが残る
   const rounds = { '1': { done: 0, total: 100, correct: 0 } };
