@@ -11553,7 +11553,14 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 // }
 // 返り値: { byPlan: { [id]: { items, finishKey, dueKey, overdue, overDays, unplaced } }, order, warnings }
 //
-// その日の学習時間を上から順に食わせ、余った時間だけ次のプランへ回す。
+// その日の学習時間を上から順に食わせる。上位のプランがまだ残っているうちは、
+// 余った時間を下位へ回さない。回すと単価の小さいQB（1問1〜2分）が端数の時間を
+// 埋め続け、単価の大きい講義動画（1本40分）がいつまでも後ろへ押し出される。
+// 手で1日の上限を入れたプランで止まったときだけは、余りを次へ回す（上限とはそういう意味）。
+//
+// 同じ科目では、講義動画を全部見終わった翌日からQBを始める。見ていない範囲を
+// QBで解くことになるため、同じ日に混ぜない。
+//
 // 1日ぶんの時間で1単位も入らないプラン（1本50分・目標30分など）は、その日の
 // 先頭に来たときだけ1単位置く。置かないと永遠に進まないため。
 function buildSequencedPlanSchedules(input) {
@@ -11561,8 +11568,17 @@ function buildSequencedPlanSchedules(input) {
   const todayKey = o.todayKey || todayPlanKey();
   const goalMinutesOf = typeof o.goalMinutesOf === 'function' ? o.goalMinutesOf : (() => 0);
   const queue = (o.entries || [])
-    .map(e => Object.assign({}, e, { left: Math.max(0, Math.floor(Number(e.remaining) || 0)), items: [], finishKey: null }))
+    .map(e => Object.assign({}, e, {
+      left: Math.max(0, Math.floor(Number(e.remaining) || 0)),
+      groupKey: planGroupKey(e.plan), items: [], finishKey: null
+    }))
     .filter(e => e.left > 0 && Number.isFinite(e.minPerUnit) && e.minPerUnit > 0);
+
+  // 同じ科目の講義動画が残っている間は、その科目のQBを置かない。
+  // 見終わった当日も置かない（翌日から解き始める）。
+  const waitingForVideo = (e, dayKey) => e.plan.unit !== 'video' && queue.some(o =>
+    o.plan.unit === 'video' && o.groupKey === e.groupKey
+    && (o.left > 0 || !o.finishKey || o.finishKey >= dayKey));
 
   const warnings = [];
   let dayKey = todayKey;
@@ -11575,18 +11591,23 @@ function buildSequencedPlanSchedules(input) {
       if (e.left <= 0) continue;
       if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
       if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;        // その曜日は休み
+      if (waitingForVideo(e, dayKey)) continue;                         // 同じ科目の動画が先
       const byTime = Math.floor(budget / e.minPerUnit);
       const byCap = e.dailyCap === null || e.dailyCap === undefined ? Infinity : e.dailyCap;
       let take = Math.min(e.left, byTime, byCap);
       // その日まだ何も置けていないなら、時間が足りなくても1単位は進める
       if (take <= 0 && placedToday === 0 && byCap >= 1 && budget > 0) take = 1;
-      if (take <= 0) continue;
-      e.items.push({ dateKey: dayKey, targetAmount: take });
-      e.left -= take;
-      if (e.left === 0) e.finishKey = dayKey;
-      budget = Math.max(0, budget - take * e.minPerUnit);
-      placedToday += take;
+      if (take > 0) {
+        e.items.push({ dateKey: dayKey, targetAmount: take });
+        e.left -= take;
+        if (e.left === 0) e.finishKey = dayKey;
+        budget = Math.max(0, budget - take * e.minPerUnit);
+        placedToday += take;
+      }
       if (budget <= 0) break;   // その日の時間を使い切った
+      // 上位がまだ残っているのに下位へ譲ると、単価の小さいQBが端数を埋め続けて
+      // 講義動画が後ろへ押し出される。1日の上限で止まったときだけ次へ回す。
+      if (e.left > 0 && take < byCap) break;
     }
     dayKey = shiftDateKey(dayKey, 1);
   }

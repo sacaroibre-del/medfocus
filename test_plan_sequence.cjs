@@ -134,6 +134,70 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   eq('余った時間で次のプランも初日に進む', res.byPlan['b'].items, [{ dateKey: '2026-09-06', targetAmount: 20 }]);
 })();
 
+(function videoBeforeQbSameSubject() {
+  // 同じ科目では、講義動画を見終わった翌日からQBを始める。
+  // 見ていない範囲をQBで解くことになるので、同じ日に混ぜない。
+  const entries = [
+    { plan: plan({ id: 'vid', subject_id: '2J', unit: 'video', due_date: '2026-11-30' }),
+      remaining: 3, minPerUnit: 38, startKey: '2026-09-06' },
+    { plan: plan({ id: 'qb', subject_id: '2J', unit: 'q', due_date: '2026-11-30' }),
+      remaining: 46, minPerUnit: 2, startKey: '2026-09-06' }
+  ];
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 180 });
+  const vEnd = res.byPlan['vid'].finishKey;
+  const qStart = res.byPlan['qb'].items[0].dateKey;
+  ok('QBは動画を見終わった翌日から', qStart > vEnd, { 動画完了: vEnd, QB開始: qStart });
+  ok('動画が終わっていない日にQBを置かない',
+     res.byPlan['qb'].items.every(i => i.dateKey > vEnd), res.byPlan['qb'].items);
+
+  // vol.4 も元の科目の動画を待つ
+  const withVol4 = W.buildSequencedPlanSchedules({
+    entries: [entries[0],
+      { plan: plan({ id: '4b', subject_id: '4B2J', unit: 'q', due_date: '2026-11-30' }),
+        remaining: 20, minPerUnit: 2, startKey: '2026-09-06' }],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  ok('4連問も元の科目の動画を待つ',
+     withVol4.byPlan['4b'].items.every(i => i.dateKey > withVol4.byPlan['vid'].finishKey));
+
+  // 動画プランの無い科目は待たされない
+  const noVideo = W.buildSequencedPlanSchedules({
+    entries: [{ plan: plan({ id: 'solo', subject_id: '3D', unit: 'q', due_date: '2026-11-30' }),
+                remaining: 40, minPerUnit: 2, startKey: '2026-09-06' },
+               entries[0]],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  eq('動画の無い科目は初日から解ける', noVideo.byPlan['solo'].items[0].dateKey, '2026-09-06');
+})();
+
+(function strictPriorityNoSqueezeIn() {
+  // 単価の大きいプラン（動画40分/本）が入りきらない端数の時間に、単価の小さい
+  // プラン（QB 2分/問）が滑り込むと、動画がいつまでも後ろへ押し出される。
+  const entries = [
+    { plan: plan({ id: 'vid', subject_id: '2C', unit: 'video', due_date: '2026-11-30' }),
+      remaining: 10, minPerUnit: 40, startKey: '2026-09-06' },
+    { plan: plan({ id: 'other', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+      remaining: 200, minPerUnit: 2, startKey: '2026-09-06' }
+  ];
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 180 });
+  const vEnd = res.byPlan['vid'].finishKey;
+  eq('動画は1日4本ずつ進む（180分÷40分）', res.byPlan['vid'].items.map(i => i.targetAmount), [4, 4, 2]);
+  ok('動画が残っている日に下位のQBを入れない',
+     res.byPlan['other'].items.every(i => i.dateKey >= vEnd), res.byPlan['other'].items.slice(0, 3));
+
+  // 1日の上限で止まったときだけは、余った時間を次へ回す（上限とはそういう意味）
+  const capped = W.buildSequencedPlanSchedules({
+    entries: [
+      { plan: plan({ id: 'a', subject_id: '2C', unit: 'q', due_date: '2026-11-30' }),
+        remaining: 200, minPerUnit: 2, startKey: '2026-09-06', dailyCap: 10 },
+      { plan: plan({ id: 'b', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+        remaining: 200, minPerUnit: 2, startKey: '2026-09-06' }
+    ], todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  eq('上限ぶんだけ進む', capped.byPlan['a'].items[0].targetAmount, 10);
+  eq('余った時間は次のプランへ', capped.byPlan['b'].items[0].dateKey, '2026-09-06');
+})();
+
 (function respectsStartAndWeekdays() {
   const entries = [
     { plan: plan({ id: 'later', unit: 'q', due_date: '2026-09-30' }),
