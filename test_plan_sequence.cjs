@@ -222,6 +222,139 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   ok('この結果は採用しない', W.canUseSequenced(res.byPlan['a']) === false);
 })();
 
+// ---------- 科目の優先度（学習状況から） ----------
+const COST = { minPerQuestion: 3, hasQuestion: true, minPerVideo: 40, hasVideo: true,
+               video: { kokushi: { minPerVideo: 40, has: true }, cbt: { minPerVideo: 7, has: true } } };
+const TODAY = '2026-09-06';
+const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, todayKey: TODAY }, o));
+
+(function lastTouched() {
+  const logs = [
+    { subject_name: '2C', started_at: '2026-09-01T10:00:00Z' },
+    { subject_name: '2C', started_at: '2026-06-20T10:00:00Z' },
+    { subject_name: '4B2J', started_at: '2026-08-10T10:00:00Z' },   // 4連問 2J も 2J を触ったうち
+    { subject_name: '自由入力', started_at: '2026-09-02T10:00:00Z' }
+  ];
+  const last = W.buildSubjectLastTouched(logs);
+  eq('いちばん新しい日を採る', last['2C'], '2026-09-01');
+  eq('vol.4 の学習は元の科目を触ったうち', last['2J'], '2026-08-10');
+  eq('科目に落ちない自由入力は数えない', last['自由入力'], undefined);
+})();
+
+(function staleFactor() {
+  eq('今日触っていれば等倍', W.subjectStaleFactor('2026-09-06', TODAY), 1);
+  eq('45日前でちょうど中間', W.subjectStaleFactor('2026-07-23', TODAY), 1.5);
+  eq('90日で頭打ち', W.subjectStaleFactor('2026-06-08', TODAY), 2);
+  eq('それ以上放置しても増えない', W.subjectStaleFactor('2025-01-01', TODAY), 2);
+  eq('一度も触っていなければ最大', W.subjectStaleFactor(null, TODAY), 2);
+})();
+
+(function scoreDrivers() {
+  // 残り・正答率・放置以外を揃えて、1つずつ効き目を見る
+  const rounds = (total, done, correct) => ({ '1': { done, total, correct } });
+
+  // 放置しているほうが先に来る
+  const stale = prio({
+    qb: { '2C': rounds(100, 0, 0), '2J': rounds(100, 0, 0) },
+    lastTouched: { '2C': '2026-09-05', '2J': '2026-06-01' }
+  });
+  eq('同じ残量なら放置している科目が先', stale.ranked.map(r => r.id), ['2J', '2C']);
+  eq('放置していない側の係数', Math.round(stale.bySubject['2C'].staleFactor * 100) / 100, 1.01);
+  eq('放置している側の係数', stale.bySubject['2J'].staleFactor, 2);
+
+  // 正答率が低いほうが先に来る
+  const acc = prio({
+    qb: { '2C': rounds(100, 50, 45), '2J': rounds(100, 50, 25) },
+    lastTouched: { '2C': TODAY, '2J': TODAY }
+  });
+  eq('同じ残量なら正答率が低い科目が先', acc.ranked.map(r => r.id), ['2J', '2C']);
+  eq('正答率も出る', [Math.round(acc.bySubject['2C'].accuracy), Math.round(acc.bySubject['2J'].accuracy)], [90, 50]);
+
+  // 残量（＝CBTの中での重さ）が大きいほうが先に来る
+  const size = prio({
+    qb: { '2C': rounds(400, 0, 0), '2J': rounds(50, 0, 0) },
+    lastTouched: { '2C': TODAY, '2J': TODAY }
+  });
+  eq('同じ条件なら残りが多い科目が先', size.ranked.map(r => r.id), ['2C', '2J']);
+  eq('CBT内の重さは総量の割合',
+     size.ranked.map(r => Math.round(r.sharePct)), [89, 11]);
+
+  // 重い科目でも終わっていれば下がる
+  const finished = prio({
+    qb: { '2C': rounds(400, 400, 380), '2J': rounds(50, 0, 0) },
+    lastTouched: { '2C': TODAY, '2J': TODAY }
+  });
+  eq('終わった科目は重くても後ろ', finished.ranked.map(r => r.id), ['2J', '2C']);
+})();
+
+(function accuracyUnknownIsNeutral() {
+  // 正答数が未入力の科目を 0 点にすると、手つかずの科目ほど後回しになってしまう
+  const r = prio({
+    qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } } },
+    lastTouched: { '2C': TODAY }
+  });
+  eq('正答率は出せない', r.bySubject['2C'].accuracy, null);
+  eq('誤答率は中立の0.5で置く', r.bySubject['2C'].wrongRate, 0.5);
+  ok('影響度は0にならない', r.bySubject['2C'].score > 0);
+})();
+
+(function reportsMissingQuestionCost() {
+  const noCost = W.buildSubjectPriority({
+    qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } } },
+    unitCost: { hasQuestion: false, minPerQuestion: null }, todayKey: TODAY, lastTouched: {}
+  });
+  ok('実測が足りないことを返す', noCost.questionCostKnown === false);
+  eq('QBの残り時間は入らない', noCost.bySubject['2C'].remainMin, 0);
+  ok('順番には効かない（画面で理由を出す）', noCost.hasData === false);
+  ok('実測があれば分かる', prio({ qb: {}, lastTouched: {} }).questionCostKnown === true);
+})();
+
+(function includesVideos() {
+  const r = prio({
+    qb: {}, video: { '2C': { done: 2, total: 10, edition: 'kokushi' } },
+    lastTouched: { '2C': TODAY }
+  });
+  eq('講義動画の残りも残り時間に入る', r.bySubject['2C'].remainMin, 8 * 40);
+  eq('重さは総本数ぶん', r.bySubject['2C'].weightMin, 10 * 40);
+})();
+
+(function foldsVol4() {
+  const r = prio({
+    qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } },
+          '4B2C': { '1': { done: 0, total: 40, correct: 0 } } },
+    lastTouched: { '2C': TODAY }
+  });
+  eq('4連問 2C は 2C にまとまる', r.ranked.map(x => x.id), ['2C']);
+  eq('残り時間は合算', r.bySubject['2C'].remainMin, (100 + 40) * 3);
+})();
+
+// ---------- 科目の優先度が順番に効く ----------
+(function priorityDrivesOrder() {
+  const plans = [
+    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-09-30' }),
+    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-30' })
+  ];
+  // 科目マスタの並びでは 2C(循環器) が 2O(小児科) より先
+  eq('スコアが無ければ科目マスタの並び順', W.planPriorityOrder(plans).map(p => p.id), ['circ', 'peds']);
+  // 小児科のほうが影響度が高ければ、そちらが先に来る
+  eq('スコアが高い科目が先',
+     W.planPriorityOrder(plans, sid => (sid === '2O' ? 900 : 100)).map(p => p.id), ['peds', 'circ']);
+  // 締切は自分で決めた約束なので、スコアより強い
+  const withDue = [
+    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-09-30' }),
+    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-10' })
+  ];
+  eq('締切が早い科目はスコアに関わらず先',
+     W.planPriorityOrder(withDue, sid => (sid === '2O' ? 900 : 100)).map(p => p.id), ['circ', 'peds']);
+  // 同じ科目の中の 動画→問題演習 はスコアで崩れない
+  const sameSubject = [
+    plan({ id: 'qb', subject_id: '2C', unit: 'q', due_date: '2026-09-30' }),
+    plan({ id: 'vid', subject_id: '2C', unit: 'video', due_date: '2026-09-30' })
+  ];
+  eq('同じ科目では動画が先のまま',
+     W.planPriorityOrder(sameSubject, () => 500).map(p => p.id), ['vid', 'qb']);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

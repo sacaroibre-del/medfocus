@@ -2320,6 +2320,39 @@ i.io-other { background: #64748b; }
   line-height: 1.5;
 }
 
+/* 逆算プラン: 科目の優先度の内訳。既定は畳んでおき、根拠を見たいときだけ開く */
+.plan-prio {
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.plan-prio > summary {
+  cursor: pointer;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  list-style: none;
+}
+.plan-prio > summary::-webkit-details-marker { display: none; }
+.plan-prio > summary::before { content: '▸ '; }
+.plan-prio[open] > summary::before { content: '▾ '; }
+/* 狭い画面で表が本文をはみ出させない */
+.plan-prio-scroll { overflow-x: auto; margin: 10px 0 8px; }
+.plan-prio-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; white-space: nowrap; }
+.plan-prio-table th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  padding: 4px 10px 4px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.plan-prio-table td { padding: 5px 10px 5px 0; border-bottom: 1px solid var(--color-border); }
+.plan-prio-table tr:last-child td { border-bottom: none; }
+.plan-prio-table .dim { color: var(--color-text-tertiary); }
+.plan-prio-table .warn { color: var(--color-accent-yellow); }
+
 /* 教材進捗トラッカーの入力行。折り返すと％が単独行に落ちて読みにくいので1行に保つ */
 .qb-metric-row {
   display: flex;

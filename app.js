@@ -11174,9 +11174,11 @@ function planVolumeSuggestion(unit, subjectId, targetRound, videoEdition) {
 // 満遍なく割るのをやめ、優先順位の高いものからその日の学習時間を埋めていく。
 //
 // 優先順位のルール:
-//   1. 科目のまとまりは、その科目でいちばん早い締切の順
-//   2. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
-//   3. あとは締切・周回・作成順で決定的に並べる
+//   1. 科目のまとまりは、その科目でいちばん早い締切の順（締切は自分で決めた約束なので最優先）
+//   2. 締切が並んだら、学習状況から出した科目の優先度が高い順
+//      （残り時間 × 誤答率 × 放置日数。buildSubjectPriority を参照）
+//   3. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
+//   4. あとは締切・周回・作成順で決定的に並べる
 // vol.4（多肢選択・4連問）は元の科目と同じまとまりに入れる。循環器の動画→問題演習→
 // 4連問と続くのが自然で、別の科目として離れると順番が崩れるため。
 
@@ -11203,8 +11205,11 @@ function planGroupKey(plan) {
 function planUnitRank(unit) { return unit === 'video' ? 0 : 1; }
 
 // 優先順位どおりに並べ替えた配列を返す（元の配列は変えない）。
-function planPriorityOrder(plans) {
+// scoreOf(subjectId) を渡すと、締切が並んだときの科目の順をそれで決める。
+// 渡さなければ科目マスタの並び順（従来どおり決定的だが、学習状況は見ない）。
+function planPriorityOrder(plans, scoreOf) {
   const list = (plans || []).slice();
+  const score = typeof scoreOf === 'function' ? scoreOf : null;
   // 科目ごとに「いちばん早い締切」を出し、それで科目のまとまりを並べる
   const groupDue = {};
   list.forEach(p => {
@@ -11219,8 +11224,13 @@ function planPriorityOrder(plans) {
       if (ga !== gb) {
         const c = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
         if (c) return c;
-        const s = subjectOrderIndex(baseSubjectIdOf(a.p.subject_id) || a.p.subject_id)
-                - subjectOrderIndex(baseSubjectIdOf(b.p.subject_id) || b.p.subject_id);
+        const sa = baseSubjectIdOf(a.p.subject_id) || a.p.subject_id;
+        const sb = baseSubjectIdOf(b.p.subject_id) || b.p.subject_id;
+        if (score) {
+          const v = (Number(score(sb)) || 0) - (Number(score(sa)) || 0);   // 高いほど先
+          if (v) return v;
+        }
+        const s = subjectOrderIndex(sa) - subjectOrderIndex(sb);
         if (s) return s;
         return ga.localeCompare(gb);
       }
@@ -11233,6 +11243,115 @@ function planPriorityOrder(plans) {
       return a.i - b.i;   // 入力順で決着（並びがブレないように）
     })
     .map(x => x.p);
+}
+
+
+// ---------- 科目の優先度を学習状況から出す ----------
+// 締切だけでは、同じ試験日に向けたプランどうしの順番が決まらない。
+// 「いま手をつけて効く順」を実績から出して、締切が並んだときの順番に使う。
+//
+//   影響度(分) = 残り時間 × 誤答率 × 放置係数
+//
+//  - 残り時間: 教材進捗の残り（QBの残問題数 × 分/問 ＋ 動画の残本数 × 分/本）。
+//              CBT の中で重い科目ほどここが大きく出るので、「科目の重さ」も入る。
+//              重い科目でも終わっていれば小さくなるのが正しい。
+//  - 誤答率:   QBの累積正答率の裏返し。正答数が未入力の科目は 0.5（中立）に置く。
+//              0 にすると未入力の科目が最後に沈み、手つかずの科目ほど後回しになるため。
+//  - 放置係数: 最後に手をつけてからの日数。90日で頭打ちの 1.0〜2.0 倍。
+//              一度も手をつけていない科目は最大の 2.0（いちばん遠いので先に触る）。
+const SUBJECT_STALE_CAP_DAYS = 90;
+const SUBJECT_STALE_MAX = 2;
+const SUBJECT_UNKNOWN_WRONG_RATE = 0.5;
+
+// 学習ログから科目ごとの「最後に手をつけた日」を引く。
+// vol.4（多肢選択・4連問）は元の科目を触ったものとして数える。
+function buildSubjectLastTouched(logs) {
+  const out = {};
+  (logs || []).forEach(l => {
+    if (!l || !l.started_at) return;
+    const sid = baseSubjectIdOf(l.subject_name);
+    if (!sid) return;
+    const d = new Date(l.started_at);
+    if (isNaN(d)) return;
+    const key = toLocalDateKey(getLogicalDate(d));
+    if (!out[sid] || key > out[sid]) out[sid] = key;
+  });
+  return out;
+}
+
+// 最後に触ってからの日数を 1.0〜2.0 の係数にする。null = 一度も触っていない。
+function subjectStaleFactor(lastKey, todayKey) {
+  if (!lastKey) return SUBJECT_STALE_MAX;
+  const days = Math.max(0, diffDateKeys(todayKey, lastKey) || 0);
+  return 1 + Math.min(1, days / SUBJECT_STALE_CAP_DAYS) * (SUBJECT_STALE_MAX - 1);
+}
+
+// input: { qb, video, unitCost, lastTouched, todayKey, targetRound }
+// 返り値: { bySubject: { [sid]: row }, ranked: [row], totalWeightMin }
+//   row = { id, name, remainMin, weightMin, sharePct, accuracy, wrongRate,
+//           lastKey, staleDays, staleFactor, score }
+function buildSubjectPriority(input) {
+  const o = input || {};
+  const qb = o.qb || {}, video = o.video || {}, unitCost = o.unitCost || {};
+  const today = o.todayKey || todayPlanKey();
+  const lastTouched = o.lastTouched || {};
+  const targetRound = Number(o.targetRound) || 1;
+  const minPerQ = unitCost.hasQuestion && unitCost.minPerQuestion > 0 ? unitCost.minPerQuestion : null;
+
+  // vol.4 は元の科目へ畳んでから数える（4連問の2Cは循環器の一部）
+  const g = {};
+  const bucket = sid => (g[sid] = g[sid] || { id: sid, remainMin: 0, weightMin: 0, solved: 0, correct: 0 });
+
+  Object.entries(qb).forEach(([rawId, rounds]) => {
+    const sid = baseSubjectIdOf(rawId) || rawId;
+    const p = subjectPlan(rounds, targetRound);
+    if (!p) return;
+    const b = bucket(sid);
+    if (minPerQ) {
+      b.remainMin += p.remaining * minPerQ;
+      b.weightMin += p.total * minPerQ;
+    }
+    b.solved += p.solved; b.correct += p.correct;
+  });
+
+  Object.entries(video).forEach(([rawId, v]) => {
+    const sid = baseSubjectIdOf(rawId) || rawId;
+    const total = Number(v && v.total) || 0;
+    if (total <= 0) return;
+    const perVideo = minutesPerVideoFor(v.edition || LEGACY_VIDEO_EDITION, unitCost, sid);
+    if (!perVideo) return;
+    const b = bucket(sid);
+    b.remainMin += Math.max(0, total - (Number(v.done) || 0)) * perVideo;
+    b.weightMin += total * perVideo;
+  });
+
+  const totalWeightMin = Object.values(g).reduce((s, b) => s + b.weightMin, 0);
+  const ranked = Object.values(g).map(b => {
+    const accuracy = b.solved > 0 ? b.correct / b.solved * 100 : null;
+    const wrongRate = accuracy === null ? SUBJECT_UNKNOWN_WRONG_RATE : (100 - accuracy) / 100;
+    const lastKey = lastTouched[b.id] || null;
+    const staleFactor = subjectStaleFactor(lastKey, today);
+    return {
+      id: b.id, name: subjectNameOf(b.id),
+      remainMin: b.remainMin, weightMin: b.weightMin,
+      sharePct: totalWeightMin > 0 ? b.weightMin / totalWeightMin * 100 : 0,
+      accuracy, wrongRate, solved: b.solved,
+      lastKey, staleDays: lastKey ? Math.max(0, diffDateKeys(today, lastKey) || 0) : null,
+      staleFactor,
+      score: b.remainMin * wrongRate * staleFactor
+    };
+  }).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+
+  const bySubject = {};
+  ranked.forEach(r => { bySubject[r.id] = r; });
+  return {
+    bySubject, ranked, totalWeightMin,
+    hasData: ranked.some(r => r.score > 0),
+    // 1問あたりの実測が足りないと QB の残り時間を出せず、QB だけの科目は
+    // 影響度が 0 になる（＝順番が科目マスタの並びに戻る）。黙って効かないと
+    // 「なぜこの順番なのか」が分からないので、画面に出せるよう返しておく。
+    questionCostKnown: !!minPerQ
+  };
 }
 
 // プラン1単位あたりの所要分。見積もれなければ null（＝順番詰めの対象から外す）。
@@ -12298,7 +12417,7 @@ function planGoalMinutesOf(dateKey) {
 // 単価を見積もれないプラン（実測が足りない・版が不明）は対象から外し、
 // 今までどおり期間へ均す。詰められるものと均されるものが混ざる形になるが、
 // 何も予定が出ないよりは良い。外れたことは planSequenceNoteHTML が出す。
-function buildPlanSequence(state, todayKey, unitCost) {
+function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
   const entries = [];
   (state || []).forEach(st => {
     if (!st.canAuto) return;
@@ -12315,8 +12434,10 @@ function buildPlanSequence(state, todayKey, unitCost) {
     });
   });
   if (entries.length < PLAN_SEQUENCE_MIN_PLANS) return null;
+  const by = (subjectPriority && subjectPriority.bySubject) || null;
+  const scoreOf = by ? (sid => (by[sid] ? by[sid].score : 0)) : null;
   return buildSequencedPlanSchedules({
-    entries: planPriorityOrder(entries.map(e => e.plan))
+    entries: planPriorityOrder(entries.map(e => e.plan), scoreOf)
       .map(p => entries.find(e => e.plan.id === p.id)),
     todayKey, goalMinutesOf: planGoalMinutesOf
   });
@@ -12368,7 +12489,14 @@ async function syncPlans(force) {
       noEstimate: false
     });
   }
-  const sequence = buildPlanSequence(state, today, buildUnitCost(logs));
+  const unitCost = buildUnitCost(logs);
+  // 締切が並んだときの科目の順は、教材進捗と学習ログから出す
+  // （残り時間 × 誤答率 × 放置日数）。プラン一覧で内訳も出す。
+  const subjectPriority = buildSubjectPriority({
+    qb: getQBProgress(), video: primaryVideoProgress(), unitCost,
+    lastTouched: buildSubjectLastTouched(logs), todayKey: today
+  });
+  const sequence = buildPlanSequence(state, today, unitCost, subjectPriority);
 
   const tasks = [];
   const rebuilt = [];
@@ -12389,7 +12517,7 @@ async function syncPlans(force) {
     tasks.push(...mine);
   }
   const noEstimate = state.filter(s => s.noEstimate).map(s => s.plan.id);
-  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate };
+  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate, subjectPriority };
   _planSyncAt = Date.now();
   return _planSyncResult;
 }
@@ -12667,6 +12795,38 @@ function openPlanWizard(onDone, existing) {
   };
 }
 
+// 科目の優先度の内訳。順番が実績から自動で決まるので、根拠を出さないと
+// 「なぜこの科目が先なのか」に答えられず、直しようもなくなる。
+// プランを持っている科目だけに絞る（全科目を出しても順番には効かない）。
+function subjectPriorityTableHTML(sync) {
+  const sp = sync && sync.subjectPriority;
+  if (!sp || !sp.hasData) return '';
+  const wanted = new Set((sync.plans || [])
+    .filter(p => p.status === 'active')
+    .map(p => baseSubjectIdOf(p.subject_id) || p.subject_id));
+  const rows = sp.ranked.filter(r => wanted.has(r.id)).slice(0, 12);
+  if (rows.length < 2) return '';
+  const hours = m => (m / 60).toFixed(1) + 'h';
+  return `<details class="plan-prio">
+    <summary>科目の優先度（学習状況から）</summary>
+    <div class="plan-prio-scroll"><table class="plan-prio-table">
+      <thead><tr><th>科目</th><th>残り</th><th>CBT内の重さ</th><th>正答率</th><th>最後に学習</th><th>影響度</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${esc(r.name)}</td>
+        <td>${hours(r.remainMin)}</td>
+        <td>${r.sharePct.toFixed(1)}%</td>
+        <td>${r.accuracy === null ? '<span class="dim">未入力</span>' : Math.round(r.accuracy) + '%'}</td>
+        <td>${r.lastKey ? `${r.lastKey.slice(5).replace('-', '/')}<span class="dim">（${r.staleDays}日前）</span>` : '<span class="warn">未着手</span>'}</td>
+        <td><strong>${hours(r.score)}</strong></td>
+      </tr>`).join('')}</tbody>
+    </table></div>
+    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数（最後に学習した日から90日で最大2倍。未着手は2倍）。
+      「まだ間違えるであろう分量」の見積もりで、大きい科目から先に埋めます。
+      正答率が未入力の科目は誤答率50%として扱います。</div>
+    ${sp.questionCostKnown ? '' : `<div class="plan-seq-hint warn">${IC.warn} 1問あたりの実測が足りないので、QBの残り時間は影響度に入っていません。学習記録に「解いた問題数」を入れると入るようになります。</div>`}
+  </details>`;
+}
+
 // いま何の順番で詰めているかを見せる。順番が勝手に決まる仕組みなので、
 // 結果だけ出して理由が見えないと「なぜ今日これなのか」が分からなくなる。
 function planSequenceNoteHTML(sync) {
@@ -12680,7 +12840,10 @@ function planSequenceNoteHTML(sync) {
   return `<div class="plan-seq-note">
     <div class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています</div>
     <div class="plan-seq-order">${names.map((n, i) => `<span class="plan-seq-chip">${i + 1}. ${n}</span>`).join('')}</div>
-    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは締切の早い順です。
+    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは締切の早い順で、
+      締切が並んだら${(sync.subjectPriority && sync.subjectPriority.hasData)
+        ? '下の「科目の優先度」が高いほうが先です'
+        : '科目マスタの並び順です（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
       その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
     ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないため順番詰めの対象外です（今までどおり期間へ均します）。学習記録に「解いた問題数」「見た本数」を入れると対象になります。</div>` : ''}
   </div>`;
@@ -12709,7 +12872,7 @@ async function renderPlans() {
         <div class="cal-spacer"></div>
         <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
       </div>
-      ${planSequenceNoteHTML(sync)}
+      ${planSequenceNoteHTML(sync)}${subjectPriorityTableHTML(sync)}
       ${plans.length ? `<div class="plan-list">${plans.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey,
           sync.sequence && sync.sequence.byPlan[p.id])).join('')}</div>`
         : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`}`;
