@@ -276,8 +276,8 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
     lastTouched: { '2C': TODAY, '2J': TODAY }
   });
   eq('同じ条件なら残りが多い科目が先', size.ranked.map(r => r.id), ['2C', '2J']);
-  eq('CBT内の重さは総量の割合',
-     size.ranked.map(r => Math.round(r.sharePct)), [89, 11]);
+  eq('教材量の割合も出る',
+     size.ranked.map(r => Math.round(r.materialPct)), [89, 11]);
 
   // 重い科目でも終わっていれば下がる
   const finished = prio({
@@ -315,7 +315,7 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
     lastTouched: { '2C': TODAY }
   });
   eq('講義動画の残りも残り時間に入る', r.bySubject['2C'].remainMin, 8 * 40);
-  eq('重さは総本数ぶん', r.bySubject['2C'].weightMin, 10 * 40);
+  eq('教材量は総本数ぶん', r.bySubject['2C'].materialMin, 10 * 40);
 })();
 
 (function foldsVol4() {
@@ -388,6 +388,53 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   ];
   eq('同じ科目では動画が先のまま',
      W.planPriorityOrder(sameSubject, withScore(() => 500)).map(p => p.id), ['vid', 'qb']);
+})();
+
+// ---------- CBT の出題比重 ----------
+(function blueprint() {
+  const ALL = ('1A 1B 1C 1D 1E 1F 1G 1H 1I 1J 2A 2B 2C 2D 2E 2F 2G 2H 2I 2J 2K 2L 2M 2N '
+             + '2O 2P 2Q 2R 2S 2T 2U 2V 2W 2X 3A 3B 3C 3D').split(' ');
+  const q = id => W.cbtExamInfoOf(id).questions;
+
+  ok('全科目に対応づけがある', ALL.every(id => W.cbtExamInfoOf(id) !== null),
+     ALL.filter(id => !W.cbtExamInfoOf(id)));
+  const total = ALL.reduce((s, id) => s + q(id), 0);
+  ok('科目に配った合計が320問になる', Math.abs(total - 320) < 0.001, total);
+
+  // 複数領域にまたがる科目は、その全部から受け取る
+  ok('循環器は D領域だけでなく E領域からも受け取る', q('2C') > q('2A') * 0.99 && q('2C') > 10, q('2C'));
+  eq('またがっている領域が分かる', W.cbtExamInfoOf('2C').domains, ['D', 'E']);
+  eq('単一領域の科目', W.cbtExamInfoOf('1B').domains, ['C']);
+
+  // 科目数の偏りで順位が壊れていないこと（E領域を5科目で割ると感染症が循環器を超えていた）
+  ok('メジャー内科 > 全身系 > マイナー', q('2C') > q('2H') && q('2H') > q('2R'),
+     { 循環器: q('2C'), 感染症: q('2H'), 眼科: q('2R') });
+  ok('メジャー内科どうしは同じ', Math.abs(q('2C') - q('2I')) < 0.001);
+  ok('公衆衛生がA・B領域を独占しない（3Bにも配る）', q('3D') < 32, q('3D'));
+
+  // 比重は影響度を支配しないよう頭打ちにする
+  ALL.forEach(id => {
+    const w = W.cbtExamWeightOf(id);
+    ok('比重は0.5〜2.0に収まる: ' + id, w >= 0.5 && w <= 2, w);
+  });
+  eq('対応づけの無い科目は中立', W.cbtExamWeightOf('anki'), 1);
+  eq('自由入力も中立', W.cbtExamWeightOf('自習室でまとめ'), 1);
+  eq('4連問 2C は 2C と同じ比重', W.cbtExamWeightOf('4B2C'), W.cbtExamWeightOf('2C'));
+  eq('多肢選択 2R も元の科目と同じ', W.cbtExamWeightOf('4A2R'), W.cbtExamWeightOf('2R'));
+})();
+
+(function examWeightAffectsScore() {
+  // 残り・正答率・放置を揃えると、出題比重の差だけが残る
+  const rounds = { '1': { done: 0, total: 100, correct: 0 } };
+  const r = prio({ qb: { '2C': rounds, '2R': rounds }, lastTouched: { '2C': TODAY, '2R': TODAY } });
+  eq('出題の多い科目が先', r.ranked.map(x => x.id), ['2C', '2R']);
+  eq('出題数は表に出せる',
+     [Math.round(r.bySubject['2C'].examQuestions), Math.round(r.bySubject['2R'].examQuestions)], [12, 4]);
+  ok('影響度の比は比重の比になる',
+     Math.abs(r.bySubject['2C'].score / r.bySubject['2R'].score
+              - W.cbtExamWeightOf('2C') / W.cbtExamWeightOf('2R')) < 1e-9);
+  // 教材の量（登録した総問題数）は出題比重とは別物として残す
+  ok('教材量も別に持つ', r.bySubject['2C'].materialMin === r.bySubject['2R'].materialMin);
 })();
 
 // ---------- 締切の初期値 ----------

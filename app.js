@@ -11280,19 +11280,117 @@ function planPriorityOrder(plans, opts) {
 }
 
 
+
+// ==================== CBT の出題比重 ====================
+// CBT はコア・カリキュラムの領域ごとに出題割合が決まっている。
+//   A・B領域 医師として求められる基本的な資質・能力／社会と医学・医療  約10%  約32問
+//   C領域   医学一般（基礎医学など）                                約15%  約48問
+//   D領域   人体各器官の正常構造と機能、病態、診断、治療             約35%  約112問
+//   E領域   全身に及ぶ生理的変化、病態、診断、治療                   約20%  約64問
+//   F領域   診療の基本                                            約20%  約64問
+//                                                            合計  100%  320問
+const CBT_BLUEPRINT_DOMAINS = [
+  { id: 'AB', label: 'A・B領域 基本的な資質・能力／社会と医学・医療', pct: 10, questions: 32  },
+  { id: 'C',  label: 'C領域 医学一般（基礎医学）',                    pct: 15, questions: 48  },
+  { id: 'D',  label: 'D領域 人体各器官の構造・機能・病態・診断・治療', pct: 35, questions: 112 },
+  { id: 'E',  label: 'E領域 全身に及ぶ生理的変化・病態・診断・治療',   pct: 20, questions: 64  },
+  { id: 'F',  label: 'F領域 診療の基本',                             pct: 20, questions: 64  }
+];
+
+// 領域の中の科目別内訳は公表されていないので、科目の重みで按分して概算する。
+// 重み: 3 = メジャー / 2 = 準メジャー / 1 = マイナー（小数可）。
+//
+// 1科目が複数の領域にまたがることを許す。E領域「全身に及ぶ生理的変化・病態」は
+// 感染・腫瘍・加齢のように臓器別の科目でも問われるので、E をその5科目だけで
+// 割ると免疫・膠原病や感染症が循環器より重くなってしまう。それは出題実態ではなく
+// 「その領域に何科目を置いたか」の反映でしかない。薄く配って歪みを消す。
+//
+// ここは概算の前提そのもの。実感と違ったらこの表の数字だけを直せばよい
+// （出題数・比重・順番はすべてここから計算される）。
+const CBT_SUBJECT_DOMAIN = {
+  // C領域: 基礎医学。解剖と生理が重い
+  '1A': [['C', 1]], '1B': [['C', 3]], '1C': [['C', 3]], '1D': [['C', 2]], '1E': [['C', 1]],
+  '1F': [['C', 1]], '1G': [['C', 2]], '1H': [['C', 2]], '1I': [['C', 2]], '1J': [['C', 2]],
+
+  // D領域: 器官系の臨床。内科系メジャーを3、産小・整形・精神を2、他マイナーを1。
+  // 併せて E領域（臓器別に問われる感染・腫瘍・加齢）も薄く持つ
+  '2A': [['D', 3], ['E', 1]], '2B': [['D', 3], ['E', 1]], '2C': [['D', 3], ['E', 1]],
+  '2D': [['D', 3], ['E', 1]], '2E': [['D', 3], ['E', 1]], '2G': [['D', 3], ['E', 1]],
+  '2I': [['D', 3], ['E', 1]], '2J': [['D', 3], ['E', 1]],
+  '2O': [['D', 2], ['E', 0.5]], '2P': [['D', 2], ['E', 0.5]], '2Q': [['D', 2], ['E', 0.5]],
+  '2T': [['D', 2], ['E', 0.5]], '2U': [['D', 2], ['E', 0.5]],
+  '2R': [['D', 1], ['E', 0.25]], '2S': [['D', 1], ['E', 0.25]],
+  '2V': [['D', 1], ['E', 0.25]], '2W': [['D', 1], ['E', 0.25]],
+
+  // E領域を主に持つ科目（臓器をまたぐもの）
+  '2F': [['E', 3]], '2H': [['E', 3]], '2L': [['E', 2]], '2N': [['E', 2]], '2K': [['E', 1]],
+
+  // F領域: 診療の基本
+  '3A': [['F', 3]], '3B': [['F', 3], ['AB', 1]], '3C': [['F', 2]],
+  '2X': [['F', 2]], '2M': [['F', 1]],
+
+  // A・B領域: 社会と医学・医療。資質・能力の一部は 3B にも入る
+  '3D': [['AB', 3]]
+};
+
+// 領域の問題数を重みで按分して、科目ごとの出題数（目安）にする。
+// 起動時に1回だけ組む。ユーザーのデータには依存しないので固定値。
+const CBT_EXAM_WEIGHT = (function buildCbtBlueprint() {
+  const sumByDomain = {};
+  Object.values(CBT_SUBJECT_DOMAIN).forEach(parts =>
+    parts.forEach(([d, w]) => { sumByDomain[d] = (sumByDomain[d] || 0) + w; }));
+  const totalQ = CBT_BLUEPRINT_DOMAINS.reduce((s, d) => s + d.questions, 0);
+  const out = {};
+  Object.entries(CBT_SUBJECT_DOMAIN).forEach(([sid, parts]) => {
+    let questions = 0;
+    const domains = [];
+    parts.forEach(([d, w]) => {
+      const dom = CBT_BLUEPRINT_DOMAINS.find(x => x.id === d);
+      if (!dom || !sumByDomain[d]) return;
+      questions += dom.questions * w / sumByDomain[d];
+      domains.push(d);
+    });
+    out[sid] = { domain: domains.join('・'), domains, questions,
+                 pct: totalQ > 0 ? questions / totalQ * 100 : 0 };
+  });
+  return out;
+})();
+
+// 出題比重が影響度を支配しないように、平均からの倍率を 0.5〜2.0 に抑える。
+// 領域内の按分は概算なので、そこの誤差でいきなり順番がひっくり返らないようにする。
+const CBT_WEIGHT_MIN = 0.5;
+const CBT_WEIGHT_MAX = 2;
+
+function cbtExamInfoOf(sid) {
+  const base = baseSubjectIdOf(sid) || sid;
+  return CBT_EXAM_WEIGHT[String(base || '').toUpperCase()] || null;
+}
+
+// 影響度に掛ける倍率。出題比率が平均の何倍かを clamp したもの。
+// 対応づけの無い科目（Anki など）は 1（中立）。
+function cbtExamWeightOf(sid) {
+  const info = cbtExamInfoOf(sid);
+  if (!info) return 1;
+  const n = Object.keys(CBT_EXAM_WEIGHT).length;
+  const avgPct = n > 0 ? 100 / n : 0;
+  if (!avgPct) return 1;
+  return Math.min(CBT_WEIGHT_MAX, Math.max(CBT_WEIGHT_MIN, info.pct / avgPct));
+}
+
 // ---------- 科目の優先度を学習状況から出す ----------
 // 締切だけでは、同じ試験日に向けたプランどうしの順番が決まらない。
 // 「いま手をつけて効く順」を実績から出して、締切が並んだときの順番に使う。
 //
-//   影響度(分) = 残り時間 × 誤答率 × 放置係数
+//   影響度(分) = 残り時間 × 誤答率 × 放置係数 × 出題比重
 //
 //  - 残り時間: 教材進捗の残り（QBの残問題数 × 分/問 ＋ 動画の残本数 × 分/本）。
-//              CBT の中で重い科目ほどここが大きく出るので、「科目の重さ」も入る。
-//              重い科目でも終わっていれば小さくなるのが正しい。
+//              終わっている科目ほど小さくなる。
 //  - 誤答率:   QBの累積正答率の裏返し。正答数が未入力の科目は 0.5（中立）に置く。
 //              0 にすると未入力の科目が最後に沈み、手つかずの科目ほど後回しになるため。
 //  - 放置係数: 最後に手をつけてからの日数。90日で頭打ちの 1.0〜2.0 倍。
 //              一度も手をつけていない科目は最大の 2.0（いちばん遠いので先に触る）。
+//  - 出題比重: CBT本番でどれだけ問われるか（CBT_EXAM_WEIGHT）。平均の何倍かを
+//              0.5〜2.0 に抑えたもの。教材の量と試験での重要度は別物なので分けて掛ける。
 const SUBJECT_STALE_CAP_DAYS = 90;
 const SUBJECT_STALE_MAX = 2;
 const SUBJECT_UNKNOWN_WRONG_RATE = 0.5;
@@ -11322,8 +11420,9 @@ function subjectStaleFactor(lastKey, todayKey) {
 
 // input: { qb, video, unitCost, lastTouched, todayKey, targetRound }
 // 返り値: { bySubject: { [sid]: row }, ranked: [row], totalWeightMin }
-//   row = { id, name, remainMin, weightMin, sharePct, accuracy, wrongRate,
-//           lastKey, staleDays, staleFactor, score }
+//   row = { id, name, remainMin, materialMin, materialPct,
+//           examQuestions, examPct, examDomain, examWeight,
+//           accuracy, wrongRate, lastKey, staleDays, staleFactor, score }
 function buildSubjectPriority(input) {
   const o = input || {};
   const qb = o.qb || {}, video = o.video || {}, unitCost = o.unitCost || {};
@@ -11365,14 +11464,23 @@ function buildSubjectPriority(input) {
     const wrongRate = accuracy === null ? SUBJECT_UNKNOWN_WRONG_RATE : (100 - accuracy) / 100;
     const lastKey = lastTouched[b.id] || null;
     const staleFactor = subjectStaleFactor(lastKey, today);
+    const exam = cbtExamInfoOf(b.id);
+    const examWeight = cbtExamWeightOf(b.id);
     return {
       id: b.id, name: subjectNameOf(b.id),
-      remainMin: b.remainMin, weightMin: b.weightMin,
-      sharePct: totalWeightMin > 0 ? b.weightMin / totalWeightMin * 100 : 0,
+      remainMin: b.remainMin,
+      // 登録した教材の量（残り時間の母数）。試験での重みとは別物なので名前を分ける
+      materialMin: b.weightMin,
+      materialPct: totalWeightMin > 0 ? b.weightMin / totalWeightMin * 100 : 0,
+      // CBT本番での出題数の目安。CBT_EXAM_WEIGHT 由来で、教材の量には依存しない
+      examQuestions: exam ? exam.questions : null,
+      examPct: exam ? exam.pct : null,
+      examDomain: exam ? exam.domain : null,
+      examWeight,
       accuracy, wrongRate, solved: b.solved,
       lastKey, staleDays: lastKey ? Math.max(0, diffDateKeys(today, lastKey) || 0) : null,
       staleFactor,
-      score: b.remainMin * wrongRate * staleFactor
+      score: b.remainMin * wrongRate * staleFactor * examWeight
     };
   }).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
@@ -12868,19 +12976,25 @@ function subjectPriorityTableHTML(sync) {
   return `<details class="plan-prio">
     <summary>科目の優先度（学習状況から）</summary>
     <div class="plan-prio-scroll"><table class="plan-prio-table">
-      <thead><tr><th>科目</th><th>残り</th><th>CBT内の重さ</th><th>正答率</th><th>最後に学習</th><th>影響度</th></tr></thead>
+      <thead><tr><th>科目</th><th>残り</th><th>CBT出題数<span class="dim">（目安）</span></th><th>正答率</th><th>最後に学習</th><th>影響度</th></tr></thead>
       <tbody>${rows.map(r => `<tr>
         <td>${esc(r.name)}</td>
         <td>${hours(r.remainMin)}</td>
-        <td>${r.sharePct.toFixed(1)}%</td>
+        <td>${r.examQuestions === null ? '<span class="dim">—</span>'
+              : `${r.examQuestions.toFixed(1)}問<span class="dim">（${r.examPct.toFixed(1)}%・${r.examDomain}領域）</span>`}</td>
         <td>${r.accuracy === null ? '<span class="dim">未入力</span>' : Math.round(r.accuracy) + '%'}</td>
         <td>${r.lastKey ? `${r.lastKey.slice(5).replace('-', '/')}<span class="dim">（${r.staleDays}日前）</span>` : '<span class="warn">未着手</span>'}</td>
         <td><strong>${hours(r.score)}</strong></td>
       </tr>`).join('')}</tbody>
     </table></div>
-    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数（最後に学習した日から90日で最大2倍。未着手は2倍）。
+    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数 × 出題比重。
       「まだ間違えるであろう分量」の見積もりで、大きい科目から先に埋めます。
-      正答率が未入力の科目は誤答率50%として扱います。</div>
+      放置係数は最後に学習した日から90日で最大2倍（未着手は2倍）。
+      正答率が未入力の科目は誤答率50%として扱います。
+      出題比重は下の出題数が平均の何倍かで、0.5〜2.0倍に抑えています。</div>
+    <div class="plan-seq-hint">CBT出題数はコア・カリキュラムの領域別割合（A・B 32問／C 48問／D 112問／E 64問／F 64問・計320問）を、
+      科目の重み（メジャー／準メジャー／マイナー）で按分した概算です。領域内の科目別内訳は公表されていないため、
+      ここは目安として扱ってください。</div>
     ${sp.questionCostKnown ? '' : `<div class="plan-seq-hint warn">${IC.warn} 1問あたりの実測が足りないので、QBの残り時間は影響度に入っていません。学習記録に「解いた問題数」を入れると入るようになります。</div>`}
   </details>`;
 }
