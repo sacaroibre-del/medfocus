@@ -566,6 +566,42 @@ const subjectCategories = [
   ]}
 ];
 
+// ==================== vol.4 多肢選択問題・4連問 ====================
+// QB CBT の vol.4 は「多肢選択問題」と「4連問」の2部構成で、そのどちらの中にも
+// vol.1〜3 と同じ科目（1A〜3D）が並んでいる。つまり vol.4 は科目の軸ではなく
+// 問題形式の軸で、「4連問の 2C」は「2C 循環器」を別の形式で解いているだけ。
+//
+// 進捗（問題数・正答率）は形式ごとに意味が違うので別枠で持つ。
+// 一方、学習時間は元の科目へ寄せる。時間まで分けると「循環器に何時間かけたか」が
+// 科目とvol.4に散らばって答えられなくなるため。
+//   → 時間は 2C 循環器 に足し、問題数は 4連問 2C に足す。
+const QB_SECTIONS = [
+  { key:'M', catId:'cat-vol4-multi',  name:'vol.4 多肢選択問題', short:'多肢選択', color:'#F5B041' },
+  { key:'R', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866' }
+];
+// vol.4 の科目は vol.1〜3 の科目から機械的に作る（本の並びが同じなので手で持たない）。
+const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
+// '4r2c' / '4連問 2c 循環器' → セクション定義・元の科目ID。
+// 学習ログの subject_name には科目IDと表示名のどちらも入りうるので両方を鍵にする。
+const QB_SECTION_BY_KEY = {};
+const QB_SECTION_BASE_ID = {};
+(function buildQbSectionSubjects(){
+  const base = subjectCategories
+    .filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
+    .reduce((acc, c) => acc.concat(c.subjects), []);
+  QB_SECTIONS.forEach(sec => {
+    const subjects = base.map(s => ({ id: '4' + sec.key + s.id, name: sec.short + ' ' + s.name }));
+    subjects.forEach((sub, i) => {
+      [sub.id, sub.name].forEach(k => {
+        QB_SECTION_BY_KEY[k.toLowerCase()] = sec;
+        QB_SECTION_BASE_ID[k.toLowerCase()] = base[i].id;
+      });
+    });
+    // qbOnly: 講義動画を持たない（問題集なので教材進捗トラッカーでは QB の行だけ出す）
+    subjectCategories.push({ id: sec.catId, name: sec.name, color: sec.color, qbOnly: true, subjects });
+  });
+})();
+
 // Subject name normalizer (fix case mismatches like 'anki' vs 'Anki')
 const subjectNameMap={};
 subjectCategories.forEach(c=>c.subjects.forEach(s=>{subjectNameMap[s.name.toLowerCase()]=s.name;subjectNameMap[s.id.toLowerCase()]=s.name;}));
@@ -577,6 +613,28 @@ function subjectIdOfName(v){ return v ? (subjectIdMap[String(v).toLowerCase()] |
 function normalizeSubjectName(name){
   if(!name)return '未設定';
   return subjectNameMap[name.toLowerCase()]||name;
+}
+
+// ---------- vol.4（多肢選択問題 / 4連問）の科目を解決する ----------
+// 科目ID でも表示名でも引ける。vol.4 の科目でなければ null。
+function qbSectionOf(key){ return key ? (QB_SECTION_BY_KEY[String(key).toLowerCase()] || null) : null; }
+// vol.4 の科目 → 元の科目ID（'4R2C' → '2C'）。vol.4 でなければ元の科目IDをそのまま返す。
+function baseSubjectIdOf(key){
+  if (!key) return null;
+  return QB_SECTION_BASE_ID[String(key).toLowerCase()] || subjectIdOfName(key);
+}
+// 学習時間の集計に使う科目名。vol.4 の時間は元の科目（2C 循環器 など）へ寄せる。
+// 問題数・正答率は vol.4 側に残るので、こちらは時間の集計にだけ使う。
+function studySubjectName(v){
+  const base = v ? QB_SECTION_BASE_ID[String(v).toLowerCase()] : null;
+  return normalizeSubjectName(base || v);
+}
+// 講義動画を持たない科目（vol.4 は問題集なので動画が無い）。
+function isQbOnlySubject(id){ return !!qbSectionOf(id); }
+// カテゴリID → その配下の科目一覧（コピー）。
+function subjectsOfCategory(catId){
+  const cat = subjectCategories.find(c => c.id === catId);
+  return cat ? cat.subjects.map(s => ({ ...s })) : [];
 }
 
 // ==================== 活動の一括設定 ====================
@@ -2903,7 +2961,7 @@ async function renderDashboard(){
   
   const allSubjects = subjectCategories.flatMap(c => c.subjects.map(s => ({...s, categoryColor: c.color})));
   logs.forEach(l => {
-    const key = normalizeSubjectName(l.subject_name);
+    const key = studySubjectName(l.subject_name);
     const lookupKey = key.toLowerCase();
     if (!subjectTimeMap[lookupKey]) {
       subjectTimeMap[lookupKey] = { name: key, minutes: 0, color: getSubjectColor(key) };
@@ -4026,7 +4084,7 @@ async function renderStudy(){
         ${(()=>{
           const qb=getQBProgress();
           const subStudyMap={};
-          logs.forEach(l=>{const k=normalizeSubjectName(l.subject_name);subStudyMap[k]=(subStudyMap[k]||0)+l.duration_minutes;});
+          logs.forEach(l=>{const k=studySubjectName(l.subject_name);subStudyMap[k]=(subStudyMap[k]||0)+l.duration_minutes;});
           const allSubs=subjectCategories.flatMap(c=>c.subjects);
           const rows=allSubs.map(s=>{
             const rounds=qb[s.id]||{};
@@ -4989,10 +5047,7 @@ function setPrimaryVideoEdition(sid, edition) {
 // 選択肢に出しても選べないだけでなく、版を持たない旧データを国試版として
 // 包んでしまうと実態と食い違うので、科目マスタの側で持つ。
 const NO_KOKUSHI_CATEGORY = 'cat-vol1';
-const NO_KOKUSHI_SUBJECTS = new Set(
-  (subjectCategories.find(c => c.id === NO_KOKUSHI_CATEGORY) || { subjects: [] })
-    .subjects.map(s => s.id)
-);
+const NO_KOKUSHI_SUBJECTS = new Set(subjectsOfCategory(NO_KOKUSHI_CATEGORY).map(s => s.id));
 
 // その科目でその版が存在するか。
 //  - 国試版: 基礎医学には無い
@@ -5483,7 +5538,9 @@ function roundBarColor(pct) { return pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0
 // vol カードの中身（動画1本＋周回ごとに1本ずつ）。入力欄を含まないので差し替えても安全。
 function volSummaryInnerHtml(agg, opts) {
   const showCounts = !opts || opts.showCounts !== false;
-  const vid = `<div class="prog-dual-row">
+  // vol.4（多肢選択・4連問）は問題集で講義動画が無いので、動画の行ごと落とす
+  const showVideo = !opts || opts.showVideo !== false;
+  const vid = !showVideo ? '' : `<div class="prog-dual-row">
       <span class="prog-dual-tag" style="--chip-color:#8b5cf6">動画</span>
       <div class="prog-dual-bar"><div style="height:100%;width:${agg.video.pct}%;background:#8b5cf6;border-radius:3px;"></div></div>
       <span class="prog-dual-pct">${agg.video.total > 0 ? agg.video.pct + '%' : '--'}</span>
@@ -5499,10 +5556,12 @@ function volSummaryInnerHtml(agg, opts) {
         <div class="prog-dual-bar"><div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div></div>
         <span class="prog-dual-pct" style="color:${roundBarColor(r.pct)}">${r.total > 0 ? r.pct + '%' : '--'}</span>
       </div>`).join('');
-  const counts = showCounts ? `<div class="vol-round-counts">
-      動画 ${agg.video.done}/${agg.video.total}本
-      ${agg.rounds.map(r => `・${r.round}周 ${r.done}/${r.total}問${r.accPct !== null ? `(正答${r.accPct}%)` : ''}`).join('')}
-    </div>` : '';
+  const countParts = [];
+  if (showVideo) countParts.push(`動画 ${agg.video.done}/${agg.video.total}本`);
+  agg.rounds.forEach(r => countParts.push(
+    `${r.round}周 ${r.done}/${r.total}問${r.accPct !== null ? `(正答${r.accPct}%)` : ''}`));
+  const counts = showCounts
+    ? `<div class="vol-round-counts">${countParts.join('・')}</div>` : '';
   return vid + rows + counts;
 }
 
@@ -5516,7 +5575,7 @@ function refreshQbDerived() {
 
   subjectCategories.filter(c => c.id.startsWith('cat-vol')).forEach(cat => {
     const agg = volRoundAggregate(qb, video, cat);
-    set(`[data-volbody="${cat.id}"]`, el => { el.innerHTML = volSummaryInnerHtml(agg); });
+    set(`[data-volbody="${cat.id}"]`, el => { el.innerHTML = volSummaryInnerHtml(agg, { showVideo: !cat.qbOnly }); });
     set(`[data-volpct="${cat.id}"]`, el => {
       el.style.color = roundBarColor(agg.headlinePct);
       el.innerHTML = `${agg.headlinePct}%<span style="font-weight:400;font-size:0.68rem;color:var(--color-text-tertiary);margin-left:3px;">1周目</span>`;
@@ -5526,7 +5585,7 @@ function refreshQbDerived() {
       // 主軸の版（＝分析で使う版）。未回収バッジの判定もこれで行う
       const vp = video[s.id] || { done: 0, total: 0 };
       const vPct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
-      // バーと％は版ごとに1本ずつある
+      // バーと％は版ごとに1本ずつある（行が無ければ set() は何もしない）
       VIDEO_EDITION_IDS.forEach(ed => {
         const e = videoProgressFor(s.id, ed);
         const p = e.total > 0 ? Math.round(e.done / e.total * 100) : 0;
@@ -5621,6 +5680,16 @@ function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
   </div>`;
 }
 
+// その科目に版を問わず視聴の記録があるか。
+// vol.4（問題集）は講義動画を持たないので普段は行を出さないが、
+// 記録が残っていたら出す。画面から消すと編集できなくなるほうが危ない。
+function hasVideoRecordFor(sid) {
+  return VIDEO_EDITION_IDS.some(ed => {
+    const v = videoProgressFor(sid, ed);
+    return (v.total || 0) > 0 || (v.done || 0) > 0;
+  });
+}
+
 function videoTrackerBlockHtml(sid) {
   const covered = cbtCoveredBy(sid);
   const master = cbtMasterFor(sid);
@@ -5707,7 +5776,7 @@ async function renderQBProgress(){
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
       ${volCats.map(cat=>`<div class="card" style="padding:14px;">
         <div style="font-size:0.75rem;color:var(--color-text-tertiary);text-align:center;margin-bottom:8px;">${cat.name}</div>
-        <div data-volbody="${cat.id}">${volSummaryInnerHtml(volAgg[cat.id])}</div>
+        <div data-volbody="${cat.id}">${volSummaryInnerHtml(volAgg[cat.id], { showVideo: !cat.qbOnly })}</div>
       </div>`).join('')}
     </div>
     ${volCats.map(cat=>{
@@ -5741,7 +5810,7 @@ async function renderQBProgress(){
                   <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
                 </span>
               </div>
-              ${videoTrackerBlockHtml(s.id)}
+              ${isQbOnlySubject(s.id)&&!hasVideoRecordFor(s.id)?'':videoTrackerBlockHtml(s.id)}
               ${roundKeys.length>0?roundKeys.map(rk=>{
                 const r=rounds[rk];const pct=r.total>0?Math.round(r.done/r.total*100):0;
                 const correct=r.correct||0;const accPct=r.done>0?Math.round(correct/r.done*100):0;
@@ -5926,7 +5995,7 @@ function applyInsightFilters(logs) {
   }
   // Subject filter
   if (insightFilters.subjects.length > 0) {
-    filtered = filtered.filter(l => insightFilters.subjects.includes(normalizeSubjectName(l.subject_name)));
+    filtered = filtered.filter(l => insightFilters.subjects.includes(studySubjectName(l.subject_name)));
   }
   // Location filter
   if (insightFilters.location) {
@@ -6120,7 +6189,7 @@ function buildBacklog(pipelineRows, allLogs, logicalToday) {
   const lastVideoAt = {};
   allLogs.forEach(l => {
     if (l.activity !== 'video') return;
-    const n = normalizeSubjectName(l.subject_name);
+    const n = studySubjectName(l.subject_name);
     const t = new Date(l.started_at);
     if (!lastVideoAt[n] || t > lastVideoAt[n]) lastVideoAt[n] = t;
   });
@@ -6529,7 +6598,7 @@ function buildReviewIntervalStats(logs, logicalToday) {
   logs.forEach(l => {
     const r = getLogRange(l);
     if (isNaN(r.start)) return;
-    const name = normalizeSubjectName(l.subject_name);
+    const name = studySubjectName(l.subject_name);
     const key = toLocalDateKey(getLogicalDate(r.start));
     const days = (bySubject[name] = bySubject[name] || {});
     const e = (days[key] = days[key] || { solved: 0, correct: 0, minutes: 0, focusSum: 0, focusN: 0, hasQb: false });
@@ -6677,7 +6746,7 @@ function logVideoEdition(log) {
   if (isVideoEdition(e)) return e;
   // 版が未設定のログは国試版として扱う。ただし国試版が無い科目
   // （基礎医学）はCBT版しか見ようがないのでCBT版として扱う。
-  return legacyEditionFor(subjectIdOfName(log && log.subject_name));
+  return legacyEditionFor(baseSubjectIdOf(log && log.subject_name));
 }
 
 function buildUnitCost(logs) {
@@ -6931,7 +7000,8 @@ function buildSupplementalVideo(allLogs, logicalToday, days = SUPPLEMENTAL_WINDO
     totalMin += min;
 
     // 科目が特定できないログは主軸と比べようがない
-    const sid = subjectIdOfName(l.subject_name);
+    // （vol.4 には講義動画が無いので、版の判定は元の科目で行う）
+    const sid = baseSubjectIdOf(l.subject_name);
     if (!sid) { unknownMin += min; return; }
     const ed = logVideoEdition(l);
     const primary = primaryEditionOf(sid, p);
@@ -7248,7 +7318,7 @@ function buildVideoQbLag(logs, logicalToday) {
     if (l.activity !== 'video' && l.activity !== 'qb') return;
     const r = getLogRange(l);
     if (isNaN(r.start)) return;
-    const name = normalizeSubjectName(l.subject_name);
+    const name = studySubjectName(l.subject_name);
     const day = toLocalDateKey(getLogicalDate(r.start));
     const e = (bySubject[name] = bySubject[name] || { video: {}, qb: {} });
     if (l.activity === 'video') {
@@ -7348,7 +7418,7 @@ function buildSubjectMix(logs) {
     const e = (byDay[day] = byDay[day] || {
       subjects: {}, order: [], min: 0, focusSum: 0, focusN: 0, solved: 0, correct: 0
     });
-    const name = normalizeSubjectName(l.subject_name);
+    const name = studySubjectName(l.subject_name);
     e.subjects[name] = true;
     e.order.push({ start: r.start, name });
     e.min += l.duration_minutes || 0;
@@ -7421,7 +7491,7 @@ function buildSameDayMix(logs) {
       }
     }
     if (l.activity === 'video' || l.activity === 'qb') {
-      const k = normalizeSubjectName(l.subject_name) + '|' + day;
+      const k = studySubjectName(l.subject_name) + '|' + day;
       const sd = (bySubjectDay[k] = bySubjectDay[k] || { video: false, qb: false });
       if (l.activity === 'video') sd.video = true; else sd.qb = true;
     }
@@ -7585,7 +7655,7 @@ function buildDailyReview(allLogs, targetDate, baselineDays = REVIEW_BASELINE_DA
   // --- 科目の内訳 ---
   const subMin = {};
   dayLogs.forEach(l => {
-    const name = normalizeSubjectName(l.subject_name);
+    const name = studySubjectName(l.subject_name);
     subMin[name] = (subMin[name] || 0) + (l.duration_minutes || 0);
   });
   const subjects = Object.entries(subMin)
@@ -7865,7 +7935,7 @@ async function renderInsights(){
   const logicalToday=getLogicalDate(new Date());
 
   // --- Collect unique subjects & locations from ALL logs for filter options ---
-  const allSubjectNames = [...new Set(allLogs.map(l => normalizeSubjectName(l.subject_name)))].sort();
+  const allSubjectNames = [...new Set(allLogs.map(l => studySubjectName(l.subject_name)))].sort();
   const allLocations = [...new Set(allLogs.map(l => l.location || '未設定'))].sort();
 
   // --- Filtered stats ---
@@ -7895,7 +7965,7 @@ async function renderInsights(){
   // --- Subject distribution ---
   const subjectTimeMap = {};
   logs.forEach(l => {
-    const k = normalizeSubjectName(l.subject_name);
+    const k = studySubjectName(l.subject_name);
     subjectTimeMap[k] = (subjectTimeMap[k] || 0) + l.duration_minutes;
   });
   const sortedSubjects = Object.entries(subjectTimeMap).sort((a,b) => b[1] - a[1]);
@@ -7904,7 +7974,7 @@ async function renderInsights(){
   const subjectFocusMap = {};
   logs.forEach(l => {
     if (!l.focus_level) return;
-    const k = normalizeSubjectName(l.subject_name);
+    const k = studySubjectName(l.subject_name);
     if (!subjectFocusMap[k]) subjectFocusMap[k] = { sum: 0, count: 0 };
     subjectFocusMap[k].sum += Number(l.focus_level);
     subjectFocusMap[k].count++;
@@ -8424,7 +8494,7 @@ async function renderInsights(){
   // qb は科目ID（"2C"）、study_logs は表示名（"2C 循環器"）なので名前側に寄せて突き合わせる。
   const subjMinutesAll = {};
   allLogs.forEach(l => {
-    const n = normalizeSubjectName(l.subject_name);
+    const n = studySubjectName(l.subject_name);
     subjMinutesAll[n] = (subjMinutesAll[n] || 0) + l.duration_minutes;
   });
 
@@ -10986,8 +11056,18 @@ function planLogField(plan) {
 
 function planLogMatches(plan, log) {
   if (!plan || !plan.subject_id || !log) return false;
-  const want = subjectNameMap[String(plan.subject_id).toLowerCase()];
-  if (!want || normalizeSubjectName(log.subject_name) !== want) return false;
+  // vol.4（多肢選択・4連問）は問題数を別枠で持つので、問題数のプランでは
+  // 「4連問 2C」と「2C 循環器」を別物として数える（4連問の分を 2C のプランに入れない）。
+  // それ以外の単位は畳んだ科目で見る（vol.4 に講義動画は無いので実害は無いが、
+  // 時間で消化する単位を足したときに「時間は元の科目へ」と揃うようにしておく）。
+  const exact = plan.unit === 'q' || !!qbSectionOf(plan.subject_id);
+  if (exact) {
+    const wantId = subjectIdOfName(plan.subject_id);
+    if (!wantId || subjectIdOfName(log.subject_name) !== wantId) return false;
+  } else {
+    const want = subjectNameMap[String(plan.subject_id).toLowerCase()];
+    if (!want || studySubjectName(log.subject_name) !== want) return false;
+  }
   // 講義動画のプランに版が入っていれば、その版のログだけを消化に数える。
   // 版が無いプラン（版を持つ前に作ったもの）は今までどおり版を問わない。
   if (plan.unit === 'video' && isVideoEdition(plan.video_edition)) {
