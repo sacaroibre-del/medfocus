@@ -11174,11 +11174,18 @@ function planVolumeSuggestion(unit, subjectId, targetRound, videoEdition) {
 // 満遍なく割るのをやめ、優先順位の高いものからその日の学習時間を埋めていく。
 //
 // 優先順位のルール:
-//   1. 科目のまとまりは、その科目でいちばん早い締切の順（締切は自分で決めた約束なので最優先）
-//   2. 締切が並んだら、学習状況から出した科目の優先度が高い順
+//   1. 締切が目前（PLAN_DEADLINE_URGENT_DAYS 以内）の科目は先。その中は締切順
+//   2. それ以外は、学習状況から出した科目の優先度が高い順
 //      （残り時間 × 誤答率 × 放置日数。buildSubjectPriority を参照）
 //   3. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
 //   4. あとは締切・周回・作成順で決定的に並べる
+//
+// 締切を主キーにしない理由: どの科目も本番までに終わればよく、「循環器は9/20まで」
+// のような科目ごとの締切は決めようがない。決めようのない数字が順番を支配すると、
+// 当てずっぽうの1日差で順番がひっくり返る。締切は普段は順番を決めず、
+// 目前に迫ったときだけ割り込む「制約」として扱う。
+// 間に合わない見込みは順番を変えずに警告で出す（buildSequencedPlanSchedules）。
+const PLAN_DEADLINE_URGENT_DAYS = 7;
 // vol.4（多肢選択・4連問）は元の科目と同じまとまりに入れる。循環器の動画→問題演習→
 // 4連問と続くのが自然で、別の科目として離れると順番が崩れるため。
 
@@ -11205,31 +11212,45 @@ function planGroupKey(plan) {
 function planUnitRank(unit) { return unit === 'video' ? 0 : 1; }
 
 // 優先順位どおりに並べ替えた配列を返す（元の配列は変えない）。
-// scoreOf(subjectId) を渡すと、締切が並んだときの科目の順をそれで決める。
-// 渡さなければ科目マスタの並び順（従来どおり決定的だが、学習状況は見ない）。
-function planPriorityOrder(plans, scoreOf) {
+// opts.scoreOf(subjectId) を渡すと科目の順をそれで決める。渡さなければ
+// 科目マスタの並び順（従来どおり決定的だが、学習状況は見ない）。
+// opts.todayKey は「締切が目前か」の判定に使う。渡さなければ今日。
+function planPriorityOrder(plans, opts) {
   const list = (plans || []).slice();
-  const score = typeof scoreOf === 'function' ? scoreOf : null;
-  // 科目ごとに「いちばん早い締切」を出し、それで科目のまとまりを並べる
+  const o = opts || {};
+  const score = typeof o.scoreOf === 'function' ? o.scoreOf : null;
+  const today = o.todayKey || todayPlanKey();
+  // 科目ごとに「いちばん早い締切」を出す
   const groupDue = {};
   list.forEach(p => {
     const g = planGroupKey(p);
     const due = String(p.due_date || '').slice(0, 10) || '9999-12-31';
     if (!groupDue[g] || due < groupDue[g]) groupDue[g] = due;
   });
+  // 締切が目前の科目だけ、締切順で前に出す
+  const urgent = g => {
+    const d = diffDateKeys(groupDue[g], today);
+    return Number.isFinite(d) && d <= PLAN_DEADLINE_URGENT_DAYS;
+  };
   return list
     .map((p, i) => ({ p, i }))
     .sort((a, b) => {
       const ga = planGroupKey(a.p), gb = planGroupKey(b.p);
       if (ga !== gb) {
-        const c = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
-        if (c) return c;
+        const ua = urgent(ga), ub = urgent(gb);
+        if (ua !== ub) return ua ? -1 : 1;                    // 目前の締切が割り込む
+        if (ua && ub) {
+          const c = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
+          if (c) return c;                                    // 目前どうしは締切順
+        }
         const sa = baseSubjectIdOf(a.p.subject_id) || a.p.subject_id;
         const sb = baseSubjectIdOf(b.p.subject_id) || b.p.subject_id;
         if (score) {
           const v = (Number(score(sb)) || 0) - (Number(score(sa)) || 0);   // 高いほど先
           if (v) return v;
         }
+        const c2 = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
+        if (c2) return c2;                                    // スコアが並べば締切順
         const s = subjectOrderIndex(sa) - subjectOrderIndex(sb);
         if (s) return s;
         return ga.localeCompare(gb);
@@ -12444,7 +12465,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
   const by = (subjectPriority && subjectPriority.bySubject) || null;
   const scoreOf = by ? (sid => (by[sid] ? by[sid].score : 0)) : null;
   return buildSequencedPlanSchedules({
-    entries: planPriorityOrder(entries.map(e => e.plan), scoreOf)
+    entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey })
       .map(p => entries.find(e => e.plan.id === p.id)),
     todayKey, goalMinutesOf: planGoalMinutesOf
   });
@@ -12617,6 +12638,18 @@ function planPreviewHTML(sched, unit) {
   return head + `<div class="plan-preview-list">${rows}</div>`;
 }
 
+// 締切の初期値。科目ごとの締切は決めようがないので、登録済みの試験
+// （CBT本番など）のうち直近のものを既定にする。全部同じ日に揃えば、
+// 順番は締切ではなく科目の優先度で決まる。試験が無ければ従来どおり30日後。
+function defaultPlanDue(countdowns, todayKey) {
+  const t = todayKey || todayPlanKey();
+  const next = (countdowns || [])
+    .map(e => ({ key: String(e.exam_date || '').slice(0, 10), title: e.title || e.name || '試験' }))
+    .filter(e => e.key && e.key >= t)
+    .sort((a, b) => a.key.localeCompare(b.key))[0];
+  return next || { key: shiftDateKey(t, 30), title: null };
+}
+
 // 作成／編集ウィザード。入力 → プレビュー → 確定。
 // existing を渡すと編集になる。編集では入力欄を上書きしない（科目や周回を
 // 変えたときだけ、教材進捗からの初期値を入れ直す）。
@@ -12633,7 +12666,8 @@ function openPlanWizard(onDone, existing) {
       `<option value="${s.id}" ${ex.subject_id === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
   const dowBoxes = CAL_DOW_LABELS.map((d, i) =>
     `<label class="plan-dow"><input type="checkbox" data-dow="${i}" ${exclude.has(i) ? '' : 'checked'} /> ${d}</label>`).join('');
-  const defaultDue = shiftDateKey(todayKey, 30);
+  const dueDefault = defaultPlanDue(examCountdowns, todayKey);
+  const defaultDue = dueDefault.key;
   const initUnit = ex.unit === 'video' ? 'video' : 'q';
 
   modal.innerHTML = `
@@ -12682,6 +12716,10 @@ function openPlanWizard(onDone, existing) {
           <div class="settings-field" style="flex:1;"><label>開始日</label><input type="date" id="pw-start" value="${String(ex.start_date || todayKey).slice(0, 10)}" style="margin-bottom:0" /></div>
           <div class="settings-field" style="flex:1;"><label>締切日</label><input type="date" id="pw-due" value="${String(ex.due_date || defaultDue).slice(0, 10)}" style="margin-bottom:0" /></div>
         </div>
+        <div class="plan-hint" style="margin:-6px 0 12px;">${isEdit ? '' : (dueDefault.title
+          ? `締切は「${esc(dueDefault.title)}」の日を入れてあります。`
+          : '締切の初期値は30日後です。設定に試験日を登録しておくと、そちらが入ります。')}
+          科目ごとの締切を細かく決める必要はありません。同じ日に揃えておけば、順番は学習状況（残り時間・正答率・放置日数）で決まります。</div>
         <div class="settings-field" style="margin-bottom:12px;">
           <label>勉強する曜日</label>
           <div class="plan-dow-row">${dowBoxes}</div>
@@ -12847,10 +12885,11 @@ function planSequenceNoteHTML(sync) {
   return `<div class="plan-seq-note">
     <div class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています</div>
     <div class="plan-seq-order">${names.map((n, i) => `<span class="plan-seq-chip">${i + 1}. ${n}</span>`).join('')}</div>
-    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは締切の早い順で、
-      締切が並んだら${(sync.subjectPriority && sync.subjectPriority.hasData)
-        ? '下の「科目の優先度」が高いほうが先です'
-        : '科目マスタの並び順です（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
+    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは${
+      (sync.subjectPriority && sync.subjectPriority.hasData)
+        ? '下の「科目の優先度」が高い順'
+        : '科目マスタの並び順（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
+      締切は普段は順番を決めません（締切まで${PLAN_DEADLINE_URGENT_DAYS}日を切った科目だけ先に割り込みます）。
       その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
     ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないため順番詰めの対象外です（今までどおり期間へ均します）。学習記録に「解いた問題数」「見た本数」を入れると対象になります。</div>` : ''}
   </div>`;
@@ -12865,7 +12904,8 @@ async function renderPlans() {
     <div id="plans-root"><div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>`;
 
   async function draw(force) {
-    const sync = await syncPlans(force);
+    // 締切の初期値に使うので、試験日も読んでおく
+    const [sync] = await Promise.all([syncPlans(force), fetchCountdowns()]);
     if (currentRoute !== '/plans') return;
     if (sync.rebuilt.length) showToast(IC.check + ' 実績に合わせて配り直しました: ' + sync.rebuilt.join('、'));
     const byPlan = {};

@@ -46,27 +46,27 @@ const plan = (o) => Object.assign({ id: o.id, title: o.id, status: 'active', aut
   ]);
   eq('同じ科目なら講義動画が先', same.map(p => p.id), ['vid', 'qb']);
 
-  // 科目どうしは締切の早い順（科目のまとまりごと動く）
+  // スコアが無ければ科目マスタの並び順（締切は主キーではない）
   const acrossSubjects = W.planPriorityOrder([
-    plan({ id: 'peds-vid', subject_id: '2O', unit: 'video', due_date: '2026-09-10' }),
-    plan({ id: 'circ-qb',  subject_id: '2C', unit: 'q',     due_date: '2026-09-20' }),
-    plan({ id: 'circ-vid', subject_id: '2C', unit: 'video', due_date: '2026-09-08' })
-  ]);
-  eq('締切の早い科目のまとまりが先で、その中は動画→問題演習',
+    plan({ id: 'peds-vid', subject_id: '2O', unit: 'video', due_date: '2026-11-10' }),
+    plan({ id: 'circ-qb',  subject_id: '2C', unit: 'q',     due_date: '2026-11-20' }),
+    plan({ id: 'circ-vid', subject_id: '2C', unit: 'video', due_date: '2026-11-08' })
+  ], { todayKey: '2026-09-06' });
+  eq('科目のまとまりごと動き、その中は動画→問題演習',
      acrossSubjects.map(p => p.id), ['circ-vid', 'circ-qb', 'peds-vid']);
 
   // vol.4 は元の科目と同じまとまりに入る
   const withVol4 = W.planPriorityOrder([
-    plan({ id: 'peds-vid', subject_id: '2O',   unit: 'video', due_date: '2026-09-12' }),
-    plan({ id: 'circ-4b',  subject_id: '4B2C', unit: 'q',     due_date: '2026-09-30' }),
-    plan({ id: 'circ-vid', subject_id: '2C',   unit: 'video', due_date: '2026-09-08' })
-  ]);
+    plan({ id: 'peds-vid', subject_id: '2O',   unit: 'video', due_date: '2026-11-12' }),
+    plan({ id: 'circ-4b',  subject_id: '4B2C', unit: 'q',     due_date: '2026-11-30' }),
+    plan({ id: 'circ-vid', subject_id: '2C',   unit: 'video', due_date: '2026-11-08' })
+  ], { todayKey: '2026-09-06' });
   eq('4連問 2C は 2C のまとまりに入る',
      withVol4.map(p => p.id), ['circ-vid', 'circ-4b', 'peds-vid']);
 
   // 同着でも並びがブレない
-  const a = [plan({ id: 'x', subject_id: '2C', unit: 'q', due_date: '2026-09-10' }),
-             plan({ id: 'y', subject_id: '2C', unit: 'q', due_date: '2026-09-10' })];
+  const a = [plan({ id: 'x', subject_id: '2C', unit: 'q', due_date: '2026-11-10' }),
+             plan({ id: 'y', subject_id: '2C', unit: 'q', due_date: '2026-11-10' })];
   eq('同着は入力順で決着', W.planPriorityOrder(a).map(p => p.id), ['x', 'y']);
   eq('元の配列は変えない', a.map(p => p.id), ['x', 'y']);
   eq('空でも落ちない', W.planPriorityOrder([]), []);
@@ -330,29 +330,83 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
 
 // ---------- 科目の優先度が順番に効く ----------
 (function priorityDrivesOrder() {
+  const OPTS = { todayKey: TODAY };
+  const withScore = s => ({ todayKey: TODAY, scoreOf: s });
   const plans = [
-    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-09-30' }),
-    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-30' })
+    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-11-30' })
   ];
   // 科目マスタの並びでは 2C(循環器) が 2O(小児科) より先
-  eq('スコアが無ければ科目マスタの並び順', W.planPriorityOrder(plans).map(p => p.id), ['circ', 'peds']);
+  eq('スコアが無ければ科目マスタの並び順', W.planPriorityOrder(plans, OPTS).map(p => p.id), ['circ', 'peds']);
   // 小児科のほうが影響度が高ければ、そちらが先に来る
   eq('スコアが高い科目が先',
-     W.planPriorityOrder(plans, sid => (sid === '2O' ? 900 : 100)).map(p => p.id), ['peds', 'circ']);
-  // 締切は自分で決めた約束なので、スコアより強い
-  const withDue = [
-    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-09-30' }),
-    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-10' })
+     W.planPriorityOrder(plans, withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id), ['peds', 'circ']);
+
+  // 締切は普段は順番を決めない。決めようのない科目ごとの締切の1日差で
+  // 順番がひっくり返らないようにするため。
+  const slightlyEarlier = [
+    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-11-29' })
   ];
-  eq('締切が早い科目はスコアに関わらず先',
-     W.planPriorityOrder(withDue, sid => (sid === '2O' ? 900 : 100)).map(p => p.id), ['circ', 'peds']);
-  // 同じ科目の中の 動画→問題演習 はスコアで崩れない
+  eq('締切が少し早いだけではスコアを覆せない',
+     W.planPriorityOrder(slightlyEarlier, withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id),
+     ['peds', 'circ']);
+
+  // ただし締切が目前なら割り込む
+  const urgent = [
+    plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+    plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-10' })   // 4日後
+  ];
+  eq('締切が目前の科目はスコアに関わらず割り込む',
+     W.planPriorityOrder(urgent, withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id),
+     ['circ', 'peds']);
+  eq('境界の7日後はまだ目前',
+     W.planPriorityOrder([
+       plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+       plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-13' })
+     ], withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id), ['circ', 'peds']);
+  eq('8日後は目前でないのでスコア順',
+     W.planPriorityOrder([
+       plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+       plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-14' })
+     ], withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id), ['peds', 'circ']);
+  eq('締切が過ぎている科目も割り込む',
+     W.planPriorityOrder([
+       plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-11-30' }),
+       plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-01' })
+     ], withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id), ['circ', 'peds']);
+  eq('目前どうしは締切順',
+     W.planPriorityOrder([
+       plan({ id: 'peds', subject_id: '2O', unit: 'q', due_date: '2026-09-11' }),
+       plan({ id: 'circ', subject_id: '2C', unit: 'q', due_date: '2026-09-08' })
+     ], withScore(sid => (sid === '2O' ? 900 : 100))).map(p => p.id), ['circ', 'peds']);
+
+  // 同じ科目の中の 動画→問題演習 はスコアでも締切でも崩れない
   const sameSubject = [
-    plan({ id: 'qb', subject_id: '2C', unit: 'q', due_date: '2026-09-30' }),
-    plan({ id: 'vid', subject_id: '2C', unit: 'video', due_date: '2026-09-30' })
+    plan({ id: 'qb', subject_id: '2C', unit: 'q', due_date: '2026-11-30' }),
+    plan({ id: 'vid', subject_id: '2C', unit: 'video', due_date: '2026-11-30' })
   ];
   eq('同じ科目では動画が先のまま',
-     W.planPriorityOrder(sameSubject, () => 500).map(p => p.id), ['vid', 'qb']);
+     W.planPriorityOrder(sameSubject, withScore(() => 500)).map(p => p.id), ['vid', 'qb']);
+})();
+
+// ---------- 締切の初期値 ----------
+(function defaultDue() {
+  // 試験が登録されていなければ30日後（従来どおり）
+  eq('試験が無ければ30日後', W.defaultPlanDue([], TODAY), { key: '2026-10-06', title: null });
+
+  // 登録されていれば直近の未来の試験日。科目ごとの締切を決めなくてよくなる
+  const exams = [
+    { exam_date: '2026-08-01', title: '終わった試験' },
+    { exam_date: '2027-01-20', title: '国試' },
+    { exam_date: '2026-11-15', title: 'CBT本番' }
+  ];
+  eq('直近の未来の試験日が入る', W.defaultPlanDue(exams, TODAY), { key: '2026-11-15', title: 'CBT本番' });
+  eq('過ぎた試験は選ばない',
+     W.defaultPlanDue([{ exam_date: '2026-08-01', title: '終わった試験' }], TODAY),
+     { key: '2026-10-06', title: null });
+  eq('今日の試験は選ぶ',
+     W.defaultPlanDue([{ exam_date: TODAY, title: '今日' }], TODAY), { key: TODAY, title: '今日' });
 })();
 
 console.log();
