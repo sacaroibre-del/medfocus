@@ -5586,7 +5586,8 @@ function volSummaryInnerHtml(agg, opts) {
 // 入力欄には触れず、そこから計算される表示（バー・％・バッジ・vol集計）だけを差し替える。
 function refreshQbDerived() {
   const qb = getQBProgress();
-  const video = primaryVideoProgress();
+  const rawVideo = getVideoProgress();
+  const video = primaryVideoProgress(rawVideo);
   const set = (sel, fn) => { const el = document.querySelector(sel); if (el) fn(el); };
 
   subjectCategories.filter(c => c.id.startsWith('cat-vol')).forEach(cat => {
@@ -5603,7 +5604,7 @@ function refreshQbDerived() {
       const vPct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
       // バーと％は版ごとに1本ずつある（行が無ければ set() は何もしない）
       VIDEO_EDITION_IDS.forEach(ed => {
-        const e = videoProgressFor(s.id, ed);
+        const e = videoProgressFor(s.id, ed, rawVideo);
         const p = e.total > 0 ? Math.round(e.done / e.total * 100) : 0;
         set(`[data-vidfill="${s.id}|${ed}"]`, el => { el.style.width = p + '%'; });
         set(`[data-vidpct="${s.id}|${ed}"]`, el => { el.textContent = e.total > 0 ? p + '%' : '---'; });
@@ -5660,18 +5661,25 @@ function cbtTotalsOutOfSync(raw) {
 
 // 総本数と合計時間だけをマスタに揃える。視聴済み本数は触らない。
 function syncCbtTotalsFromMaster() {
-  const off = cbtTotalsOutOfSync();
+  const all = getVideoProgress();
+  const off = cbtTotalsOutOfSync(all);
+  if (!off.length) return 0;
+  // 1件ずつ保存すると科目の数だけ Supabase へ書きに行き、スナップショットも
+  // その回数だけ走る。まとめて書き換えてから1回だけ保存する。
   off.forEach(f => {
     const m = cbtMasterFor(f.subjectId);
-    if (m) updateVideoProgressEntry(f.subjectId, 'cbt', { total: m.count, total_sec: m.seconds });
+    if (!m) return;
+    const cur = (all[f.subjectId] || {}).cbt || { done: 0, total: 0 };
+    all[f.subjectId] = { ...(all[f.subjectId] || {}), cbt: { ...cur, total: m.count, total_sec: m.seconds } };
   });
+  saveVideoProgress(all);
   return off.length;
 }
 
 // 教材進捗トラッカーの動画ブロック。版ごとに1行ずつ出し、主軸にピンを立てる。
 // CBT版の総数はマスタ由来なので編集させない（本数と合計時間が対になっているため）。
-function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
-  const vp = videoProgressFor(sid, ed);
+function videoTrackerEditionRowHtml(sid, ed, isPrimary, raw) {
+  const vp = videoProgressFor(sid, ed, raw);
   const pct = vp.total > 0 ? Math.round(vp.done / vp.total * 100) : 0;
   const color = videoEditionColor(ed);
   // 総数を固定表示にするのは、本数と合計時間が対で決まっているCBT版のマスタだけ。
@@ -5699,31 +5707,35 @@ function videoTrackerEditionRowHtml(sid, ed, isPrimary) {
 // その科目に版を問わず視聴の記録があるか。
 // vol.4（問題集）は講義動画を持たないので普段は行を出さないが、
 // 記録が残っていたら出す。画面から消すと編集できなくなるほうが危ない。
-function hasVideoRecordFor(sid) {
+function hasVideoRecordFor(sid, raw) {
+  const src = raw || getVideoProgress();
   return VIDEO_EDITION_IDS.some(ed => {
-    const v = videoProgressFor(sid, ed);
+    const v = videoProgressFor(sid, ed, src);
     return (v.total || 0) > 0 || (v.done || 0) > 0;
   });
 }
 
-function videoTrackerBlockHtml(sid) {
+// raw は getVideoProgress() の結果。科目ごとに読み直すと1画面で数百回
+// JSON を読み直すことになるので、呼ぶ側で1回読んで渡す。
+function videoTrackerBlockHtml(sid, raw) {
+  const src = raw || getVideoProgress();
   const covered = cbtCoveredBy(sid);
   const master = cbtMasterFor(sid);
   // ピンは「いま実際に数えている版」に立てる。主軸に記録が無い間は
   // 記録のあるほうで数えているので、その版にピンが立つ。
-  const counted = resolvedVideoEditionOf(sid);
+  const counted = resolvedVideoEditionOf(sid, src);
 
   // 記録がある版は必ず出す。存在しないはずの版に記録が残っていても、
   // 画面から消して編集できなくするより出したほうが安全。
   const rows = VIDEO_EDITION_IDS.filter(ed => {
-    const v = videoProgressFor(sid, ed);
+    const v = videoProgressFor(sid, ed, src);
     if (v.total > 0 || v.done > 0) return true;
     return ed === counted;
-  }).map(ed => videoTrackerEditionRowHtml(sid, ed, counted === ed));
+  }).map(ed => videoTrackerEditionRowHtml(sid, ed, counted === ed, src));
 
   let note = '';
   const primary = primaryEditionOf(sid);
-  const cbtStarted = (() => { const v = videoProgressFor(sid, 'cbt'); return v.total > 0 || v.done > 0; })();
+  const cbtStarted = (() => { const v = videoProgressFor(sid, 'cbt', src); return v.total > 0 || v.done > 0; })();
   if (covered) {
     note = `<div class="vid-ed-note">CBT版では ${esc(subjectNameOf(covered))} にまとめられています。CBT版の進捗はそちらで管理してください。</div>`;
   } else if (master && !cbtStarted) {
@@ -5748,7 +5760,8 @@ async function renderQBProgress(){
   await loadVideoFromSupabase();
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
-  const video=primaryVideoProgress();
+  const rawVideo=getVideoProgress();
+  const video=primaryVideoProgress(rawVideo);
 
   const volCats = subjectCategories.filter(c=>c.id.startsWith('cat-vol'));
   const volAgg = {};
@@ -5826,7 +5839,7 @@ async function renderQBProgress(){
                   <button class="qb-add-round" data-sub="${s.id}" data-round="${nextRound}" style="font-size:0.7rem;padding:3px 8px;background:var(--color-bg-elevated);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-secondary);cursor:pointer;">+ ${nextRound}周目</button>
                 </span>
               </div>
-              ${isQbOnlySubject(s.id)&&!hasVideoRecordFor(s.id)?'':videoTrackerBlockHtml(s.id)}
+              ${isQbOnlySubject(s.id)&&!hasVideoRecordFor(s.id,rawVideo)?'':videoTrackerBlockHtml(s.id,rawVideo)}
               ${roundKeys.length>0?roundKeys.map(rk=>{
                 const r=rounds[rk];const pct=r.total>0?Math.round(r.done/r.total*100):0;
                 const correct=r.correct||0;const accPct=r.done>0?Math.round(correct/r.done*100):0;
