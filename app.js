@@ -12274,6 +12274,13 @@ async function writePlanRow(run, row) {
   return res;
 }
 
+// 列が無くて落とした値は保存されていない。成功のトーストだけ出すと、
+// 入れたはずの「1日に進める量」が黙って消えて、入れたつもりになる。
+function droppedCapacityNote(row) {
+  return (planCapacityColumnMissing && row && row.daily_capacity)
+    ? '（「1日に進める量」は保存できません。add_plan_daily_capacity.sql を実行してください）' : '';
+}
+
 // フォームの入力を study_plans の行にする。作成と更新で同じ形にする。
 function planRowFromInput(input, schedule, startKey) {
   const row = {
@@ -12313,7 +12320,7 @@ async function createPlan(input, schedule) {
     if (e2) { console.error('createPlan tasks error:', e2); showToast(IC.x + ' ノルマの保存に失敗しました: ' + e2.message); }
   }
   invalidateCache('study_plans'); invalidateCache('plan_tasks');
-  showToast(IC.check + ' プランを作成しました');
+  showToast(IC.check + ' プランを作成しました' + droppedCapacityNote(row));
   return plan;
 }
 
@@ -12333,7 +12340,7 @@ async function updatePlan(plan, input, schedule) {
       .update(Object.assign({}, r, { updated_at: new Date().toISOString() })).eq('id', plan.id), row);
   if (error) { console.error('updatePlan error:', error); showToast(IC.x + ' 更新に失敗しました: ' + error.message); return null; }
   invalidateCache('study_plans');
-  showToast(IC.check + ' プランを更新しました');
+  showToast(IC.check + ' プランを更新しました' + droppedCapacityNote(row));
   return Object.assign({}, plan, row);
 }
 
