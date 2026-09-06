@@ -298,6 +298,73 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
   ok('上限で余った時間は次のプランへ', res.byPlan['b'].items[0].dateKey === '2026-09-06');
 })();
 
+// ---------- 進んだぶんの前倒し ----------
+(function pullsForwardAfterProgress() {
+  // 完了した講義動画プランは順番詰めの対象に入らない。その完了日を渡さないと
+  // 「今日見終わった科目のQB」が今日に置かれてしまう。
+  const entries = [
+    { plan: plan({ id: 'qb2B', subject_id: '2B', unit: 'q', due_date: '2026-11-30' }),
+      remaining: 52, minPerUnit: 2, startKey: '2026-09-06' },
+    { plan: plan({ id: 'vid2J', subject_id: '2J', unit: 'video', due_date: '2026-11-30' }),
+      remaining: 3, minPerUnit: 38, startKey: '2026-09-06' }
+  ];
+  const sameDay = W.buildSequencedPlanSchedules({
+    entries, todayKey: '2026-09-06', goalMinutesOf: () => 180,
+    videoDoneAt: { '2b': '2026-09-06' }   // 2B の動画は今日見終わった
+  });
+  eq('今日見終わった科目のQBは翌日から',
+     sameDay.byPlan['qb2B'].items.map(i => i.dateKey), ['2026-09-07']);
+
+  const yesterday = W.buildSequencedPlanSchedules({
+    entries, todayKey: '2026-09-06', goalMinutesOf: () => 180,
+    videoDoneAt: { '2b': '2026-09-05' }   // 昨日見終わっていれば今日から解ける
+  });
+  eq('昨日見終わった科目のQBは今日から',
+     yesterday.byPlan['qb2B'].items.map(i => i.dateKey), ['2026-09-06']);
+
+  const noVideo = W.buildSequencedPlanSchedules({
+    entries, todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  eq('動画プランが無ければ今日から解ける',
+     noVideo.byPlan['qb2B'].items.map(i => i.dateKey), ['2026-09-06']);
+})();
+
+(function lastProgressKey() {
+  eq('最後に進捗があった日を返す', W.planLastProgressKey([
+    { due_date: '2026-09-04', done_amount: 2 },
+    { due_date: '2026-09-06', done_amount: 1 },
+    { due_date: '2026-09-08', done_amount: 0 }
+  ]), '2026-09-06');
+  eq('完了印だけでも拾う', W.planLastProgressKey([
+    { due_date: '2026-09-07', done_amount: 0, completed: true }
+  ]), '2026-09-07');
+  eq('進捗が無ければ null', W.planLastProgressKey([{ due_date: '2026-09-07', done_amount: 0 }]), null);
+  eq('空でも落ちない', W.planLastProgressKey([]), null);
+})();
+
+(function inProgressSubjectsStayFirst() {
+  // 優先度は「今日触ったか」で動く（放置係数 2.0 → 1.0）。着手した科目を
+  // 先に回さないと、1本見た翌日に別の科目へ抜かれて中途半端な科目が増える。
+  const plans = [
+    plan({ id: 'fresh', subject_id: '2O', unit: 'video', due_date: '2026-11-30' }),
+    plan({ id: 'started', subject_id: '2J', unit: 'video', due_date: '2026-11-30' })
+  ];
+  const scoreOf = sid => (sid === '2O' ? 900 : 100);   // 未着手のほうが影響度は高い
+  eq('着手していなければ影響度順',
+     W.planPriorityOrder(plans, { todayKey: '2026-09-06', scoreOf }).map(p => p.id), ['fresh', 'started']);
+  eq('着手して途中の科目を先に終わらせる',
+     W.planPriorityOrder(plans, { todayKey: '2026-09-06', scoreOf, inProgress: new Set(['2j']) })
+       .map(p => p.id), ['started', 'fresh']);
+  // 締切が目前の科目は、途中の科目より強い
+  const urgent = [
+    plan({ id: 'due', subject_id: '2O', unit: 'video', due_date: '2026-09-08' }),
+    plan({ id: 'started', subject_id: '2J', unit: 'video', due_date: '2026-11-30' })
+  ];
+  eq('締切目前は途中の科目より先',
+     W.planPriorityOrder(urgent, { todayKey: '2026-09-06', scoreOf, inProgress: new Set(['2j']) })
+       .map(p => p.id), ['due', 'started']);
+})();
+
 // ---------- 保存できる形に直す ----------
 (function scheduleShape() {
   const res = { items: [{ dateKey: '2026-09-06', targetAmount: 5 }], finishKey: '2026-09-06', overdue: false };

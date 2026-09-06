@@ -11188,10 +11188,12 @@ function planVolumeSuggestion(unit, subjectId, targetRound, videoEdition) {
 //
 // 優先順位のルール:
 //   1. 締切が目前（PLAN_DEADLINE_URGENT_DAYS 以内）の科目は先。その中は締切順
-//   2. それ以外は、学習状況から出した科目の優先度が高い順
+//   2. 着手して途中の科目を先に。優先度は「今日触ったか」で動くので、これが無いと
+//      1本見た翌日に別の科目へ抜かれ、中途半端な科目が増えていく
+//   3. それ以外は、学習状況から出した科目の優先度が高い順
 //      （残り時間 × 誤答率 × 放置日数。buildSubjectPriority を参照）
-//   3. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
-//   4. あとは締切・周回・作成順で決定的に並べる
+//   4. 同じ科目の中では 講義動画 → 問題演習（見ていない範囲をQBで解かないため）
+//   5. あとは締切・周回・作成順で決定的に並べる
 //
 // 締切を主キーにしない理由: どの科目も本番までに終わればよく、「循環器は9/20まで」
 // のような科目ごとの締切は決めようがない。決めようのない数字が順番を支配すると、
@@ -11228,11 +11230,14 @@ function planUnitRank(unit) { return unit === 'video' ? 0 : 1; }
 // opts.scoreOf(subjectId) を渡すと科目の順をそれで決める。渡さなければ
 // 科目マスタの並び順（従来どおり決定的だが、学習状況は見ない）。
 // opts.todayKey は「締切が目前か」の判定に使う。渡さなければ今日。
+// opts.inProgress は着手して途中の科目（Set）。あれば先へ回す。
 function planPriorityOrder(plans, opts) {
   const list = (plans || []).slice();
   const o = opts || {};
   const score = typeof o.scoreOf === 'function' ? o.scoreOf : null;
   const today = o.todayKey || todayPlanKey();
+  // Set でなくても has() があれば使う（レルムをまたぐと instanceof が効かないため）
+  const started = (o.inProgress && typeof o.inProgress.has === 'function') ? o.inProgress : null;
   // 科目ごとに「いちばん早い締切」を出す
   const groupDue = {};
   list.forEach(p => {
@@ -11255,6 +11260,10 @@ function planPriorityOrder(plans, opts) {
         if (ua && ub) {
           const c = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
           if (c) return c;                                    // 目前どうしは締切順
+        }
+        if (started) {
+          const pa = started.has(ga), pb = started.has(gb);
+          if (pa !== pb) return pa ? -1 : 1;                  // 途中の科目を先に終わらせる
         }
         const sa = baseSubjectIdOf(a.p.subject_id) || a.p.subject_id;
         const sb = baseSubjectIdOf(b.p.subject_id) || b.p.subject_id;
@@ -11580,9 +11589,13 @@ function buildSequencedPlanSchedules(input) {
 
   // 同じ科目の講義動画が残っている間は、その科目のQBを置かない。
   // 見終わった当日も置かない（翌日から解き始める）。
-  const waitingForVideo = (e, dayKey) => e.plan.unit !== 'video' && queue.some(o =>
-    o.plan.unit === 'video' && o.groupKey === e.groupKey
-    && (o.left > 0 || !o.finishKey || o.finishKey >= dayKey));
+  // videoDoneAt は既に見終わっている科目の完了日。完了したプランは queue に
+  // 入らないので、これが無いと今日見終わった科目のQBが今日に置かれてしまう。
+  const doneAt = o.videoDoneAt || {};
+  const waitingForVideo = (e, dayKey) => e.plan.unit !== 'video' && (
+    queue.some(v => v.plan.unit === 'video' && v.groupKey === e.groupKey
+      && (v.left > 0 || !v.finishKey || v.finishKey >= dayKey))
+    || (doneAt[e.groupKey] && doneAt[e.groupKey] >= dayKey));
 
   const warnings = [];
   let dayKey = todayKey;
@@ -12620,16 +12633,41 @@ function planGoalMinutesOf(dateKey) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
+// そのプランで最後に進捗があった日。完了済みの講義動画プランは順番詰めの対象に
+// 入らないので、ここで見終わった日を拾わないと「翌日からQB」が効かなくなる
+// （今日見終わった科目のQBが今日に置かれてしまう）。
+function planLastProgressKey(tasks) {
+  let last = null;
+  (tasks || []).forEach(t => {
+    if (!t.completed && !((Number(t.done_amount) || 0) > 0)) return;
+    const k = String(t.due_date || '').slice(0, 10);
+    if (k && (!last || k > last)) last = k;
+  });
+  return last;
+}
+
 // 順番詰めの入口。state は syncPlans が組んだ { plan, mine, canAuto } の配列。
 // 単価を見積もれないプラン（実測が足りない・版が不明）は対象から外し、
 // 今までどおり期間へ均す。詰められるものと均されるものが混ざる形になるが、
 // 何も予定が出ないよりは良い。外れたことは planSequenceNoteHTML が出す。
 function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
   const entries = [];
+  const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
+  const inProgress = new Set();   // 着手して途中の科目
   (state || []).forEach(st => {
     if (!st.canAuto) return;
-    const remaining = Math.max(0, (Number(st.plan.total_volume) || 0) - planDoneAmount(st.mine));
-    if (remaining <= 0) return;
+    const total = Number(st.plan.total_volume) || 0;
+    const done = planDoneAmount(st.mine);
+    const remaining = Math.max(0, total - done);
+    const group = planGroupKey(st.plan);
+    if (remaining <= 0) {
+      if (st.plan.unit === 'video') {
+        const k = planLastProgressKey(st.mine);
+        if (k && (!videoDoneAt[group] || k > videoDoneAt[group])) videoDoneAt[group] = k;
+      }
+      return;
+    }
+    if (done > 0) inProgress.add(group);
     const minPerUnit = planMinutesPerUnit(st.plan, unitCost);
     if (!minPerUnit) { st.noEstimate = true; return; }
     const start = String(st.plan.start_date || '').slice(0, 10);
@@ -12644,9 +12682,9 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority) {
   const by = (subjectPriority && subjectPriority.bySubject) || null;
   const scoreOf = by ? (sid => (by[sid] ? by[sid].score : 0)) : null;
   return buildSequencedPlanSchedules({
-    entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey })
+    entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
       .map(p => entries.find(e => e.plan.id === p.id)),
-    todayKey, goalMinutesOf: planGoalMinutesOf
+    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt
   });
 }
 
