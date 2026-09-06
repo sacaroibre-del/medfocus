@@ -415,6 +415,33 @@ eq('0以下は無視', W.planDailyCapacity({ daily_capacity: 0 }), null);
      W.planSpentMinutesOn([{ duration_minutes: 10, started_at: 'not-a-date' }], T), 0);
 })();
 
+// ---------- 実測が無いときの仮の単価 ----------
+(function fallbackUnitCost() {
+  const none = { hasQuestion: false, hasVideo: false, minPerQuestion: null, minPerVideo: null, video: {} };
+  eq('実測が無ければ見積もれない', W.planMinutesPerUnit(plan({ id: 'a', unit: 'q' }), none), null);
+  eq('問題演習の仮の単価', W.planMinutesPerUnitOrDefault(plan({ id: 'a', unit: 'q' }), none), 2);
+  eq('講義動画の仮の単価',
+     W.planMinutesPerUnitOrDefault(plan({ id: 'b', unit: 'video', subject_id: '2J' }), none), 40);
+  const measured = { hasQuestion: true, minPerQuestion: 3, hasVideo: true, minPerVideo: 40, video: {} };
+  eq('実測があればそちらを使う', W.planMinutesPerUnitOrDefault(plan({ id: 'a', unit: 'q' }), measured), 3);
+
+  // 単価を見積もれない科目を順番詰めから落とすと、その科目だけ
+  // 「動画を見終わってからQB」が崩れる。仮の値でも並べる。
+  const res = W.buildSequencedPlanSchedules({
+    entries: [
+      { plan: plan({ id: 'vid', subject_id: '2A', unit: 'video', due_date: '2026-11-30' }),
+        remaining: 3, minPerUnit: W.planMinutesPerUnitOrDefault(plan({ id: 'vid', unit: 'video' }), none),
+        startKey: '2026-09-06' },
+      { plan: plan({ id: 'qb', subject_id: '2A', unit: 'q', due_date: '2026-11-30' }),
+        remaining: 55, minPerUnit: W.planMinutesPerUnitOrDefault(plan({ id: 'qb', unit: 'q' }), none),
+        startKey: '2026-09-06' }
+    ], todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  ok('仮の単価でも動画→翌日にQBを保つ',
+     res.byPlan['qb'].items[0].dateKey > res.byPlan['vid'].finishKey,
+     { 動画完了: res.byPlan['vid'].finishKey, QB開始: res.byPlan['qb'].items[0].dateKey });
+})();
+
 // ---------- 保存できる形に直す ----------
 (function scheduleShape() {
   const res = { items: [{ dateKey: '2026-09-06', targetAmount: 5 }], finishKey: '2026-09-06', overdue: false };

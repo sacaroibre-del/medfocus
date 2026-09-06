@@ -11547,6 +11547,17 @@ function planMinutesPerUnit(plan, unitCost) {
   return Number.isFinite(q) && q > 0 ? q : null;
 }
 
+// 実測が無いときに使う仮の単価。順番と分量の見当をつけるためだけに使い、
+// 実測がたまれば自動でそちらに切り替わる。外して順番詰めの対象から落とすと、
+// その科目だけ「動画を見終わってからQB」が守られなくなるので、仮でも値を置く。
+// 講義動画は国試版の1本あたり（40〜55分）の下限側、問題演習は1問2分。
+const PLAN_FALLBACK_MIN_PER_VIDEO = 40;
+const PLAN_FALLBACK_MIN_PER_QUESTION = 2;
+function planMinutesPerUnitOrDefault(plan, unitCost) {
+  return planMinutesPerUnit(plan, unitCost)
+      || (plan && plan.unit === 'video' ? PLAN_FALLBACK_MIN_PER_VIDEO : PLAN_FALLBACK_MIN_PER_QUESTION);
+}
+
 // 1日にそのプランを進める上限（単位）。手入力があればそれを使う。
 function planDailyCapacity(plan) {
   const n = Number(plan && plan.daily_capacity);
@@ -12572,11 +12583,17 @@ async function updatePlan(plan, input, schedule) {
   return Object.assign({}, plan, row);
 }
 
-// 今日以降のタスクを消して、逆算し直した結果で置き換える。過去の行は残す。
+// 未完了のタスクを消して、逆算し直した結果で置き換える。完了印の付いた行は残す。
+//
+// 完了印を消してはいけない: チェックは進捗として数えるので、消すと
+// 「チェック → 残量が減る → 配り直し → チェックごと消える → 残量が戻る」を
+// 往復して予定が点滅する。
+// 過ぎた未完了の行も残さない: その仕事は今日以降へ配り直されているので、
+// 残すと同じ仕事がカレンダーに二重に出て、遅れの数字も二重になる。
 async function replaceFutureTasks(plan, schedule, todayKey) {
   const all = await fetchPlanTasks();
   const mine = all.filter(t => t.plan_id === plan.id);
-  const keep = mine.filter(t => String(t.due_date).slice(0, 10) < todayKey);
+  const keep = mine.filter(t => !!t.completed);
   const seqOffset = keep.reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
   const fresh = scheduleToTaskRows(plan, schedule, seqOffset);
   if (!hasDB()) {
@@ -12584,7 +12601,7 @@ async function replaceFutureTasks(plan, schedule, todayKey) {
     setLocalList(PLAN_TASKS_LS_KEY, all.filter(t => t.plan_id !== plan.id).concat(keep, rows));
     return keep.concat(rows);
   }
-  const { error } = await supabase.from('plan_tasks').delete().eq('plan_id', plan.id).gte('due_date', todayKey);
+  const { error } = await supabase.from('plan_tasks').delete().eq('plan_id', plan.id).eq('completed', false);
   if (error) { console.error('replaceFutureTasks delete error:', error); return mine; }
   let inserted = [];
   if (fresh.length) {
@@ -12636,9 +12653,10 @@ async function deletePlan(id) {
 }
 
 // ---------- 優先順位どおりに順番へ詰める ----------
-// 1件しか無いときは詰める相手がいないので、今までどおり期間へ均す
-// （1件で詰めると締切より大幅に早く終わる形になり、「逆算」の意味が薄れるため）。
-const PLAN_SEQUENCE_MIN_PLANS = 2;
+// 1件だけでも順番詰めを使う。以前は「詰める相手がいない」として期間へ均していたが、
+// 「問題演習は分割しない」と噛み合わず、残り1プランになった途端に
+// 46問が「2問/日 × 23日」に崩れていた。早く終わるのは意図どおり。
+const PLAN_SEQUENCE_MIN_PLANS = 1;
 
 // その日に使える分。曜日別の目標学習時間（当日の上書きも含む）をそのまま使う。
 function planGoalMinutesOf(dateKey) {
@@ -12672,10 +12690,28 @@ function planLastProgressKey(tasks) {
   return last;
 }
 
+// 手でチェックした今日のタスクぶんの見込み時間。学習記録が無くても今日の枠を
+// 使ったとみなす。引かないと、チェックするたびに今日のタスクが増えてしまう。
+// 渡すのは保存済みの生タスク。ログから自動で完了扱いにした分はここに入らない
+// （そちらは planSpentMinutesOn が実測で数える）。
+function planTickedMinutesOn(rawTasksByPlan, plansById, dateKey, unitCost) {
+  let sum = 0;
+  Object.entries(rawTasksByPlan || {}).forEach(([planId, rows]) => {
+    const plan = (plansById || {})[planId];
+    const per = plan ? planMinutesPerUnit(plan, unitCost) : null;
+    if (!per) return;
+    (rows || []).forEach(t => {
+      if (!t.completed) return;
+      if (String(t.due_date || '').slice(0, 10) !== dateKey) return;
+      sum += (Number(t.target_amount) || 0) * per;
+    });
+  });
+  return sum;
+}
+
 // 順番詰めの入口。state は syncPlans が組んだ { plan, mine, canAuto } の配列。
-// 単価を見積もれないプラン（実測が足りない・版が不明）は対象から外し、
-// 今までどおり期間へ均す。詰められるものと均されるものが混ざる形になるが、
-// 何も予定が出ないよりは良い。外れたことは planSequenceNoteHTML が出す。
+// 単価を見積もれないプラン（実測が足りない・版が不明）も仮の単価で並べる。
+// 仮を使ったことは planSequenceNoteHTML が出す。
 function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentTodayMin) {
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
@@ -12694,8 +12730,10 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
       return;
     }
     if (done > 0) inProgress.add(group);
-    const minPerUnit = planMinutesPerUnit(st.plan, unitCost);
-    if (!minPerUnit) { st.noEstimate = true; return; }
+    // 実測が足りないプランも仮の単価で並べる。落とすとその科目だけ
+    // 「動画を見終わってからQB」が崩れるため。仮で並べたことは画面に出す。
+    if (!planMinutesPerUnit(st.plan, unitCost)) st.noEstimate = true;
+    const minPerUnit = planMinutesPerUnitOrDefault(st.plan, unitCost);
     const start = String(st.plan.start_date || '').slice(0, 10);
     entries.push({
       plan: st.plan, remaining, minPerUnit,
@@ -12770,7 +12808,7 @@ async function syncPlans(force) {
   // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
-                                     planSpentMinutesOn(logs, today));
+    planSpentMinutesOn(logs, today) + planTickedMinutesOn(byPlan, plansById, today, unitCost));
 
   const tasks = [];
   const rebuilt = [];
@@ -12797,10 +12835,13 @@ async function syncPlans(force) {
 }
 
 // ==================== 逆算プラン: ページ ====================
-function planStatusBadge(plan, prog) {
+// 未完了のまま過ぎたタスクは配り直しのときに消すので、prog.behind では遅れを
+// 拾えない（同じ仕事が今日以降に載り直しているため）。順番詰めが出す
+// 「締切までに終わらない見込み」を遅れの判定に使う。
+function planStatusBadge(plan, prog, seq) {
   if (plan.status === 'archived') return '<span class="plan-badge muted">アーカイブ</span>';
   if (plan.status === 'done' || prog.status === 'done') return '<span class="plan-badge done">完了</span>';
-  if (prog.status === 'behind') return '<span class="plan-badge behind">遅れ</span>';
+  if ((seq && seq.overdue) || prog.status === 'behind') return '<span class="plan-badge behind">遅れ</span>';
   return '<span class="plan-badge ok">順調</span>';
 }
 
@@ -12850,7 +12891,7 @@ function planCardHTML(plan, tasks, todayKey, seq) {
   return `<div class="plan-card card" data-plan-id="${esc(plan.id)}" style="--plan:${esc(color)}">
     <div class="plan-head">
       <div class="plan-title">${esc(plan.title)}</div>
-      ${planStatusBadge(plan, prog)}
+      ${planStatusBadge(plan, prog, seq)}
     </div>
     <div class="plan-meta">${planUnitName(plan.unit)}${plan.unit === 'video' && isVideoEdition(plan.video_edition) ? `（${videoEditionLabel(plan.video_edition)}）` : ''}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
       ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
@@ -13146,7 +13187,7 @@ function planSequenceNoteHTML(sync) {
         : '科目マスタの並び順（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
       締切は普段は順番を決めません（締切まで${PLAN_DEADLINE_URGENT_DAYS}日を切った科目だけ先に割り込みます）。
       その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
-    ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないため順番詰めの対象外です（今までどおり期間へ均します）。学習記録に「解いた問題数」「見た本数」を入れると対象になります。</div>` : ''}
+    ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないので、講義動画1本${PLAN_FALLBACK_MIN_PER_VIDEO}分・1問${PLAN_FALLBACK_MIN_PER_QUESTION}分と仮定して並べています。学習記録に「解いた問題数」「見た本数」を入れると実測に切り替わります。</div>` : ''}
   </div>`;
 }
 
