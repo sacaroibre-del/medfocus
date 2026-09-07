@@ -12746,7 +12746,24 @@ function planTickedMinutesOn(state, dateKey, unitCost) {
 function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentTodayMin) {
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
-  const inProgress = new Set();   // 着手して途中の科目
+  // 「着手して途中の科目」は科目単位で見る。プラン単位だと、動画を見終わった
+  // 科目が数えられない（完了したプランは残量0で外れるため）。すると
+  // 「動画を見終わる → その科目を触ったので放置係数が 2.0→1.0 に落ちる →
+  //  優先度が下がって QB が最後尾へ回る」となり、翌日にQBが来なくなる。
+  const touched = new Set();      // 何かしら進んだ科目
+  const unfinished = new Set();   // まだ配る仕事が残っている科目
+  (state || []).forEach(st => {
+    const group = planGroupKey(st.plan);
+    const done = planDoneAmount(st.mine);
+    const remaining = Math.max(0, (Number(st.plan.total_volume) || 0) - done);
+    // 進んだかどうかは完了済みのプランも見る。動画を見終わるとそのプランは
+    // status:'done' になって canAuto から外れるので、ここで弾くと
+    // 翌日には「未着手の科目」に戻ってしまい、QBが後ろへ回る。
+    if (done > 0) touched.add(group);
+    if (st.canAuto && remaining > 0) unfinished.add(group);
+  });
+  const inProgress = new Set([...touched].filter(g => unfinished.has(g)));
+
   (state || []).forEach(st => {
     if (!st.canAuto) return;
     const total = Number(st.plan.total_volume) || 0;
@@ -12760,7 +12777,6 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
       }
       return;
     }
-    if (done > 0) inProgress.add(group);
     // 実測が足りないプランも仮の単価で並べる。落とすとその科目だけ
     // 「動画を見終わってからQB」が崩れるため。仮で並べたことは画面に出す。
     if (!planMinutesPerUnit(st.plan, unitCost)) st.noEstimate = true;

@@ -184,6 +184,45 @@ const onDay = (s, key) => s.tasks.filter(t => !t.extra && String(t.due_date).sli
      nextDay.tasks.filter(t => !t.extra && String(t.due_date).slice(0, 10) === START)
        .map(t => ({ n: t.target_amount, done: !!t.completed })), [{ n: 3, done: true }]);
 
+  // ---------- 動画を見終わった科目のQBが後ろへ回らない ----------
+  // 影響度は「最後に学習した日」で動くので、動画を見終わると放置係数が
+  // 2.0 → 1.0 に落ちてその科目の優先度が下がる。着手中の判定を科目単位で
+  // 持たないと、翌日のQBが未着手の科目に抜かれて来なくなる。
+  function twoSubjects() {
+    const mk = (id, title, sid, unit, vol) => ({
+      id, title, subject_id: sid, unit, video_edition: unit === 'video' ? 'kokushi' : null,
+      target_round: unit === 'q' ? 1 : null, start_date: START, due_date: W.shiftDateKey(START, 30),
+      total_volume: vol, exclude_weekdays: [], auto_redistribute: true, status: 'active' });
+    return [mk('vA', '2B 動画', '2B', 'video', 3), mk('qA', '2B QB', '2B', 'q', 52),
+            mk('vB', '2J 動画', '2J', 'video', 3), mk('qB', '2J QB', '2J', 'q', 46)];
+  }
+  setup(twoSubjects());
+  W.localStorage.setItem('medfocus_video_progress', JSON.stringify({
+    '2B': { kokushi: { done: 0, total: 3 } }, '2J': { kokushi: { done: 0, total: 3 } } }));
+  W.localStorage.setItem('medfocus_qb_progress', JSON.stringify({
+    '2B': { '1': { done: 0, total: 52, correct: 0 } }, '2J': { '1': { done: 0, total: 46, correct: 0 } } }));
+  let s4 = await sync();
+  eq('最初は 2B の動画から', s4.sequence.order[0], 'vA');
+
+  // 2B の動画を見終える
+  logs.push({ subject_name: '2B', activity: 'video', duration_minutes: 120, videos_watched: 3,
+              video_edition: 'kokushi', started_at: START + 'T10:00:00Z' });
+  s4 = await sync();
+  eq('見終えた当日、その科目のQBが先頭に来る', s4.sequence.order[0], 'qA');
+
+  NOW = W.shiftDateKey(START, 1);
+  s4 = await sync();
+  eq('翌日も先頭のまま（完了したプランも着手済みとして数える）', s4.sequence.order[0], 'qA');
+  const qaDay = s4.tasks.filter(t => !t.extra && t.plan_id === 'qA')
+    .map(t => String(t.due_date).slice(0, 10))[0];
+  eq('QBは動画を見終わった翌日に置かれる', qaDay, NOW);
+
+  // 配り直しが走っても順番が変わらない（別の勉強で今日の枠が減る）
+  logs.push({ subject_name: 'anki', activity: 'anki', duration_minutes: 20,
+              started_at: NOW + 'T08:00:00Z' });
+  s4 = await sync();
+  eq('配り直しが走っても先頭のまま', s4.sequence.order[0], 'qA');
+
   console.log();
   if (failures.length) {
     console.log('--- 失敗 ---');
