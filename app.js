@@ -11578,8 +11578,11 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 // 「52問のうち今日は29問」「3本のうち今日は2本」と中途半端に割れて、
 // 科目の区切りと予定の区切りが合わなくなる。
 //
-//  - 問題演習は分割しない。その科目の動画を見終わった翌日に、残り全問を置く。
-//    予算を超えてもよい（その科目を1日で終える意味のほうが大きい）。
+//  - 講義動画とセットの問題演習は分割しない。その科目の動画を見終わった翌日に、
+//    残り全問を置く。予算を超えてもよい（その科目を1日で終える意味のほうが大きい）。
+//  - 講義動画のない問題演習（QBだけのプラン）は、講義動画と同じ扱い。その科目ぶんが
+//    1日に収まるならまとめて置き、収まらないなら予算ぶんずつ連続した日に分ける。
+//    200問を1日に積んで期間を余らせるより、優先順位順に日を埋めたほうがよい。
 //  - 講義動画はキリのいいところまで。その科目ぶんが1日に収まるならまとめて置き、
 //    収まらない科目（産婦人科47本など）だけ、予算ぶんずつ連続した日に分ける。
 //  - その日に進める講義動画は1科目まで。1日に2科目見終わると翌日のQBが
@@ -11607,6 +11610,11 @@ function buildSequencedPlanSchedules(input) {
   // videoDoneAt は既に見終わっている科目の完了日。完了したプランは queue に
   // 入らないので、これが無いと今日見終わった科目のQBが今日に置かれてしまう。
   const doneAt = o.videoDoneAt || {};
+  // 講義動画のプランを持つ科目。動画とセットのQBだけ「翌日に残り全問」にする。
+  // 完了済みの動画プランは queue に入らないので、呼び出し元から渡してもらう。
+  const videoGroups = (o.videoGroups && typeof o.videoGroups.has === 'function')
+    ? o.videoGroups
+    : new Set(queue.filter(e => e.plan.unit === 'video').map(e => e.groupKey));
   const waitingForVideo = (e, dayKey) => e.plan.unit !== 'video' && (
     queue.some(v => v.plan.unit === 'video' && v.groupKey === e.groupKey
       && (v.left > 0 || !v.finishKey || v.finishKey >= dayKey))
@@ -11634,15 +11642,17 @@ function buildSequencedPlanSchedules(input) {
         if (videoGroupToday && videoGroupToday !== e.groupKey) continue;  // 動画は1日1科目
         if (budget <= 0) continue;                                       // 時間を使い切ったら翌日へ
       }
-      // 動画: 科目ぶんが1日に収まるならまとめて。収まらない科目だけ残り時間ぶんずつ。
-      //   1本も入らないときは、まだ手つかずの日にかぎり1本置く（1本が1日より長い科目が
-      //   永遠に進まなくなるため）。途中まで勉強した日には足さない。
-      // 問題演習: 分割せず、残り全問を置く（その日の残り時間は見ない）。
-      let take = isVideo
-        ? (e.left * e.minPerUnit <= dayBudget
+      // 動画とセットの問題演習だけ、残り全問をまとめて置く（時間は見ない）。
+      // それ以外（講義動画、動画の無い問題演習）は、科目ぶんが1日に収まるなら
+      // まとめて置き、収まらないならその日に入るだけ置いて翌日へ続ける。
+      // 1単位も入らないときは、まだ手つかずの日にかぎり1単位置く（1単位が1日より
+      // 長い科目が永遠に進まなくなるため）。途中まで勉強した日には足さない。
+      const atomic = !isVideo && videoGroups.has(e.groupKey);
+      let take = atomic
+        ? e.left
+        : (e.left * e.minPerUnit <= dayBudget
             ? e.left
-            : Math.max(fresh ? 1 : 0, Math.floor(budget / e.minPerUnit)))
-        : e.left;
+            : Math.max(fresh ? 1 : 0, Math.floor(budget / e.minPerUnit)));
       // 手で入れた「1日に進める量」はまとめ置きより優先する
       if (e.dailyCap) take = Math.min(take, e.dailyCap);
       take = Math.min(take, e.left);
@@ -12752,6 +12762,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   //  優先度が下がって QB が最後尾へ回る」となり、翌日にQBが来なくなる。
   const touched = new Set();      // 何かしら進んだ科目
   const unfinished = new Set();   // まだ配る仕事が残っている科目
+  const videoGroups = new Set();  // 講義動画のプランを持つ科目（見終わったものも含む）
   // 完了したプランも見る。動画を見終わるとそのプランは status:'done' になって
   // canAuto から外れるので、ここで弾くと2つ壊れる:
   //   - その科目が「未着手」に戻り、放置係数が効いてQBが後ろへ回る
@@ -12762,6 +12773,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     const remaining = Math.max(0, (Number(st.plan.total_volume) || 0) - done);
     if (done > 0) touched.add(group);
     if (st.canAuto && remaining > 0) unfinished.add(group);
+    if (st.plan.unit === 'video') videoGroups.add(group);
     if (st.plan.unit === 'video' && remaining <= 0 && done > 0) {
       const k = planLastProgressKey(st.mine);
       if (k && (!videoDoneAt[group] || k > videoDoneAt[group])) videoDoneAt[group] = k;
@@ -12794,7 +12806,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   return buildSequencedPlanSchedules({
     entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
       .map(p => entries.find(e => e.plan.id === p.id)),
-    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, spentTodayMin
+    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, videoGroups, spentTodayMin
   });
 }
 

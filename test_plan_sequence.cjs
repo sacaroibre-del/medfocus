@@ -740,6 +740,85 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
      W.defaultPlanDue([{ exam_date: TODAY, title: '今日' }], TODAY), { key: TODAY, title: '今日' });
 })();
 
+// 動画とセットのQBは「翌日に残り全問」（時間を超えてよい）。
+// 動画の無いQBだけのプランは、講義動画と同じで「1日に収まるならまとめて、
+// 収まらないなら入るだけ置いて翌日へ」。200問を1日に積んで期間を余らせない。
+(function qbOnlyIsPacedByBudget() {
+  const qb = (id, sid, n) => ({ plan: plan({ id, subject_id: sid, unit: 'q', due_date: '2026-09-13' }),
+    remaining: n, minPerUnit: 2, startKey: '2026-09-06' });
+
+  // 【A】QBだけのプランが並ぶとき
+  const only = W.buildSequencedPlanSchedules({
+    entries: [qb('big', '3D', 200), qb('mid', '3A', 80), qb('small', '1I', 30)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  const bigDays = only.byPlan['big'].items;
+  ok('大きいQBは1日に積まず日をまたぐ', bigDays.length > 1, bigDays);
+  ok('1日に置く量はその日の枠まで（200問400分を1日に置かない）',
+     bigDays.every(i => i.targetAmount * 2 <= 180), bigDays);
+  ok('1日に収まるQBはまとめて置く',
+     only.byPlan['small'].items.length === 1, only.byPlan['small'].items);
+  eq('順番は優先順位のまま（大きいものを後回しにしない）',
+     only.byPlan['big'].items[0].dateKey, '2026-09-06');
+
+  // 【B】動画とセットのQBは分割しない。動画は完了済みでプランが残っていない状態。
+  const paired = W.buildSequencedPlanSchedules({
+    entries: [qb('bigPaired', '2B', 150)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180,
+    videoDoneAt: { '2b': '2026-09-05' }, videoGroups: new Set(['2b'])
+  });
+  eq('動画とセットのQBは翌日に残り全問（枠を超えてよい）',
+     paired.byPlan['bigPaired'].items, [{ dateKey: '2026-09-06', targetAmount: 150 }]);
+
+  // videoGroups を渡さなければ同じ入力でも分割される（違いが videoGroups だけであること）
+  const unpaired = W.buildSequencedPlanSchedules({
+    entries: [qb('bigPaired', '2B', 150)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180,
+    videoDoneAt: { '2b': '2026-09-05' }
+  });
+  ok('動画を持たない科目なら同じ量でも分割される',
+     unpaired.byPlan['bigPaired'].items.length > 1, unpaired.byPlan['bigPaired'].items);
+
+  // 【C】混在。動画のある科目はまとめ置き、QBだけの科目は枠なりに進む。
+  const mixed = W.buildSequencedPlanSchedules({
+    entries: [{ plan: plan({ id: 'vid', subject_id: '2B', unit: 'video', due_date: '2026-09-13' }),
+                remaining: 3, minPerUnit: 40, startKey: '2026-09-06' },
+               qb('pairedQb', '2B', 52), qb('soloQb', '3D', 200)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 180
+  });
+  eq('動画とセットのQBは動画の翌日にまとめて',
+     mixed.byPlan['pairedQb'].items, [{ dateKey: '2026-09-07', targetAmount: 52 }]);
+  ok('QBだけの科目は初日から枠なりに進む',
+     mixed.byPlan['soloQb'].items.length > 1
+     && mixed.byPlan['soloQb'].items[0].dateKey === '2026-09-06',
+     mixed.byPlan['soloQb'].items);
+})();
+
+// buildPlanSequence は、見終わった動画プランも見て videoGroups を組む。
+// canAuto で絞ると「動画を見終わった科目のQB」が分割されてしまう。
+(function videoGroupsSurviveCompletedPlans() {
+  const state = [
+    { plan: plan({ id: 'vid', subject_id: '2B', unit: 'video', total_volume: 3,
+                   start_date: '2026-09-01', due_date: '2026-09-13' }),
+      mine: [{ id: 'v1', due_date: '2026-09-05', target_amount: 3, done_amount: 3, completed: true }],
+      canAuto: false },
+    { plan: plan({ id: 'qb', subject_id: '2B', unit: 'q', total_volume: 150,
+                   start_date: '2026-09-01', due_date: '2026-09-13' }),
+      mine: [], canAuto: true },
+    { plan: plan({ id: 'solo', subject_id: '3D', unit: 'q', total_volume: 200,
+                   start_date: '2026-09-01', due_date: '2026-09-13' }),
+      mine: [], canAuto: true }
+  ];
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 180;
+  const res = W.buildPlanSequence(state, '2026-09-06', { video: 40, q: 2 }, null, 0);
+  W.planGoalMinutesOf = goalWas;
+  ok('見終わった動画の科目のQBはまとめて置かれる',
+     res && res.byPlan['qb'].items.length === 1, res && res.byPlan['qb'].items);
+  ok('動画を持たない科目のQBは枠なりに分割される',
+     res && res.byPlan['solo'].items.length > 1, res && res.byPlan['solo'].items);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');
