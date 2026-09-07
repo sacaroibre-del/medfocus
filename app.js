@@ -12588,10 +12588,11 @@ async function updatePlan(plan, input, schedule) {
 //  - 完了印の付いた行は残す。チェックは進捗として数えるので、消すと
 //    「チェック → 残量が減る → 配り直し → チェックごと消える → 残量が戻る」を
 //    往復して予定が点滅する。
-//  - 過ぎた日で実績のある行は、その日にやった分に書き換えて残す。消すと、
-//    やった日のノルマがカレンダーから丸ごと消える。予定のまま残すと、
-//    やらなかった分が今日以降にも載って二重に見える。
-//  - 過ぎた日で手つかずの行は消す。その仕事は今日以降へ配り直されている。
+//  - 実績のある行は、その日にやった分に書き換えて残す。今日の行も対象にする。
+//    今日のうちに終えた行を消してしまうと、翌日には残しようがなく、
+//    やった日のノルマがカレンダーから丸ごと消える。
+//    予定のまま残すと、やらなかった分が今日以降にも載って二重に見える。
+//  - 実績の無い行は消す。その仕事は今日以降へ配り直されている。
 async function replaceFutureTasks(plan, schedule, todayKey, applied) {
   const all = await fetchPlanTasks();
   const mine = all.filter(t => t.plan_id === plan.id);
@@ -12608,7 +12609,7 @@ async function replaceFutureTasks(plan, schedule, todayKey, applied) {
     if (t.completed) { keep.push(t); return; }
     const key = String(t.due_date || '').slice(0, 10);
     const done = doneById[String(t.id)] || 0;
-    if (key < todayKey && done > 0) trim.push(Object.assign({}, t,
+    if (key <= todayKey && done > 0) trim.push(Object.assign({}, t,
       { target_amount: done, done_amount: done, completed: true }));
     else drop.push(t);
   });
@@ -12720,19 +12721,19 @@ function planLastProgressKey(tasks) {
   return last;
 }
 
-// 手でチェックした今日のタスクぶんの見込み時間。学習記録が無くても今日の枠を
+// 手でチェックしただけのタスクぶんの見込み時間。学習記録が無くても今日の枠を
 // 使ったとみなす。引かないと、チェックするたびに今日のタスクが増えてしまう。
-// 渡すのは保存済みの生タスク。ログから自動で完了扱いにした分はここに入らない
-// （そちらは planSpentMinutesOn が実測で数える）。
-function planTickedMinutesOn(rawTasksByPlan, plansById, dateKey, unitCost) {
+// 実績で埋まった行は planSpentMinutesOn が実測で数えるので、ここでは除く
+// （両方で数えると今日の枠を二重に消費してしまう）。
+function planTickedMinutesOn(state, dateKey, unitCost) {
   let sum = 0;
-  Object.entries(rawTasksByPlan || {}).forEach(([planId, rows]) => {
-    const plan = (plansById || {})[planId];
-    const per = plan ? planMinutesPerUnit(plan, unitCost) : null;
+  (state || []).forEach(st => {
+    const per = planMinutesPerUnitOrDefault(st.plan, unitCost);
     if (!per) return;
-    (rows || []).forEach(t => {
-      if (!t.completed) return;
+    (st.mine || []).forEach(t => {
+      if (!t.completed || t.extra) return;
       if (String(t.due_date || '').slice(0, 10) !== dateKey) return;
+      if ((Number(t.done_amount) || 0) > 0) return;
       sum += (Number(t.target_amount) || 0) * per;
     });
   });
@@ -12838,7 +12839,7 @@ async function syncPlans(force) {
   // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
-    planSpentMinutesOn(logs, today) + planTickedMinutesOn(byPlan, plansById, today, unitCost));
+    planSpentMinutesOn(logs, today) + planTickedMinutesOn(state, today, unitCost));
 
   const tasks = [];
   const rebuilt = [];
@@ -13221,6 +13222,10 @@ function planSequenceNoteHTML(sync) {
   </div>`;
 }
 
+// 終わったプランは既定で隠す。進行中だけを見せないと、周回を重ねるほど
+// 一覧が終わったものだらけになって、いま何をやるのかが読めなくなる。
+let showFinishedPlans = false;
+
 async function renderPlans() {
   const ct = document.getElementById('page-container');
   ct.innerHTML = `<div class="page-header">
@@ -13238,19 +13243,29 @@ async function renderPlans() {
     sync.tasks.forEach(t => { (byPlan[t.plan_id] = byPlan[t.plan_id] || []).push(t); });
     const order = { active: 0, done: 1, archived: 2 };
     const plans = sync.plans.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || String(a.due_date).localeCompare(String(b.due_date)));
+    const active = plans.filter(p => p.status === 'active');
+    const finished = plans.filter(p => p.status !== 'active');
+    const shown = showFinishedPlans ? plans : active;
     const root = document.getElementById('plans-root');
     root.innerHTML = `
       <div class="cal-toolbar">
-        <span class="cal-today-note">今日 ${sync.todayKey.slice(5).replace('-', '/')}・進行中 ${plans.filter(p => p.status === 'active').length}件</span>
+        <span class="cal-today-note">今日 ${sync.todayKey.slice(5).replace('-', '/')}・進行中 ${active.length}件</span>
         <div class="cal-spacer"></div>
+        ${finished.length ? `<button class="btn btn-secondary" data-plan-show-finished style="padding:6px 14px;font-size:var(--font-size-xs)">${
+          showFinishedPlans ? '終わったプランを隠す' : `終わったプラン ${finished.length}件`}</button>` : ''}
         <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
       </div>
       ${planSequenceNoteHTML(sync)}${subjectPriorityTableHTML(sync)}
-      ${plans.length ? `<div class="plan-list">${plans.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey,
+      ${shown.length ? `<div class="plan-list">${shown.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey,
           sync.sequence && sync.sequence.byPlan[p.id])).join('')}</div>`
-        : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`}`;
+        : (plans.length
+          ? `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">進行中のプランはありません。終わったプランは上のボタンから見られます。</div>`
+          : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`)}`;
 
     root.querySelector('[data-plan-new]').onclick = () => openPlanWizard(() => draw(true));
+    root.querySelector('[data-plan-show-finished]')?.addEventListener('click', () => {
+      showFinishedPlans = !showFinishedPlans; draw(false);
+    });
     root.querySelectorAll('.plan-card').forEach(card => {
       const id = card.dataset.planId;
       const plan = sync.plansById[id];

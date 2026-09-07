@@ -109,7 +109,12 @@ const onDay = (s, key) => s.tasks.filter(t => !t.extra && String(t.due_date).sli
   logs.push({ subject_name: '2B', activity: 'video', duration_minutes: 120, videos_watched: 3,
               video_edition: 'kokushi', started_at: NOW + 'T10:00:00Z' });
   const done = await sync();
-  eq('今日の予定をこなしたら今日には足さない', onDay(done, NOW), []);
+  const todayLeft = done.tasks.filter(t => !t.extra
+    && String(t.due_date).slice(0, 10) === NOW && !t.completed);
+  eq('今日の予定をこなしたら今日には足さない', todayLeft.map(t => t.plan_id + ':' + t.target_amount), []);
+  ok('こなした分は完了印付きで今日に残る',
+     done.tasks.some(t => !t.extra && String(t.due_date).slice(0, 10) === NOW && t.completed),
+     onDay(done, NOW));
   ok('全体の終わりが早まる', planEnd(done) <= endBefore, { 前: endBefore, 後: planEnd(done) });
   const qbDay = done.tasks.filter(t => !t.extra && t.plan_id === 'qb').map(t => String(t.due_date).slice(0, 10))[0];
   ok('動画を見終わった翌日からQB', qbDay > NOW, qbDay);
@@ -154,6 +159,30 @@ const onDay = (s, key) => s.tasks.filter(t => !t.extra && String(t.due_date).sli
   // 過去に残した分と、これからのノルマを足すと総量に一致する（二重計上しない）
   const total = taskRows(s2).reduce((m, r) => m + r.n, 0);
   eq('ノルマの合計が総本数と一致する', total, 47);
+
+  // ---------- 今日のうちに終えた分もカレンダーに残る ----------
+  // 今日の行を消してしまうと、翌日には残しようがなく、やった日のノルマが
+  // カレンダーから丸ごと消える（実績の棒だけになる）。
+  setup(PLANS());
+  let s3 = await sync();
+  const todayN = s3.tasks.filter(t => !t.extra && String(t.due_date).slice(0, 10) === NOW)
+    .reduce((m, t) => m + (Number(t.target_amount) || 0), 0);
+  ok('今日の予定がある', todayN > 0, todayN);
+  logs.push({ subject_name: '2B', activity: 'video', duration_minutes: 120, videos_watched: 3,
+              video_edition: 'kokushi', started_at: NOW + 'T10:00:00Z' });
+  s3 = await sync();
+  const todayRow = s3.tasks.filter(t => !t.extra && String(t.due_date).slice(0, 10) === NOW);
+  eq('今日こなした分は完了印付きで残る',
+     todayRow.map(t => ({ n: t.target_amount, done: !!t.completed })), [{ n: 3, done: true }]);
+  const again = await sync();
+  eq('同期を繰り返しても増えない',
+     again.tasks.filter(t => !t.extra && String(t.due_date).slice(0, 10) === NOW).length, 1);
+
+  NOW = W.shiftDateKey(START, 1);
+  const nextDay = await sync();
+  eq('翌日になっても昨日の記録が残る',
+     nextDay.tasks.filter(t => !t.extra && String(t.due_date).slice(0, 10) === START)
+       .map(t => ({ n: t.target_amount, done: !!t.completed })), [{ n: 3, done: true }]);
 
   console.log();
   if (failures.length) {
