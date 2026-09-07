@@ -223,6 +223,38 @@ const onDay = (s, key) => s.tasks.filter(t => !t.extra && String(t.due_date).sli
   s4 = await sync();
   eq('配り直しが走っても先頭のまま', s4.sequence.order[0], 'qA');
 
+  // ---------- 今日見終わった科目のQBは翌日のまま ----------
+  // 動画プランは見終わると status:'done' になる。見終わった日の記録を
+  // canAuto の内側で作っていると、次の同期でその記録ごと消えて
+  // 「翌日からQB」が効かなくなり、QBが今日に降りてくる。
+  setup([
+    { id: 'vP', title: '2P 動画', subject_id: '2P', unit: 'video', video_edition: 'cbt',
+      start_date: START, due_date: W.shiftDateKey(START, 30), total_volume: 47,
+      exclude_weekdays: [], auto_redistribute: true, status: 'active' },
+    { id: 'qP', title: '2P QB', subject_id: '2P', unit: 'q', target_round: 1,
+      start_date: START, due_date: W.shiftDateKey(START, 30), total_volume: 59,
+      exclude_weekdays: [], auto_redistribute: true, status: 'active' }
+  ]);
+  W.localStorage.setItem('medfocus_weekly_goals', JSON.stringify([300, 300, 300, 300, 300, 300, 300]));
+  W.localStorage.setItem('medfocus_video_progress', JSON.stringify({ '2P': { cbt: { done: 0, total: 47 } } }));
+  W.localStorage.setItem('medfocus_qb_progress', JSON.stringify({ '2P': { '1': { done: 0, total: 59, correct: 0 } } }));
+  await sync();
+  // 今日、47本すべて見終える
+  logs.push({ subject_name: '2P', activity: 'video', duration_minutes: 305, videos_watched: 47,
+              video_edition: 'cbt', started_at: START + 'T09:00:00Z' });
+  const qbDayOf = s => s.tasks.filter(t => !t.extra && t.plan_id === 'qP')
+    .map(t => String(t.due_date).slice(0, 10)).sort()[0];
+
+  const first = await sync();
+  ok('見終えた当日、QBは翌日に置かれる', qbDayOf(first) > START, qbDayOf(first));
+  const second = await sync();
+  eq('もう一度同期しても翌日のまま（プランが done になった後）', qbDayOf(second), qbDayOf(first));
+  const third = await sync();
+  eq('さらに同期しても変わらない', qbDayOf(third), qbDayOf(first));
+  ok('今日にQBは置かれない',
+     !third.tasks.some(t => !t.extra && t.plan_id === 'qP' && String(t.due_date).slice(0, 10) === START),
+     third.tasks.filter(t => !t.extra && t.plan_id === 'qP').map(t => String(t.due_date).slice(0, 10)));
+
   console.log();
   if (failures.length) {
     console.log('--- 失敗 ---');

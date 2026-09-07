@@ -12752,15 +12752,20 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   //  優先度が下がって QB が最後尾へ回る」となり、翌日にQBが来なくなる。
   const touched = new Set();      // 何かしら進んだ科目
   const unfinished = new Set();   // まだ配る仕事が残っている科目
+  // 完了したプランも見る。動画を見終わるとそのプランは status:'done' になって
+  // canAuto から外れるので、ここで弾くと2つ壊れる:
+  //   - その科目が「未着手」に戻り、放置係数が効いてQBが後ろへ回る
+  //   - 見終わった日が分からなくなり、「翌日からQB」が効かずに今日へ降りてくる
   (state || []).forEach(st => {
     const group = planGroupKey(st.plan);
     const done = planDoneAmount(st.mine);
     const remaining = Math.max(0, (Number(st.plan.total_volume) || 0) - done);
-    // 進んだかどうかは完了済みのプランも見る。動画を見終わるとそのプランは
-    // status:'done' になって canAuto から外れるので、ここで弾くと
-    // 翌日には「未着手の科目」に戻ってしまい、QBが後ろへ回る。
     if (done > 0) touched.add(group);
     if (st.canAuto && remaining > 0) unfinished.add(group);
+    if (st.plan.unit === 'video' && remaining <= 0 && done > 0) {
+      const k = planLastProgressKey(st.mine);
+      if (k && (!videoDoneAt[group] || k > videoDoneAt[group])) videoDoneAt[group] = k;
+    }
   });
   const inProgress = new Set([...touched].filter(g => unfinished.has(g)));
 
@@ -12770,13 +12775,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     const done = planDoneAmount(st.mine);
     const remaining = Math.max(0, total - done);
     const group = planGroupKey(st.plan);
-    if (remaining <= 0) {
-      if (st.plan.unit === 'video') {
-        const k = planLastProgressKey(st.mine);
-        if (k && (!videoDoneAt[group] || k > videoDoneAt[group])) videoDoneAt[group] = k;
-      }
-      return;
-    }
+    if (remaining <= 0) return;   // 見終わった日は上のループで拾っている
     // 実測が足りないプランも仮の単価で並べる。落とすとその科目だけ
     // 「動画を見終わってからQB」が崩れるため。仮で並べたことは画面に出す。
     if (!planMinutesPerUnit(st.plan, unitCost)) st.noEstimate = true;
