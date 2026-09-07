@@ -11721,8 +11721,9 @@ function buildCalendarRange(cursorKey, view) {
   };
 }
 
-// チップの並び順。日付マスの中では「試験 → 節目 → 予定 → ノルマ」で読む。
-const CAL_KIND_ORDER = { exam: 0, milestone: 1, event: 2, quota: 3 };
+// チップの並び順。日付マスの中では「試験 → 節目 → 予定 → ノルマ → 実績」で読む。
+// 実績を最後にするのは、上から順に「この日の予定」「実際にやったこと」と読めるため。
+const CAL_KIND_ORDER = { exam: 0, milestone: 1, event: 2, quota: 3, log: 4 };
 
 // カレンダーのセル配列を作る。予定・逆算タスク・試験カウントダウンを1本のチップ列にまとめる。
 // state は 'done' | 'todo' | 'overdue' の3値。色は科目を表す軸なので、
@@ -11783,31 +11784,70 @@ function buildCalendarModel(cursorKey, view, sources) {
     });
   });
 
-  // ④ 学習ログ（実績）。チップにはせず、その日の積載量として日別に集計する。
+  // ④ 学習ログ（実績）。その日の積載量（横棒）と、「何をやったか」のチップを作る。
   //    論理日（3時境界）で束ねるので、深夜の勉強は前日ぶんとして数える。
+  //
+  //    ノルマの達成印（✓）は出さず、代わりにここが「実際にやったこと」を持つ。
+  //    ノルマの行に印を付けるだけだと、その日にノルマの無い科目を前倒しでやった分が
+  //    どこにも出てこない。やったことはノルマの有無と関係なく残るべきなので、
+  //    表示の軸をノルマではなく実績に移している。
   const studyByDay = {};
+  const logGroups = {};   // 日付 → 科目×種別 → 実績
   (s.logs || []).forEach(l => {
     if (!l || !l.started_at) return;
     const key = toLocalDateKey(getLogicalDate(new Date(l.started_at)));
     if (key < range.startKey || key > range.endKey) return;
     const min = Number(l.duration_minutes) || 0;
-    if (min <= 0) return;
-    const bucket = studyByDay[key] = studyByDay[key] || { total: 0, bySubject: {} };
-    bucket.total += min;
     const sid = l.subject_name || '未設定';
-    bucket.bySubject[sid] = (bucket.bySubject[sid] || 0) + min;
+    const questions = Math.max(0, Number(l.questions_solved) || 0);
+    const videos = Math.max(0, Number(l.videos_watched) || 0);
+    // 時間も量も無いログは出しても読めないので飛ばす
+    if (min <= 0 && questions <= 0 && videos <= 0) return;
+    if (min > 0) {
+      const bucket = studyByDay[key] = studyByDay[key] || { total: 0, bySubject: {} };
+      bucket.total += min;
+      bucket.bySubject[sid] = (bucket.bySubject[sid] || 0) + min;
+    }
+    // 同じ科目を1日に何回かに分けて記録することがあるので、科目×種別でまとめる
+    const act = ACTIVITY_MAP[l.activity] ? l.activity : 'other';
+    const gk = sid + '\u0000' + act;
+    const day = logGroups[key] = logGroups[key] || {};
+    const g = day[gk] = day[gk] || { subjectId: sid, activity: act, minutes: 0, questions: 0, correct: 0, videos: 0 };
+    g.minutes += min;
+    g.questions += questions;
+    g.videos += videos;
+    if (questions > 0) g.correct += Math.max(0, Number(l.questions_correct) || 0);
+  });
+  Object.entries(logGroups).forEach(([key, day]) => {
+    Object.entries(day).forEach(([gk, g]) => {
+      const act = ACTIVITY_MAP[g.activity] || {};
+      push(key, {
+        id: 'log-' + key + '-' + gk, kind: 'log',
+        title: calSubjectShort(studySubjectName(g.subjectId)) + (act.short ? '・' + act.short : ''),
+        subjectId: g.subjectId, color: null,
+        state: 'log',
+        // 量が記録されていればそれを、無ければ時間だけを出す
+        amount: g.questions > 0 ? g.questions : (g.videos > 0 ? g.videos : null),
+        unit: g.questions > 0 ? 'q' : (g.videos > 0 ? 'video' : null),
+        minutes: g.minutes, correct: g.questions > 0 ? g.correct : null,
+        raw: null
+      });
+    });
   });
 
   const isTask = c => c.kind === 'quota' || c.kind === 'milestone';
   const weeks = range.weeks.map(row => row.map(dateKey => {
     const d = parseDateKey(dateKey);
     const study = studyByDay[dateKey] || null;
-    // 種類 → 時刻（時刻なしは後ろ） → タイトル の順に並べる
-    const items = (byDay[dateKey] || []).sort((a, b) =>
+    const all = byDay[dateKey] || [];
+    const tasks = all.filter(isTask);
+    // 種類 → 時刻（時刻なしは後ろ） → タイトル の順に並べる。
+    // 達成したノルマは出さない。やったことは実績チップ（④）のほうが正確で、
+    // 両方出すと同じ勉強が2行に見える。残っているノルマと遅れは今までどおり出す。
+    const items = all.filter(c => !(isTask(c) && c.state === 'done')).sort((a, b) =>
       (CAL_KIND_ORDER[a.kind] - CAL_KIND_ORDER[b.kind]) ||
       String(a.startTime || '99:99').localeCompare(String(b.startTime || '99:99')) ||
       String(a.title || '').localeCompare(String(b.title || ''), 'ja'));
-    const tasks = items.filter(isTask);
     return {
       dateKey, day: d.getDate(), weekday: d.getDay(),
       inMonth: range.view === 'week' || d.getMonth() === range.month,
@@ -11892,7 +11932,8 @@ function normalizeCalendarEvent(input) {
 // 完了/未完了の状態は色ではなく、塗り・枠線・記号で表す。
 
 const CAL_DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
-const CAL_CELL_MAX_CHIPS = 3;
+// 1マスに出すチップ数。ノルマと実績が並ぶので3だと今日のマスで実績が隠れる。
+const CAL_CELL_MAX_CHIPS = 4;
 const CAL_FALLBACK_COLOR = '#94a3b8';
 
 const _subjectColorCache = {};
@@ -11910,6 +11951,13 @@ function subjectColorOf(key) {
   return (_subjectColorCache[key] = color || CAL_FALLBACK_COLOR);
 }
 
+// チップの見出し用に科目名を詰める。「2C 循環器」→「循環器」。
+// 色とまとめ方は元の名前のまま。マスの幅が狭く、IDぶんの3文字が効くため。
+function calSubjectShort(name) {
+  const s = String(name || '');
+  return s.replace(/^\d[A-Z]\s+/, '') || s;
+}
+
 function calChipColor(chip) {
   return chip.color || subjectColorOf(chip.subjectId) ||CAL_FALLBACK_COLOR;
 }
@@ -11924,17 +11972,40 @@ function calUnitLabel(unit) {
   return ({ q: '問', page: 'p', video: '本', count: '' })[unit] || '';
 }
 
+// 実績チップの右端。問数・本数が記録されていればそれを、無ければ時間を出す。
+function calLogAmountText(chip) {
+  if (chip.amount > 0) return chip.amount + calUnitLabel(chip.unit);
+  return chip.minutes > 0 ? formatMinutes(chip.minutes) : '';
+}
+// 実績チップの吹き出し。「循環器・QB 30問（20問正解 67%）40分」
+function calLogTitleText(chip) {
+  const parts = [chip.title];
+  if (chip.amount > 0) {
+    let a = chip.amount + calUnitLabel(chip.unit);
+    if (chip.correct !== null && chip.correct !== undefined && chip.amount > 0) {
+      a += `（${chip.correct}問正解 ${Math.round((chip.correct / chip.amount) * 100)}%）`;
+    }
+    parts.push(a);
+  }
+  if (chip.minutes > 0) parts.push(formatMinutes(chip.minutes));
+  return parts.join(' ');
+}
+
 function calendarChipHTML(chip) {
   const color = calChipColor(chip);
   const cls = ['cal-chip', 'kind-' + chip.kind];
   if (chip.state === 'done') cls.push('is-done');
   if (chip.state === 'overdue') cls.push('is-overdue');
+  const isLog = chip.kind === 'log';
   const time = chip.startTime ? `<span class="cal-chip-time">${esc(chip.startTime)}</span>` : '';
-  const mark = chip.state === 'done' ? '✓ ' : (chip.state === 'overdue' ? '! ' : '');
+  const mark = isLog ? '' : (chip.state === 'done' ? '✓ ' : (chip.state === 'overdue' ? '! ' : ''));
   const partial = chip.kind === 'quota' && chip.state !== 'done' && chip.doneAmount > 0;
-  const amount = (chip.amount !== null && chip.amount !== undefined)
-    ? `<span class="cal-chip-amount">${partial ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}</span>` : '';
-  return `<div class="${cls.join(' ')}" style="--chip:${esc(color)}" title="${esc(chip.title)}">
+  const amountText = isLog
+    ? calLogAmountText(chip)
+    : ((chip.amount !== null && chip.amount !== undefined)
+        ? `${partial ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
+  const amount = amountText ? `<span class="cal-chip-amount">${esc(amountText)}</span>` : '';
+  return `<div class="${cls.join(' ')}" style="--chip:${esc(color)}" title="${esc(isLog ? calLogTitleText(chip) : chip.title)}">
     ${time}<span class="cal-chip-label">${mark}${esc(chip.title)}</span>${amount}
   </div>`;
 }
@@ -11992,9 +12063,18 @@ function calendarPanelItemHTML(chip) {
     ? `${esc(chip.startTime)}${chip.endTime ? '–' + esc(chip.endTime) : ''}` : '終日';
   const evCat = chip.kind === 'event' && chip.raw && chip.raw.category
     ? (CAL_EVENT_CATEGORIES.find(c => c.id === chip.raw.category) || {}).label : null;
-  const kindLabel = evCat || (({ exam: '試験', milestone: '節目', event: '予定', quota: 'ノルマ' })[chip.kind] || '');
-  const amount = (chip.amount !== null && chip.amount !== undefined)
-    ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '';
+  const kindLabel = evCat || (({ exam: '試験', milestone: '節目', event: '予定', quota: 'ノルマ', log: '実績' })[chip.kind] || '');
+  const isLog = chip.kind === 'log';
+  const amount = isLog
+    ? (calLogAmountText(chip) ? ' ' + calLogAmountText(chip) : '')
+    : ((chip.amount !== null && chip.amount !== undefined)
+        ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
+  // 実績は「実績・40分」「実績・20問正解 67%」まで出す（何をどれだけやったかが要る）
+  const logMeta = isLog
+    ? [chip.minutes > 0 && chip.amount > 0 ? formatMinutes(chip.minutes) : null,
+       chip.correct !== null && chip.correct !== undefined && chip.amount > 0
+         ? `${chip.correct}問正解 ${Math.round((chip.correct / chip.amount) * 100)}%` : null
+      ].filter(Boolean).map(t => '・' + t).join('') : '';
   const tag = chip.state === 'overdue' ? '<span class="cal-item-tag">期限切れ</span>' : '';
   const check = chip.kind === 'quota' ? `<span class="cal-item-check ${chip.state === 'done' ? 'on' : ''}">${chip.state === 'done' ? '✓' : ''}</span>` : '';
   const clickable = chip.kind === 'event' ? ` clickable" data-cal-event="${esc(chip.id)}" title="クリックで編集`
@@ -12003,7 +12083,7 @@ function calendarPanelItemHTML(chip) {
     <div class="cal-item-bar" style="background:${esc(color)}"></div>
     <div class="cal-item-body">
       <div class="cal-item-title${chip.state === 'done' ? ' is-done' : ''}">${esc(chip.title)}${amount}</div>
-      <div class="cal-item-meta">${kindLabel}${chip.kind === 'event' ? '・' + time : ''}</div>
+      <div class="cal-item-meta">${kindLabel}${chip.kind === 'event' ? '・' + time : ''}${logMeta}</div>
       ${tag}
     </div>
     ${check}
@@ -12014,6 +12094,8 @@ function calendarPanelHTML(cell) {
   if (!cell) return '<div class="cal-panel"><div class="cal-panel-empty">日付を選んでください</div></div>';
   const d = parseDateKey(cell.dateKey);
   const examCount = cell.items.filter(i => i.kind === 'exam').length;
+  // 「予定」の件数は実績を含めない（やったことは下の学習実績で見る）
+  const planCount = cell.items.filter(i => i.kind !== 'log').length;
   const list = cell.items.length
     ? cell.items.map(calendarPanelItemHTML).join('')
     : '<div class="cal-panel-empty">この日の予定はありません</div>';
@@ -12027,7 +12109,7 @@ function calendarPanelHTML(cell) {
       </div>
       <div class="cal-stats">
         <div>
-          <div class="cal-stat-num">${cell.items.length}</div>
+          <div class="cal-stat-num">${planCount}</div>
           <div class="cal-stat-label">予定</div>
         </div>
         <div>

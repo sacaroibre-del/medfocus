@@ -244,7 +244,9 @@ const TODAY = '2026-09-14';
   model.weeks.forEach(w => w.forEach(c => { cells[c.dateKey] = c; }));
 
   eq('buildCalendarModel: 期限切れ未完は overdue', cells['2026-09-12'].items[0].state, 'overdue');
-  eq('buildCalendarModel: 完了は done', cells['2026-09-13'].items[0].state, 'done');
+  // 達成したノルマはチップに出さない（何をやったかは実績チップが持つ）が、件数には数える
+  eq('buildCalendarModel: 完了したノルマはチップに出さない', cells['2026-09-13'].items.length, 0);
+  eq('buildCalendarModel: 完了は done', cells['2026-09-13'].taskCount, 1);
   eq('buildCalendarModel: 今日ぶんは todo', cells['2026-09-14'].items[0].state, 'todo');
   eq('buildCalendarModel: 今日フラグ', cells['2026-09-14'].isToday, true);
   eq('buildCalendarModel: 過去フラグ', cells['2026-09-13'].isPast, true);
@@ -276,6 +278,63 @@ const TODAY = '2026-09-14';
   });
   const todayCell = mixed.weeks[0].find(c => c.dateKey === TODAY);
   eq('buildCalendarModel: チップの並び順', todayCell.items.map(i => i.kind), ['exam', 'milestone', 'event', 'quota']);
+
+  // 実績は最後（上から「この日の予定」→「実際にやったこと」と読む）
+  const withLog = W.buildCalendarModel('2026-09-14', 'week', {
+    todayKey: TODAY, plansById,
+    events: [{ id: 'e', title: 'イベント', start_date: TODAY }],
+    tasks: [{ id: 'q', plan_id: 'p1', due_date: TODAY, kind: 'quota', target_amount: 10 }],
+    countdowns: [{ id: 'c', name: '試験', exam_date: TODAY }],
+    logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 30,
+             questions_solved: 12, started_at: TODAY + 'T09:00:00Z' }]
+  }).weeks[0].find(c => c.dateKey === TODAY);
+  eq('buildCalendarModel: 実績は最後に並ぶ',
+     withLog.items.map(i => i.kind), ['exam', 'event', 'quota', 'log']);
+
+  // 学習ログは「その日にやったこと」の実績チップになる。ノルマの有無と関係なく出るので、
+  // ノルマの無い科目を前倒しでやった日も、何をやったかが残る。
+  const withLogs = W.buildCalendarModel(TODAY, 'week', {
+    todayKey: TODAY, plansById,
+    tasks: [{ id: 'q', plan_id: 'p1', due_date: TODAY, kind: 'quota', target_amount: 20,
+              done_amount: 20, completed: true }],
+    logs: [
+      // ノルマのある科目。1日に2回に分けて記録している
+      { subject_name: '2C 循環器', activity: 'qb', duration_minutes: 30,
+        questions_solved: 12, questions_correct: 9, started_at: TODAY + 'T09:00:00Z' },
+      { subject_name: '2C 循環器', activity: 'qb', duration_minutes: 20,
+        questions_solved: 8, questions_correct: 6, started_at: TODAY + 'T11:00:00Z' },
+      // ノルマの無い科目を前倒しでやった分
+      { subject_name: '2B 肝・胆・膵', activity: 'video', duration_minutes: 80,
+        videos_watched: 2, started_at: TODAY + 'T14:00:00Z' },
+      // 量の記録が無く時間だけのログ
+      { subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25,
+        started_at: TODAY + 'T20:00:00Z' }
+    ]
+  }).weeks[0].find(c => c.dateKey === TODAY);
+
+  eq('実績チップ: 達成ノルマは消え、やったことだけが並ぶ',
+     withLogs.items.map(i => i.kind), ['log', 'log', 'log']);
+  eq('実績チップ: 見出しは科目＋種別（科目IDは落とす）',
+     withLogs.items.map(i => i.title).sort(),
+     ['公衆衛生・暗記', '循環器・QB', '肝・胆・膵・動画']);
+  const circ = withLogs.items.find(i => i.title === '循環器・QB');
+  eq('実績チップ: 同じ科目の複数回はまとめる', [circ.amount, circ.minutes, circ.correct], [20, 50, 15]);
+  eq('実績チップ: 単位は問', circ.unit, 'q');
+  const liver = withLogs.items.find(i => i.title === '肝・胆・膵・動画');
+  ok('実績チップ: ノルマの無い科目も出る', !!liver, withLogs.items.map(i => i.title));
+  eq('実績チップ: 動画は本数', [liver.amount, liver.unit], [2, 'video']);
+  const ph = withLogs.items.find(i => i.title === '公衆衛生・暗記');
+  eq('実績チップ: 量が無ければ時間だけ', [ph.amount, ph.unit, ph.minutes], [null, null, 25]);
+  eq('実績チップ: 科目の色を引く', circ.subjectId, '2C 循環器');
+  eq('実績チップ: ノルマの件数は今までどおり数える',
+     [withLogs.taskCount, withLogs.doneCount], [1, 1]);
+  eq('実績チップ: 積載バーは全ログぶん', withLogs.studyMinutes, 155);
+
+  // 量も時間も無いログは出さない（読めるものが何も無いため）
+  eq('実績チップ: 空のログは出さない',
+     W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
+       logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 0, started_at: TODAY + 'T09:00:00Z' }]
+     }).weeks[0].find(c => c.dateKey === TODAY).items.length, 0);
 
   // 時刻付きの予定（講義など）は時刻順に並び、終日の予定はその後ろ
   const timed = W.buildCalendarModel(TODAY, 'week', {
