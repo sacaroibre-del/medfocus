@@ -12583,25 +12583,55 @@ async function updatePlan(plan, input, schedule) {
   return Object.assign({}, plan, row);
 }
 
-// 未完了のタスクを消して、逆算し直した結果で置き換える。完了印の付いた行は残す。
+// 未完了のタスクを消して、逆算し直した結果で置き換える。過去の行の扱いが要点。
 //
-// 完了印を消してはいけない: チェックは進捗として数えるので、消すと
-// 「チェック → 残量が減る → 配り直し → チェックごと消える → 残量が戻る」を
-// 往復して予定が点滅する。
-// 過ぎた未完了の行も残さない: その仕事は今日以降へ配り直されているので、
-// 残すと同じ仕事がカレンダーに二重に出て、遅れの数字も二重になる。
-async function replaceFutureTasks(plan, schedule, todayKey) {
+//  - 完了印の付いた行は残す。チェックは進捗として数えるので、消すと
+//    「チェック → 残量が減る → 配り直し → チェックごと消える → 残量が戻る」を
+//    往復して予定が点滅する。
+//  - 過ぎた日で実績のある行は、その日にやった分に書き換えて残す。消すと、
+//    やった日のノルマがカレンダーから丸ごと消える。予定のまま残すと、
+//    やらなかった分が今日以降にも載って二重に見える。
+//  - 過ぎた日で手つかずの行は消す。その仕事は今日以降へ配り直されている。
+async function replaceFutureTasks(plan, schedule, todayKey, applied) {
   const all = await fetchPlanTasks();
   const mine = all.filter(t => t.plan_id === plan.id);
-  const keep = mine.filter(t => !!t.completed);
-  const seqOffset = keep.reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
+  // 実績を重ねたあとの消化量。planApplyLogs の結果を id で引く。
+  const doneById = {};
+  (applied || []).forEach(t => {
+    if (!t.id) return;
+    const target = Number(t.target_amount) || 0, done = Number(t.done_amount) || 0;
+    doneById[String(t.id)] = t.completed ? Math.max(target, done) : done;
+  });
+
+  const keep = [], trim = [], drop = [];
+  mine.forEach(t => {
+    if (t.completed) { keep.push(t); return; }
+    const key = String(t.due_date || '').slice(0, 10);
+    const done = doneById[String(t.id)] || 0;
+    if (key < todayKey && done > 0) trim.push(Object.assign({}, t,
+      { target_amount: done, done_amount: done, completed: true }));
+    else drop.push(t);
+  });
+  const kept = keep.concat(trim);
+  const seqOffset = kept.reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
   const fresh = scheduleToTaskRows(plan, schedule, seqOffset);
   if (!hasDB()) {
     const rows = fresh.map(t => Object.assign({ id: generateUID() }, t));
-    setLocalList(PLAN_TASKS_LS_KEY, all.filter(t => t.plan_id !== plan.id).concat(keep, rows));
-    return keep.concat(rows);
+    setLocalList(PLAN_TASKS_LS_KEY, all.filter(t => t.plan_id !== plan.id).concat(kept, rows));
+    return kept.concat(rows);
   }
-  const { error } = await supabase.from('plan_tasks').delete().eq('plan_id', plan.id).eq('completed', false);
+  // 実績のある過去の行は「やった分」に固定してから、残りを作り直す
+  for (const t of trim) {
+    const { error: e0 } = await supabase.from('plan_tasks')
+      .update({ target_amount: t.target_amount, done_amount: t.done_amount, completed: true })
+      .eq('id', t.id);
+    if (e0) console.warn('replaceFutureTasks trim error:', e0.message);
+  }
+  const dropIds = drop.map(t => t.id).filter(Boolean);
+  let error = null;
+  for (let i = 0; i < dropIds.length && !error; i += 200) {
+    ({ error } = await supabase.from('plan_tasks').delete().in('id', dropIds.slice(i, i + 200)));
+  }
   if (error) { console.error('replaceFutureTasks delete error:', error); return mine; }
   let inserted = [];
   if (fresh.length) {
@@ -12611,7 +12641,7 @@ async function replaceFutureTasks(plan, schedule, todayKey) {
     inserted = data || [];
   }
   invalidateCache('plan_tasks');
-  return keep.concat(inserted);
+  return kept.concat(inserted);
 }
 
 async function setTaskCompleted(task, completed) {
@@ -12820,7 +12850,7 @@ async function syncPlans(force) {
       const sched = canUseSequenced(seqRes) ? sequencedScheduleFor(plan, seqRes, today)
                                             : rebuildPlanSchedule(plan, mine, today);
       if (sched.ok && planScheduleDiffers(mine, sched, today)) {
-        const fresh = await replaceFutureTasks(plan, sched, today);
+        const fresh = await replaceFutureTasks(plan, sched, today, mine);
         mine = planApplyLogs(plan, fresh, st.doneByDay);
         rebuilt.push(plan.title);
         if (sched.mode === 'complete') { await updatePlanStatus(plan.id, 'done'); plan.status = 'done'; }
@@ -13232,7 +13262,7 @@ async function renderPlans() {
         const sched = canUseSequenced(seqRes) ? sequencedScheduleFor(plan, seqRes, sync.todayKey)
                                               : rebuildPlanSchedule(plan, byPlan[id] || [], sync.todayKey);
         if (!sched.ok) { showToast(IC.warn + ' 逆算できません（締切が過去か稼働日なし）'); return; }
-        await replaceFutureTasks(plan, sched, sync.todayKey);
+        await replaceFutureTasks(plan, sched, sync.todayKey, byPlan[id] || []);
         if (sched.mode === 'complete') await updatePlanStatus(id, 'done');
         _planSyncAt = 0; showToast(IC.check + ' 配り直しました'); draw(true);
       });

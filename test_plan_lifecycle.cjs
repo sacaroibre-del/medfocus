@@ -120,6 +120,41 @@ const onDay = (s, key) => s.tasks.filter(t => !t.extra && String(t.due_date).sli
   const soloRows = solo.tasks.filter(t => t.kind === 'quota' && !t.extra);
   eq('1件だけでも問題演習は1日にまとめる', soloRows.map(t => t.target_amount), [52]);
 
+  // ---------- 過ぎた日の扱い ----------
+  // 複数日にまたがるプランで、半端に進んだ日・手つかずの日がどうなるか。
+  function bigPlan() {
+    return [{ id: 'vid', title: '2P 動画', subject_id: '2P', unit: 'video', video_edition: 'cbt',
+              start_date: START, due_date: W.shiftDateKey(START, 30), total_volume: 47,
+              exclude_weekdays: [], auto_redistribute: true, status: 'active' }];
+  }
+  const taskRows = s => s.tasks.filter(t => !t.extra && t.plan_id === 'vid')
+    .map(t => ({ day: String(t.due_date).slice(0, 10), n: t.target_amount, done: !!t.completed }));
+
+  setup(bigPlan());
+  W.localStorage.setItem('medfocus_video_progress', JSON.stringify({ '2P': { cbt: { done: 0, total: 47 } } }));
+  let s2 = await sync();
+  const firstDay = taskRows(s2).find(r => r.day === START);
+  ok('初日にまとまった本数が乗る', firstDay && firstDay.n > 1, taskRows(s2));
+
+  // 予定の一部（10本）だけ見て、翌日へ
+  logs.push({ subject_name: '2P', activity: 'video', duration_minutes: 65, videos_watched: 10,
+              video_edition: 'cbt', started_at: START + 'T10:00:00Z' });
+  NOW = W.shiftDateKey(START, 1);
+  s2 = await sync();
+  const kept = taskRows(s2).filter(r => r.day < NOW);
+  eq('やった日はノルマが消えず、実際にやった分で残る', kept, [{ day: START, n: 10, done: true }]);
+
+  // 何もしない日は消える
+  NOW = W.shiftDateKey(START, 2);
+  s2 = await sync();
+  const kept2 = taskRows(s2).filter(r => r.day < NOW);
+  eq('手つかずの日は残さない（今日以降へ配り直されるため）',
+     kept2, [{ day: START, n: 10, done: true }]);
+
+  // 過去に残した分と、これからのノルマを足すと総量に一致する（二重計上しない）
+  const total = taskRows(s2).reduce((m, r) => m + r.n, 0);
+  eq('ノルマの合計が総本数と一致する', total, 47);
+
   console.log();
   if (failures.length) {
     console.log('--- 失敗 ---');
