@@ -3395,7 +3395,7 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 /* ---- その日にやったこと ----
    予定・ノルマが「これからやること」の箱なのに対して、実績はやわらかい面に載せる。
    同じ箱で並べるとマスが枠だらけになって、どこを読めばいいか分からなくなる。 */
-.cal-done { margin-top:auto; display:flex; flex-direction:column; gap:1px;
+.cal-done { display:flex; flex-direction:column; gap:1px;
   padding:5px 7px 6px; border-radius:var(--radius-md);
   background:color-mix(in srgb, var(--color-accent-teal) 8%, transparent);
   border:1px solid color-mix(in srgb, var(--color-accent-teal) 16%, transparent); }
