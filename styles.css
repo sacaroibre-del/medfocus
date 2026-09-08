@@ -3357,14 +3357,14 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-cell.selected { background:var(--color-bg-card-hover); box-shadow:inset 0 0 0 2px var(--color-accent-teal); }
 
 .cal-cell-head { display:flex; align-items:center; gap:6px; min-width:0; }
-.cal-daynum { font-size:0.9375rem; font-weight:800; letter-spacing:-0.02em; line-height:1; }
+.cal-daynum { font-size:0.875rem; font-weight:800; letter-spacing:-0.02em; line-height:1; }
 .cal-daynum.sun { color:var(--color-accent-pink); }
 .cal-daynum.sat { color:var(--color-accent-blue); }
 .cal-badge-today { font-size:0.625rem; font-weight:800; letter-spacing:0.06em; padding:1px 5px; border-radius:3px;
   background:var(--color-accent-teal); color:#0a1120; flex:none; }
 .cal-badge-exam { font-size:0.625rem; font-weight:800; letter-spacing:0.04em; padding:0 4px; border-radius:3px;
   border:1px solid var(--color-accent-pink); color:var(--color-accent-pink); flex:none; }
-.cal-cell-count { margin-left:auto; font-size:0.625rem; font-weight:700; color:var(--color-text-tertiary); flex:none; }
+.cal-cell-count { margin-left:auto; font-size:0.5625rem; font-weight:700; color:var(--color-text-tertiary); flex:none; }
 .cal-cell-count.all-done { color:var(--color-accent-green); }
 .cal-cell-count.has-overdue { color:var(--color-accent-pink); }
 
@@ -3374,12 +3374,12 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 
 /* ---- チップ: 色=科目、状態=塗り/線/記号 ---- */
 .cal-chip { display:flex; align-items:center; gap:4px; min-width:0; flex:none;
-  padding:2px 5px; border-radius:3px; font-size:0.6875rem; line-height:1.35;
+  padding:2px 5px; border-radius:3px; font-size:0.625rem; line-height:1.35;
   border:1px solid color-mix(in srgb, var(--chip) 55%, transparent);
   border-left:3px solid var(--chip); background:transparent; color:var(--color-text-primary); }
-.cal-chip-time { font-size:0.625rem; font-weight:700; color:var(--color-text-secondary); flex:none; }
+.cal-chip-time { font-size:0.5625rem; font-weight:700; color:var(--color-text-secondary); flex:none; }
 .cal-chip-label { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-.cal-chip-amount { margin-left:auto; font-size:0.625rem; font-weight:700; color:var(--color-text-secondary); flex:none; }
+.cal-chip-amount { margin-left:auto; font-size:0.5625rem; font-weight:700; color:var(--color-text-secondary); flex:none; }
 .cal-chip.is-done { background:color-mix(in srgb, var(--chip) 20%, transparent); opacity:0.7; }
 .cal-chip.is-done .cal-chip-label { text-decoration:line-through; }
 .cal-chip.is-overdue { border-color:var(--color-accent-pink); border-left-color:var(--color-accent-pink); }
@@ -3391,7 +3391,7 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-chip.kind-log { background:color-mix(in srgb, var(--chip) 16%, transparent);
   border-color:transparent; border-left-color:var(--chip); }
 .cal-chip.kind-log .cal-chip-label { color:var(--color-text-secondary); }
-.cal-chip-more { font-size:0.625rem; color:var(--color-text-tertiary); padding-left:2px; }
+.cal-chip-more { font-size:0.5625rem; color:var(--color-text-tertiary); padding-left:2px; }
 
 /* ---- 右サイドの日別パネル ---- */
 .cal-panel { background:var(--color-bg-card); border:1px solid var(--color-border); border-radius:var(--radius-lg);
