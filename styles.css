@@ -10,6 +10,7 @@
   --color-glass-border: rgba(255, 255, 255, 0.08);
   
   --color-accent-teal: #4ecdc4;
+  --cal-done-ink: #4ecdc4;      /* 実績の合計時間。ライトでは白地に負けるので下で濃くする */
   --color-accent-blue: #3b82f6;
   --color-accent-green: #10b981;
   --color-accent-yellow: #f59e0b;
@@ -51,6 +52,7 @@
 }
 
 html.light {
+  --cal-done-ink: #0d9488;
   --color-bg-primary: #f8fafc;
   --color-bg-secondary: #f1f5f9;
   --color-bg-card: #ffffff;
@@ -3368,9 +3370,11 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-cell-count.all-done { color:var(--color-accent-green); }
 .cal-cell-count.has-overdue { color:var(--color-accent-pink); }
 
-/* その日の積載量。科目色の横棒でひと目で「重い日」が分かる */
-.cal-load { display:flex; gap:2px; height:4px; flex:none; }
-.cal-load span { border-radius:1px; min-width:3px; }
+/* その日の積載量。科目色の横棒でひと目で「重い日」が分かる。
+   5時間で満杯になる目盛りなので、軽い日は短いまま残る */
+.cal-load { display:flex; gap:2px; height:4px; flex:none; margin-bottom:3px;
+  border-radius:var(--radius-full); background:color-mix(in srgb, var(--color-text-tertiary) 16%, transparent); }
+.cal-load span { border-radius:var(--radius-full); min-width:3px; }
 
 /* ---- チップ: 色=科目、状態=塗り/線/記号 ---- */
 .cal-chip { display:flex; align-items:center; gap:4px; min-width:0; flex:none;
@@ -3386,15 +3390,24 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-chip.is-overdue .cal-chip-label { color:var(--color-accent-pink); }
 .cal-chip.kind-exam { background:color-mix(in srgb, var(--chip) 22%, transparent); font-weight:700; }
 .cal-chip.kind-milestone { border-style:dashed; }
-/* 実績（その日に実際にやったこと）。予定やノルマの「箱」に対して、
-   実績は箱を持たない素の行にする。3〜4行並ぶので、枠を付けるとマスが埋まる */
-.cal-chip.kind-log { border:none; background:transparent; padding:0 0 0 1px;
-  font-size:0.5625rem; line-height:1.45; font-weight:700; color:var(--color-text-secondary); }
-.cal-chip.kind-log .cal-chip-label { color:inherit; }
-/* 合計時間はその日の重さなので、内訳より一段強く出す */
-.cal-chip.kind-log.log-total { font-size:0.625rem; color:var(--color-text-primary); }
-.cal-chip.kind-log + .cal-chip.kind-log { margin-top:-2px; }
 .cal-chip-more { font-size:0.5625rem; color:var(--color-text-tertiary); padding-left:2px; }
+
+/* ---- その日にやったこと ----
+   予定・ノルマが「これからやること」の箱なのに対して、実績はやわらかい面に載せる。
+   同じ箱で並べるとマスが枠だらけになって、どこを読めばいいか分からなくなる。 */
+.cal-done { margin-top:auto; display:flex; flex-direction:column; gap:1px;
+  padding:5px 7px 6px; border-radius:var(--radius-md);
+  background:color-mix(in srgb, var(--color-accent-teal) 8%, transparent);
+  border:1px solid color-mix(in srgb, var(--color-accent-teal) 16%, transparent); }
+.cal-done-total { font-size:0.875rem; font-weight:800; line-height:1.1; letter-spacing:-0.03em;
+  color:var(--cal-done-ink); margin-bottom:1px; }
+.cal-done-total i { font-style:normal; font-size:0.5625rem; font-weight:700;
+  margin-left:1px; color:var(--color-text-tertiary); }
+.cal-done-item { display:flex; align-items:center; gap:4px; min-width:0;
+  font-size:0.5625rem; font-weight:700; line-height:1.5; color:var(--color-text-secondary);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.cal-done-item::before { content:''; width:5px; height:5px; border-radius:50%;
+  background:var(--dot); flex:none; }
 
 /* ---- 右サイドの日別パネル ---- */
 .cal-panel { background:var(--color-bg-card); border:1px solid var(--color-border); border-radius:var(--radius-lg);
@@ -3437,13 +3450,16 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   .cal-chip { border-left-width:0; border:none; padding:0; height:4px; border-radius:2px; background:var(--chip); }
   .cal-chip.is-done { opacity:0.4; }
   .cal-chip.kind-exam, .cal-chip.kind-milestone { border:none; background:var(--chip); }
-  /* 実績は数字が読めないと意味が無いので、ドットにせず文字のまま出す */
-  .cal-chip.kind-log { height:auto; background:transparent; }
-  .cal-chip.kind-log .cal-chip-label { display:block; }
+  /* 実績は数字が読めないと意味が無いので、狭くても文字のまま出す */
+  .cal-done { padding:3px 4px 4px; gap:0; border-radius:var(--radius-sm); }
+  .cal-done-total { font-size:0.75rem; }
+  .cal-done-item { font-size:0.5rem; gap:3px; }
+  .cal-done-item::before { width:4px; height:4px; }
+  .cal-load { height:3px; margin-bottom:2px; }
   .cal-chip.is-overdue { background:var(--color-accent-pink); }
   .cal-weeks.view-week .cal-cell { min-height:120px; }
   .cal-chip-time, .cal-chip-label, .cal-chip-amount, .cal-chip-more { display:none; }
-  .cal-load { display:none; }
+
 }
 
 /* ===== 逆算プラン ===== */

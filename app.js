@@ -11820,20 +11820,25 @@ function buildCalendarModel(cursorKey, view, sources) {
     if (questions <= 0 && videos <= 0) t.otherMinutes += min;
   });
   Object.entries(logTotals).forEach(([key, t]) => {
-    // sortIndex は並び順を固定するため。見出し順に並べると「qb→その他→動画」になる
+    // sortIndex は並び順を固定するため。見出し順に並べると「qb→その他→動画」になる。
+    // 色は活動の色（動画=紫・QB=teal）。科目ではなく「何をしたか」の軸で見せる。
     let seq = 0;
-    const row = (logKind, title, tooltip) => push(key, {
+    const row = (logKind, title, tooltip, color) => push(key, {
       id: 'log-' + key + '-' + logKind, kind: 'log', logKind, title, tooltip, sortIndex: seq++,
-      subjectId: null, color: null, state: 'log', amount: null, unit: null, raw: null
+      subjectId: null, color: color || CAL_FALLBACK_COLOR,
+      state: 'log', amount: null, unit: null, raw: null
     });
+    const actColor = v => (ACTIVITY_MAP[v] || {}).color;
     if (t.minutes > 0) row('total', calHoursText(t.minutes), `合計 ${formatMinutes(t.minutes)}`);
-    if (t.videos > 0) row('video', `動画${t.videos}本`, `講義動画 ${t.videos}本`);
+    if (t.videos > 0) row('video', `動画${t.videos}本`, `講義動画 ${t.videos}本`, actColor('video'));
     if (t.questions > 0) {
       row('qb', `qb${t.questions}問`, `問題演習 ${t.questions}問` +
-        (t.correct > 0 ? `（${t.correct}問正解 ${Math.round((t.correct / t.questions) * 100)}%）` : ''));
+        (t.correct > 0 ? `（${t.correct}問正解 ${Math.round((t.correct / t.questions) * 100)}%）` : ''),
+        actColor('qb'));
     }
     if (t.otherMinutes > 0) {
-      row('other', `その他${calHoursText(t.otherMinutes)}`, `その他 ${formatMinutes(t.otherMinutes)}`);
+      row('other', `その他${calHoursText(t.otherMinutes)}`, `その他 ${formatMinutes(t.otherMinutes)}`,
+        actColor('other'));
     }
   });
 
@@ -11975,6 +11980,23 @@ function calHoursText(min) {
   return (h >= 10 ? Math.round(h) : Number(h.toFixed(1))) + 'h';
 }
 
+// 実績の1行。合計時間はその日の見出しとして大きく、内訳は活動色の点を付けて小さく。
+// 予定・ノルマの「箱」と同じ見た目にすると、マスが箱だらけになって読めなくなる。
+function calendarDoneRowHTML(chip) {
+  if (chip.logKind === 'total') {
+    const m = String(chip.title).match(/^([\d.]+)(h)$/);
+    const num = m ? `${esc(m[1])}<i>${esc(m[2])}</i>` : esc(chip.title);
+    return `<div class="cal-done-total" title="${esc(chip.tooltip || chip.title)}">${num}</div>`;
+  }
+  return `<div class="cal-done-item" style="--dot:${esc(calChipColor(chip))}" title="${esc(chip.tooltip || chip.title)}">${esc(chip.title)}</div>`;
+}
+// その日の実績のまとまり。「やったこと」を1枚のやわらかい面に載せて、
+// 上の「これからやること」と読み分けられるようにする。
+function calendarDoneHTML(cell, logs) {
+  if (!logs.length) return '';
+  return `<div class="cal-done">${calendarLoadHTML(cell)}${logs.map(calendarDoneRowHTML).join('')}</div>`;
+}
+
 function calendarChipHTML(chip) {
   const color = calChipColor(chip);
   const cls = ['cal-chip', 'kind-' + chip.kind];
@@ -11996,6 +12018,7 @@ function calendarChipHTML(chip) {
 }
 
 // その日の積載量を科目色の横棒で見せる。重い日がひと目で分かるようにするため。
+// 実績のまとまりの中に置く。マスの上に浮かせると、何の棒なのか読み取れない。
 function calendarLoadHTML(cell) {
   if (!cell.studyBySubject.length) return '';
   const max = 300;   // 5時間で満杯として幅を割る
@@ -12026,15 +12049,16 @@ function calendarCellHTML(cell, selectedKey) {
   // 実績は上限の外に置く。「その日に何をやったか」が「＋2件」に隠れては意味がない
   const logs = cell.items.filter(i => i.kind === 'log');
   const plans = cell.items.filter(i => i.kind !== 'log');
-  const shown = plans.slice(0, CAL_CELL_MAX_CHIPS).concat(logs).map(calendarChipHTML).join('');
+  const shown = plans.slice(0, CAL_CELL_MAX_CHIPS).map(calendarChipHTML).join('');
   const rest = plans.length - CAL_CELL_MAX_CHIPS;
   const more = rest > 0 ? `<div class="cal-chip-more">＋${rest}件</div>` : '';
+  const done = calendarDoneHTML(cell, logs);
 
   return `<div class="${cls.join(' ')}" data-cal-day="${cell.dateKey}">
     <div class="cal-cell-head">
       <span class="cal-daynum${dowCls}">${cell.day}</span>${todayBadge}${examBadge}${count}
     </div>
-    ${calendarLoadHTML(cell)}${shown}${more}
+    ${shown}${more}${done}
   </div>`;
 }
 
