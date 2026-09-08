@@ -3386,11 +3386,14 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-chip.is-overdue .cal-chip-label { color:var(--color-accent-pink); }
 .cal-chip.kind-exam { background:color-mix(in srgb, var(--chip) 22%, transparent); font-weight:700; }
 .cal-chip.kind-milestone { border-style:dashed; }
-/* 実績（その日に実際にやったこと）。ノルマは「線」、やったことは「塗り」で分ける。
-   済んだ予定ではなく記録なので、is-done のような取り消し線は付けない */
-.cal-chip.kind-log { background:color-mix(in srgb, var(--chip) 16%, transparent);
-  border-color:transparent; border-left-color:var(--chip); }
-.cal-chip.kind-log .cal-chip-label { color:var(--color-text-secondary); }
+/* 実績（その日に実際にやったこと）。予定やノルマの「箱」に対して、
+   実績は箱を持たない素の行にする。3〜4行並ぶので、枠を付けるとマスが埋まる */
+.cal-chip.kind-log { border:none; background:transparent; padding:0 0 0 1px;
+  font-size:0.5625rem; line-height:1.45; font-weight:700; color:var(--color-text-secondary); }
+.cal-chip.kind-log .cal-chip-label { color:inherit; }
+/* 合計時間はその日の重さなので、内訳より一段強く出す */
+.cal-chip.kind-log.log-total { font-size:0.625rem; color:var(--color-text-primary); }
+.cal-chip.kind-log + .cal-chip.kind-log { margin-top:-2px; }
 .cal-chip-more { font-size:0.5625rem; color:var(--color-text-tertiary); padding-left:2px; }
 
 /* ---- 右サイドの日別パネル ---- */
@@ -3433,7 +3436,10 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
   /* 幅が無いのでチップは色ドットに退化させ、中身はタップして日別パネルで読む */
   .cal-chip { border-left-width:0; border:none; padding:0; height:4px; border-radius:2px; background:var(--chip); }
   .cal-chip.is-done { opacity:0.4; }
-  .cal-chip.kind-exam, .cal-chip.kind-milestone, .cal-chip.kind-log { border:none; background:var(--chip); }
+  .cal-chip.kind-exam, .cal-chip.kind-milestone { border:none; background:var(--chip); }
+  /* 実績は数字が読めないと意味が無いので、ドットにせず文字のまま出す */
+  .cal-chip.kind-log { height:auto; background:transparent; }
+  .cal-chip.kind-log .cal-chip-label { display:block; }
   .cal-chip.is-overdue { background:var(--color-accent-pink); }
   .cal-weeks.view-week .cal-cell { min-height:120px; }
   .cal-chip-time, .cal-chip-label, .cal-chip-amount, .cal-chip-more { display:none; }

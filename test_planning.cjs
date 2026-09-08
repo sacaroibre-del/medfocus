@@ -289,7 +289,7 @@ const TODAY = '2026-09-14';
              questions_solved: 12, started_at: TODAY + 'T09:00:00Z' }]
   }).weeks[0].find(c => c.dateKey === TODAY);
   eq('buildCalendarModel: 実績は最後に並ぶ',
-     withLog.items.map(i => i.kind), ['exam', 'event', 'quota', 'log']);
+     withLog.items.map(i => i.kind), ['exam', 'event', 'quota', 'log', 'log']);
 
   // 学習ログは「その日にやったこと」の実績チップになる。ノルマの有無と関係なく出るので、
   // ノルマの無い科目を前倒しでやった日も、何をやったかが残る。
@@ -312,28 +312,36 @@ const TODAY = '2026-09-14';
     ]
   }).weeks[0].find(c => c.dateKey === TODAY);
 
-  // 科目ごとには出さず、1日ぶんを1行に丸める
-  eq('実績チップ: 達成ノルマは消え、実績が1行だけ残る',
-     withLogs.items.map(i => i.kind), ['log']);
-  const rec = withLogs.items[0];
-  eq('実績チップ: 見出しは 問題演習・動画・その他', rec.title, 'QB 20問・動画 2本・他 25分');
-  eq('実績チップ: 合計勉強時間', rec.minutes, 155);
-  eq('実績チップ: 問題演習は全科目の合計', [rec.questions, rec.correct], [20, 15]);
-  eq('実績チップ: 動画は全科目の合計', rec.videos, 2);
-  eq('実績チップ: 問題演習でも動画でもない時間はその他', rec.otherMinutes, 25);
-  eq('実績チップ: 科目は持たない', rec.subjectId, null);
-  eq('実績チップ: 右端は合計時間', W.calLogAmountText(rec), '2時間35分');
-  eq('実績チップ: 吹き出しは内訳と合計',
-     W.calLogTitleText(rec), 'QB 20問（15問正解 75%）・動画 2本・その他 25分  合計 2時間35分');
+  // 科目ごとには出さず、合計時間・動画・問題演習・その他をそれぞれ1行にする
+  eq('実績チップ: 達成ノルマは消え、実績が項目ごとに並ぶ',
+     withLogs.items.map(i => i.kind), ['log', 'log', 'log', 'log']);
+  eq('実績チップ: 合計時間 → 動画 → qb → その他 の順',
+     withLogs.items.map(i => i.logKind), ['total', 'video', 'qb', 'other']);
+  eq('実績チップ: 見出し',
+     withLogs.items.map(i => i.title), ['2.6h', '動画2本', 'qb20問', 'その他0.4h']);
+  eq('実績チップ: 吹き出しは略さず出す',
+     withLogs.items.map(i => i.tooltip),
+     ['合計 2時間35分', '講義動画 2本', '問題演習 20問（15問正解 75%）', 'その他 25分']);
+  eq('実績チップ: 科目は持たない', withLogs.items.map(i => i.subjectId), [null, null, null, null]);
   eq('実績チップ: ノルマの件数は今までどおり数える',
      [withLogs.taskCount, withLogs.doneCount], [1, 1]);
   eq('実績チップ: 積載バーは全ログぶん', withLogs.studyMinutes, 155);
 
-  // その他だけの日は見出しに時間を重ねない（右端に合計が出るため）
-  const onlyOther = W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
-    logs: [{ subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25, started_at: TODAY + 'T20:00:00Z' }]
-  }).weeks[0].find(c => c.dateKey === TODAY).items[0];
-  eq('実績チップ: その他だけの日', [onlyOther.title, W.calLogAmountText(onlyOther)], ['その他', '25分']);
+  // 記録の無い項目は行を作らない
+  eq('実績チップ: 暗記だけの日は合計とその他だけ',
+     W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
+       logs: [{ subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25, started_at: TODAY + 'T20:00:00Z' }]
+     }).weeks[0].find(c => c.dateKey === TODAY).items.map(i => i.title), ['0.4h', 'その他0.4h']);
+  eq('実績チップ: 問題演習だけの日は その他 の行を作らない',
+     W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
+       logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 252,
+                questions_solved: 150, questions_correct: 103, started_at: TODAY + 'T09:00:00Z' }]
+     }).weeks[0].find(c => c.dateKey === TODAY).items.map(i => i.title), ['4.2h', 'qb150問']);
+
+  eq('calHoursText: ちょうどの時間は小数を出さない', W.calHoursText(240), '4h');
+  eq('calHoursText: 端数は0.1時間まで', W.calHoursText(252), '4.2h');
+  eq('calHoursText: 10時間を超えたら整数', W.calHoursText(700), '12h');
+  eq('calHoursText: 0分', W.calHoursText(0), '0h');
 
   // 量も時間も無いログは出さない（読めるものが何も無いため）
   eq('実績チップ: 空のログは出さない',

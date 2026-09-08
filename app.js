@@ -11820,11 +11820,21 @@ function buildCalendarModel(cursorKey, view, sources) {
     if (questions <= 0 && videos <= 0) t.otherMinutes += min;
   });
   Object.entries(logTotals).forEach(([key, t]) => {
-    push(key, Object.assign({
-      id: 'log-' + key, kind: 'log', title: calLogSummaryLabel(t),
-      subjectId: null, color: null, state: 'log',
-      amount: null, unit: null, raw: null
-    }, t));
+    // sortIndex は並び順を固定するため。見出し順に並べると「qb→その他→動画」になる
+    let seq = 0;
+    const row = (logKind, title, tooltip) => push(key, {
+      id: 'log-' + key + '-' + logKind, kind: 'log', logKind, title, tooltip, sortIndex: seq++,
+      subjectId: null, color: null, state: 'log', amount: null, unit: null, raw: null
+    });
+    if (t.minutes > 0) row('total', calHoursText(t.minutes), `合計 ${formatMinutes(t.minutes)}`);
+    if (t.videos > 0) row('video', `動画${t.videos}本`, `講義動画 ${t.videos}本`);
+    if (t.questions > 0) {
+      row('qb', `qb${t.questions}問`, `問題演習 ${t.questions}問` +
+        (t.correct > 0 ? `（${t.correct}問正解 ${Math.round((t.correct / t.questions) * 100)}%）` : ''));
+    }
+    if (t.otherMinutes > 0) {
+      row('other', `その他${calHoursText(t.otherMinutes)}`, `その他 ${formatMinutes(t.otherMinutes)}`);
+    }
   });
 
   const isTask = c => c.kind === 'quota' || c.kind === 'milestone';
@@ -11839,6 +11849,7 @@ function buildCalendarModel(cursorKey, view, sources) {
     const items = all.filter(c => !(isTask(c) && c.state === 'done')).sort((a, b) =>
       (CAL_KIND_ORDER[a.kind] - CAL_KIND_ORDER[b.kind]) ||
       String(a.startTime || '99:99').localeCompare(String(b.startTime || '99:99')) ||
+      ((a.sortIndex || 0) - (b.sortIndex || 0)) ||
       String(a.title || '').localeCompare(String(b.title || ''), 'ja'));
     return {
       dateKey, day: d.getDate(), weekday: d.getDay(),
@@ -11924,8 +11935,8 @@ function normalizeCalendarEvent(input) {
 // 完了/未完了の状態は色ではなく、塗り・枠線・記号で表す。
 
 const CAL_DOW_LABELS = ['日', '月', '火', '水', '木', '金', '土'];
-// 1マスに出すチップ数。ノルマと実績が並ぶので3だと今日のマスで実績が隠れる。
-const CAL_CELL_MAX_CHIPS = 4;
+// 1マスに出す予定・ノルマの数（実績はこの上限の外）。
+const CAL_CELL_MAX_CHIPS = 3;
 const CAL_FALLBACK_COLOR = '#94a3b8';
 
 const _subjectColorCache = {};
@@ -11957,31 +11968,11 @@ function calUnitLabel(unit) {
   return ({ q: '問', page: 'p', video: '本', count: '' })[unit] || '';
 }
 
-// 実績チップの見出し。「QB 150問・動画 3本・他 25分」。
-// 問題演習も動画も無い日は「その他」だけ（時間は右端に出るので重ねない）。
-function calLogSummaryLabel(t) {
-  const parts = [];
-  if (t.questions > 0) parts.push(`QB ${t.questions}問`);
-  if (t.videos > 0) parts.push(`動画 ${t.videos}本`);
-  if (t.otherMinutes > 0) parts.push(parts.length ? `他 ${formatMinutes(t.otherMinutes)}` : 'その他');
-  return parts.length ? parts.join('・') : '学習';
-}
-// 実績チップの右端。その日の合計勉強時間。
-function calLogAmountText(chip) {
-  return chip.minutes > 0 ? formatMinutes(chip.minutes) : '';
-}
-// 実績チップの吹き出し。「QB 150問（105問正解 70%）・動画 3本・他 25分 合計5時間」
-function calLogTitleText(chip) {
-  const parts = [];
-  if (chip.questions > 0) {
-    parts.push(`QB ${chip.questions}問` +
-      (chip.correct > 0 ? `（${chip.correct}問正解 ${Math.round((chip.correct / chip.questions) * 100)}%）` : ''));
-  }
-  if (chip.videos > 0) parts.push(`動画 ${chip.videos}本`);
-  if (chip.otherMinutes > 0) parts.push(`その他 ${formatMinutes(chip.otherMinutes)}`);
-  const head = parts.join('・');
-  const total = chip.minutes > 0 ? `合計 ${formatMinutes(chip.minutes)}` : '';
-  return [head, total].filter(Boolean).join('  ') || '学習';
+// 「4.2h」。1日の重さは分より時間のほうが掴みやすいので、実績は時間で出す。
+// 10時間を超えたら小数は落とす（マスの幅が惜しく、そこまでの精度も要らない）。
+function calHoursText(min) {
+  const h = Math.max(0, Number(min) || 0) / 60;
+  return (h >= 10 ? Math.round(h) : Number(h.toFixed(1))) + 'h';
 }
 
 function calendarChipHTML(chip) {
@@ -11990,15 +11981,16 @@ function calendarChipHTML(chip) {
   if (chip.state === 'done') cls.push('is-done');
   if (chip.state === 'overdue') cls.push('is-overdue');
   const isLog = chip.kind === 'log';
+  if (isLog) cls.push('log-' + chip.logKind);
   const time = chip.startTime ? `<span class="cal-chip-time">${esc(chip.startTime)}</span>` : '';
   const mark = isLog ? '' : (chip.state === 'done' ? '✓ ' : (chip.state === 'overdue' ? '! ' : ''));
   const partial = chip.kind === 'quota' && chip.state !== 'done' && chip.doneAmount > 0;
-  const amountText = isLog
-    ? calLogAmountText(chip)
-    : ((chip.amount !== null && chip.amount !== undefined)
-        ? `${partial ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
+  // 実績は見出しがそのまま量（「動画3本」）なので、右端の量は持たない
+  const amountText = isLog ? '' :
+    ((chip.amount !== null && chip.amount !== undefined)
+      ? `${partial ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
   const amount = amountText ? `<span class="cal-chip-amount">${esc(amountText)}</span>` : '';
-  return `<div class="${cls.join(' ')}" style="--chip:${esc(color)}" title="${esc(isLog ? calLogTitleText(chip) : chip.title)}">
+  return `<div class="${cls.join(' ')}" style="--chip:${esc(color)}" title="${esc(chip.tooltip || chip.title)}">
     ${time}<span class="cal-chip-label">${mark}${esc(chip.title)}</span>${amount}
   </div>`;
 }
@@ -12031,8 +12023,11 @@ function calendarCellHTML(cell, selectedKey) {
     count = `<span class="${c.join(' ')}">${cell.doneCount}/${cell.taskCount}</span>`;
   }
 
-  const shown = cell.items.slice(0, CAL_CELL_MAX_CHIPS).map(calendarChipHTML).join('');
-  const rest = cell.items.length - CAL_CELL_MAX_CHIPS;
+  // 実績は上限の外に置く。「その日に何をやったか」が「＋2件」に隠れては意味がない
+  const logs = cell.items.filter(i => i.kind === 'log');
+  const plans = cell.items.filter(i => i.kind !== 'log');
+  const shown = plans.slice(0, CAL_CELL_MAX_CHIPS).concat(logs).map(calendarChipHTML).join('');
+  const rest = plans.length - CAL_CELL_MAX_CHIPS;
   const more = rest > 0 ? `<div class="cal-chip-more">＋${rest}件</div>` : '';
 
   return `<div class="${cls.join(' ')}" data-cal-day="${cell.dateKey}">
@@ -12058,13 +12053,11 @@ function calendarPanelItemHTML(chip) {
     ? (CAL_EVENT_CATEGORIES.find(c => c.id === chip.raw.category) || {}).label : null;
   const kindLabel = evCat || (({ exam: '試験', milestone: '節目', event: '予定', quota: 'ノルマ', log: '実績' })[chip.kind] || '');
   const isLog = chip.kind === 'log';
-  const amount = isLog
-    ? (calLogAmountText(chip) ? ' ' + calLogAmountText(chip) : '')
-    : ((chip.amount !== null && chip.amount !== undefined)
-        ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
-  // 内訳と合計は見出しに出ているので、ここは正答率だけ足す
-  const logMeta = isLog && chip.questions > 0 && chip.correct > 0
-    ? `・${chip.correct}問正解 ${Math.round((chip.correct / chip.questions) * 100)}%` : '';
+  // パネルは幅があるので、実績は略さない見出し（「問題演習 150問（…）」）で出す
+  const label = isLog ? (chip.tooltip || chip.title) : chip.title;
+  const amount = isLog ? '' :
+    ((chip.amount !== null && chip.amount !== undefined)
+      ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
   const tag = chip.state === 'overdue' ? '<span class="cal-item-tag">期限切れ</span>' : '';
   const check = chip.kind === 'quota' ? `<span class="cal-item-check ${chip.state === 'done' ? 'on' : ''}">${chip.state === 'done' ? '✓' : ''}</span>` : '';
   const clickable = chip.kind === 'event' ? ` clickable" data-cal-event="${esc(chip.id)}" title="クリックで編集`
@@ -12072,8 +12065,8 @@ function calendarPanelItemHTML(chip) {
   return `<div class="cal-panel-item${clickable}">
     <div class="cal-item-bar" style="background:${esc(color)}"></div>
     <div class="cal-item-body">
-      <div class="cal-item-title${chip.state === 'done' ? ' is-done' : ''}">${esc(chip.title)}${amount}</div>
-      <div class="cal-item-meta">${kindLabel}${chip.kind === 'event' ? '・' + time : ''}${logMeta}</div>
+      <div class="cal-item-title${chip.state === 'done' ? ' is-done' : ''}">${esc(label)}${amount}</div>
+      <div class="cal-item-meta">${kindLabel}${chip.kind === 'event' ? '・' + time : ''}</div>
       ${tag}
     </div>
     ${check}
