@@ -312,23 +312,28 @@ const TODAY = '2026-09-14';
     ]
   }).weeks[0].find(c => c.dateKey === TODAY);
 
-  eq('実績チップ: 達成ノルマは消え、やったことだけが並ぶ',
-     withLogs.items.map(i => i.kind), ['log', 'log', 'log']);
-  eq('実績チップ: 見出しは科目＋種別（科目IDは落とす）',
-     withLogs.items.map(i => i.title).sort(),
-     ['公衆衛生・暗記', '循環器・QB', '肝・胆・膵・動画']);
-  const circ = withLogs.items.find(i => i.title === '循環器・QB');
-  eq('実績チップ: 同じ科目の複数回はまとめる', [circ.amount, circ.minutes, circ.correct], [20, 50, 15]);
-  eq('実績チップ: 単位は問', circ.unit, 'q');
-  const liver = withLogs.items.find(i => i.title === '肝・胆・膵・動画');
-  ok('実績チップ: ノルマの無い科目も出る', !!liver, withLogs.items.map(i => i.title));
-  eq('実績チップ: 動画は本数', [liver.amount, liver.unit], [2, 'video']);
-  const ph = withLogs.items.find(i => i.title === '公衆衛生・暗記');
-  eq('実績チップ: 量が無ければ時間だけ', [ph.amount, ph.unit, ph.minutes], [null, null, 25]);
-  eq('実績チップ: 科目の色を引く', circ.subjectId, '2C 循環器');
+  // 科目ごとには出さず、1日ぶんを1行に丸める
+  eq('実績チップ: 達成ノルマは消え、実績が1行だけ残る',
+     withLogs.items.map(i => i.kind), ['log']);
+  const rec = withLogs.items[0];
+  eq('実績チップ: 見出しは 問題演習・動画・その他', rec.title, 'QB 20問・動画 2本・他 25分');
+  eq('実績チップ: 合計勉強時間', rec.minutes, 155);
+  eq('実績チップ: 問題演習は全科目の合計', [rec.questions, rec.correct], [20, 15]);
+  eq('実績チップ: 動画は全科目の合計', rec.videos, 2);
+  eq('実績チップ: 問題演習でも動画でもない時間はその他', rec.otherMinutes, 25);
+  eq('実績チップ: 科目は持たない', rec.subjectId, null);
+  eq('実績チップ: 右端は合計時間', W.calLogAmountText(rec), '2時間35分');
+  eq('実績チップ: 吹き出しは内訳と合計',
+     W.calLogTitleText(rec), 'QB 20問（15問正解 75%）・動画 2本・その他 25分  合計 2時間35分');
   eq('実績チップ: ノルマの件数は今までどおり数える',
      [withLogs.taskCount, withLogs.doneCount], [1, 1]);
   eq('実績チップ: 積載バーは全ログぶん', withLogs.studyMinutes, 155);
+
+  // その他だけの日は見出しに時間を重ねない（右端に合計が出るため）
+  const onlyOther = W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
+    logs: [{ subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25, started_at: TODAY + 'T20:00:00Z' }]
+  }).weeks[0].find(c => c.dateKey === TODAY).items[0];
+  eq('実績チップ: その他だけの日', [onlyOther.title, W.calLogAmountText(onlyOther)], ['その他', '25分']);
 
   // 量も時間も無いログは出さない（読めるものが何も無いため）
   eq('実績チップ: 空のログは出さない',

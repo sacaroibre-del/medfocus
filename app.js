@@ -11791,8 +11791,10 @@ function buildCalendarModel(cursorKey, view, sources) {
   //    ノルマの行に印を付けるだけだと、その日にノルマの無い科目を前倒しでやった分が
   //    どこにも出てこない。やったことはノルマの有無と関係なく残るべきなので、
   //    表示の軸をノルマではなく実績に移している。
+  //    科目ごとには出さない。1日ぶんを「合計時間・問題演習・動画・その他」に丸める。
+  //    どの科目だったかは積載バーの色と、記録ページで見る。
   const studyByDay = {};
-  const logGroups = {};   // 日付 → 科目×種別 → 実績
+  const logTotals = {};   // 日付 → その日の実績（合計）
   (s.logs || []).forEach(l => {
     if (!l || !l.started_at) return;
     const key = toLocalDateKey(getLogicalDate(new Date(l.started_at)));
@@ -11808,31 +11810,21 @@ function buildCalendarModel(cursorKey, view, sources) {
       bucket.total += min;
       bucket.bySubject[sid] = (bucket.bySubject[sid] || 0) + min;
     }
-    // 同じ科目を1日に何回かに分けて記録することがあるので、科目×種別でまとめる
-    const act = ACTIVITY_MAP[l.activity] ? l.activity : 'other';
-    const gk = sid + '\u0000' + act;
-    const day = logGroups[key] = logGroups[key] || {};
-    const g = day[gk] = day[gk] || { subjectId: sid, activity: act, minutes: 0, questions: 0, correct: 0, videos: 0 };
-    g.minutes += min;
-    g.questions += questions;
-    g.videos += videos;
-    if (questions > 0) g.correct += Math.max(0, Number(l.questions_correct) || 0);
+    const t = logTotals[key] = logTotals[key] ||
+      { minutes: 0, questions: 0, correct: 0, videos: 0, otherMinutes: 0 };
+    t.minutes += min;
+    t.questions += questions;
+    t.videos += videos;
+    if (questions > 0) t.correct += Math.max(0, Number(l.questions_correct) || 0);
+    // 問題演習でも講義動画でもない時間（暗記・復習など）は「その他」にまとめる
+    if (questions <= 0 && videos <= 0) t.otherMinutes += min;
   });
-  Object.entries(logGroups).forEach(([key, day]) => {
-    Object.entries(day).forEach(([gk, g]) => {
-      const act = ACTIVITY_MAP[g.activity] || {};
-      push(key, {
-        id: 'log-' + key + '-' + gk, kind: 'log',
-        title: calSubjectShort(studySubjectName(g.subjectId)) + (act.short ? '・' + act.short : ''),
-        subjectId: g.subjectId, color: null,
-        state: 'log',
-        // 量が記録されていればそれを、無ければ時間だけを出す
-        amount: g.questions > 0 ? g.questions : (g.videos > 0 ? g.videos : null),
-        unit: g.questions > 0 ? 'q' : (g.videos > 0 ? 'video' : null),
-        minutes: g.minutes, correct: g.questions > 0 ? g.correct : null,
-        raw: null
-      });
-    });
+  Object.entries(logTotals).forEach(([key, t]) => {
+    push(key, Object.assign({
+      id: 'log-' + key, kind: 'log', title: calLogSummaryLabel(t),
+      subjectId: null, color: null, state: 'log',
+      amount: null, unit: null, raw: null
+    }, t));
   });
 
   const isTask = c => c.kind === 'quota' || c.kind === 'milestone';
@@ -11951,13 +11943,6 @@ function subjectColorOf(key) {
   return (_subjectColorCache[key] = color || CAL_FALLBACK_COLOR);
 }
 
-// チップの見出し用に科目名を詰める。「2C 循環器」→「循環器」。
-// 色とまとめ方は元の名前のまま。マスの幅が狭く、IDぶんの3文字が効くため。
-function calSubjectShort(name) {
-  const s = String(name || '');
-  return s.replace(/^\d[A-Z]\s+/, '') || s;
-}
-
 function calChipColor(chip) {
   return chip.color || subjectColorOf(chip.subjectId) ||CAL_FALLBACK_COLOR;
 }
@@ -11972,23 +11957,31 @@ function calUnitLabel(unit) {
   return ({ q: '問', page: 'p', video: '本', count: '' })[unit] || '';
 }
 
-// 実績チップの右端。問数・本数が記録されていればそれを、無ければ時間を出す。
+// 実績チップの見出し。「QB 150問・動画 3本・他 25分」。
+// 問題演習も動画も無い日は「その他」だけ（時間は右端に出るので重ねない）。
+function calLogSummaryLabel(t) {
+  const parts = [];
+  if (t.questions > 0) parts.push(`QB ${t.questions}問`);
+  if (t.videos > 0) parts.push(`動画 ${t.videos}本`);
+  if (t.otherMinutes > 0) parts.push(parts.length ? `他 ${formatMinutes(t.otherMinutes)}` : 'その他');
+  return parts.length ? parts.join('・') : '学習';
+}
+// 実績チップの右端。その日の合計勉強時間。
 function calLogAmountText(chip) {
-  if (chip.amount > 0) return chip.amount + calUnitLabel(chip.unit);
   return chip.minutes > 0 ? formatMinutes(chip.minutes) : '';
 }
-// 実績チップの吹き出し。「循環器・QB 30問（20問正解 67%）40分」
+// 実績チップの吹き出し。「QB 150問（105問正解 70%）・動画 3本・他 25分 合計5時間」
 function calLogTitleText(chip) {
-  const parts = [chip.title];
-  if (chip.amount > 0) {
-    let a = chip.amount + calUnitLabel(chip.unit);
-    if (chip.correct !== null && chip.correct !== undefined && chip.amount > 0) {
-      a += `（${chip.correct}問正解 ${Math.round((chip.correct / chip.amount) * 100)}%）`;
-    }
-    parts.push(a);
+  const parts = [];
+  if (chip.questions > 0) {
+    parts.push(`QB ${chip.questions}問` +
+      (chip.correct > 0 ? `（${chip.correct}問正解 ${Math.round((chip.correct / chip.questions) * 100)}%）` : ''));
   }
-  if (chip.minutes > 0) parts.push(formatMinutes(chip.minutes));
-  return parts.join(' ');
+  if (chip.videos > 0) parts.push(`動画 ${chip.videos}本`);
+  if (chip.otherMinutes > 0) parts.push(`その他 ${formatMinutes(chip.otherMinutes)}`);
+  const head = parts.join('・');
+  const total = chip.minutes > 0 ? `合計 ${formatMinutes(chip.minutes)}` : '';
+  return [head, total].filter(Boolean).join('  ') || '学習';
 }
 
 function calendarChipHTML(chip) {
@@ -12069,12 +12062,9 @@ function calendarPanelItemHTML(chip) {
     ? (calLogAmountText(chip) ? ' ' + calLogAmountText(chip) : '')
     : ((chip.amount !== null && chip.amount !== undefined)
         ? ` ${chip.doneAmount > 0 && chip.state !== 'done' ? chip.doneAmount + '/' : ''}${chip.amount}${calUnitLabel(chip.unit)}` : '');
-  // 実績は「実績・40分」「実績・20問正解 67%」まで出す（何をどれだけやったかが要る）
-  const logMeta = isLog
-    ? [chip.minutes > 0 && chip.amount > 0 ? formatMinutes(chip.minutes) : null,
-       chip.correct !== null && chip.correct !== undefined && chip.amount > 0
-         ? `${chip.correct}問正解 ${Math.round((chip.correct / chip.amount) * 100)}%` : null
-      ].filter(Boolean).map(t => '・' + t).join('') : '';
+  // 内訳と合計は見出しに出ているので、ここは正答率だけ足す
+  const logMeta = isLog && chip.questions > 0 && chip.correct > 0
+    ? `・${chip.correct}問正解 ${Math.round((chip.correct / chip.questions) * 100)}%` : '';
   const tag = chip.state === 'overdue' ? '<span class="cal-item-tag">期限切れ</span>' : '';
   const check = chip.kind === 'quota' ? `<span class="cal-item-check ${chip.state === 'done' ? 'on' : ''}">${chip.state === 'done' ? '✓' : ''}</span>` : '';
   const clickable = chip.kind === 'event' ? ` clickable" data-cal-event="${esc(chip.id)}" title="クリックで編集`
