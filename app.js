@@ -579,9 +579,12 @@ const subjectCategories = [
 // '4A2C'（多肢選択の2C）、'4B2C'（4連問の2C）にする。
 // questionTotal はそのセクション全体の問題数。科目ごとの内訳は本を見ながら手で入れるので、
 // 「登録済みが全体の何問ぶんか」を出して入れ忘れに気づけるようにするために持つ。
+// baseCategories はそのセクションが持つ範囲。省いたら vol.1〜3 すべて。
 const QB_SECTIONS = [
   { key:'4A', catId:'cat-vol4-multi',  name:'vol.4 多肢選択問題', short:'多肢選択', color:'#F5B041', questionTotal:360 },
-  { key:'4B', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866', questionTotal:484 }
+  // 4連問には基礎医学（vol.1 の 1A〜1J）の範囲が無いので作らない
+  { key:'4B', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866', questionTotal:484,
+    baseCategories:['cat-vol2','cat-vol3'] }
 ];
 // vol.4 の科目は vol.1〜3 の科目から機械的に作る（本の並びが同じなので手で持たない）。
 const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
@@ -590,10 +593,11 @@ const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
 const QB_SECTION_BY_KEY = {};
 const QB_SECTION_BASE_ID = {};
 (function buildQbSectionSubjects(){
-  const base = subjectCategories
-    .filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
+  const subjectsOf = cats => subjectCategories
+    .filter(c => cats.indexOf(c.id) >= 0)
     .reduce((acc, c) => acc.concat(c.subjects), []);
   QB_SECTIONS.forEach(sec => {
+    const base = subjectsOf(sec.baseCategories || QB_SECTION_BASE_CATEGORIES);
     const subjects = base.map(s => ({ id: sec.key + s.id, name: sec.short + ' ' + s.name }));
     subjects.forEach((sub, i) => {
       [sub.id, sub.name].forEach(k => {

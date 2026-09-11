@@ -42,8 +42,10 @@ function eq(name, actual, expected) {
 // （関数宣言は window のプロパティになるので W.xxx で直接呼べる）。
 
 // ---------- 科目マスタ ----------
-// vol.1〜3 は 10 + 24 + 4 = 38 科目。vol.4 はその2形式ぶん。
+// vol.1〜3 は 10 + 24 + 4 = 38 科目。
+// 多肢選択問題はその全部、4連問には基礎医学（vol.1 の10科目）の範囲が無いので 28 科目。
 const BASE_COUNT = 38;
+const LINKED_COUNT = 28;
 const multi  = W.subjectsOfCategory('cat-vol4-multi');
 const linked = W.subjectsOfCategory('cat-vol4-linked');
 
@@ -51,17 +53,23 @@ eq('vol.4 は多肢選択問題と4連問の2部構成',
    [W.qbSectionOf('4A2C').name, W.qbSectionOf('4B2C').name],
    ['vol.4 多肢選択問題', 'vol.4 4連問']);
 eq('多肢選択問題の科目数は vol.1〜3 と同じ', multi.length, BASE_COUNT);
-eq('4連問の科目数は vol.1〜3 と同じ', linked.length, BASE_COUNT);
+eq('4連問は基礎医学ぶんを持たない', linked.length, LINKED_COUNT);
 eq('多肢選択問題は 1A から 3D まで並ぶ（先頭と末尾）',
    [multi[0], multi[BASE_COUNT - 1]],
    [{ id: '4A1A', name: '多肢選択 1A 細胞生物学' },
     { id: '4A3D', name: '多肢選択 3D 公衆衛生' }]);
-eq('4連問は 1A から 3D まで並ぶ（先頭と末尾）',
-   [linked[0], linked[BASE_COUNT - 1]],
-   [{ id: '4B1A', name: '4連問 1A 細胞生物学' },
+eq('4連問は 2A から 3D まで並ぶ（先頭と末尾）',
+   [linked[0], linked[LINKED_COUNT - 1]],
+   [{ id: '4B2A', name: '4連問 2A 消化管' },
     { id: '4B3D', name: '4連問 3D 公衆衛生' }]);
+eq('4連問に基礎医学の科目は1つも無い',
+   linked.filter(s => /^4B1[A-J]$/.test(s.id)).map(s => s.id), []);
+eq('多肢選択問題には基礎医学が残る',
+   multi.filter(s => /^4A1[A-J]$/.test(s.id)).length, 10);
+eq('消した4連問の基礎医学は引けない', W.qbSectionOf('4B1A'), null);
+eq('多肢選択の基礎医学は引ける', W.qbSectionOf('4A1A').short, '多肢選択');
 eq('科目IDは重複しない',
-   new Set(multi.concat(linked).map(s => s.id)).size, BASE_COUNT * 2);
+   new Set(multi.concat(linked).map(s => s.id)).size, BASE_COUNT + LINKED_COUNT);
 
 // ---------- 本に載っている全問題数 ----------
 eq('多肢選択問題は全360問', W.qbSectionOf('4A2C').questionTotal, 360);
