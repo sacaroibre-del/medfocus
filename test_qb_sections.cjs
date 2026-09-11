@@ -135,6 +135,60 @@ ok('vol.4 は元の科目と違う色を持つ',
   eq('あふれた分は2周目へ繰り越す', qb['4A3D']['2'], { done: 3, total: 10, correct: 3 });
 })();
 
+// ---------- 総数が未登録でも解いた数は残す ----------
+// 「解いたのに進捗に追加されない」の直接の原因。総数は本を見ながら入れるものなので、
+// 先に解き始めることがある（vol.4 はとくに）。捨てずに積んで、登録を促す。
+(function keepsCountWhenTotalUnset() {
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
+  const res = W.applyQbSessionToProgress('4B2C', 12, 9);
+  eq('総数未登録でも1周目に積む', W.getQBProgress()['4B2C']['1'], { done: 12, total: 0, correct: 9 });
+  ok('総数が未登録であることを返す', res && res.noTotal === true, res);
+  eq('トーストで総数の登録を促す', W.describeQbChanges(res),
+     '4連問 2C 循環器 1周目 0→12問／総数が未登録です。教材進捗で総数を入れてください');
+
+  // 2回目は積み増す
+  W.applyQbSessionToProgress('4B2C', 8, 5);
+  eq('2回目も積み増す', W.getQBProgress()['4B2C']['1'], { done: 20, total: 0, correct: 14 });
+
+  // total 0 の行がすでにある場合も同じ
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({
+    '2C': { '1': { done: 5, total: 0, correct: 3 } }
+  }));
+  W.applyQbSessionToProgress('2C', 10, 7);
+  eq('total 0 の既存行にも積む', W.getQBProgress()['2C']['1'], { done: 15, total: 0, correct: 10 });
+
+  // 総数を入れたあとは今までどおり「進捗の更新」に戻る
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({
+    '2C': { '1': { done: 15, total: 100, correct: 10 } }
+  }));
+  const after = W.applyQbSessionToProgress('2C', 10, 8);
+  eq('総数を入れたあとは通常どおり', W.getQBProgress()['2C']['1'], { done: 25, total: 100, correct: 18 });
+  ok('noTotal は付かない', !(after && after.noTotal), after);
+})();
+
+// ---------- 反映できないときは黙らない ----------
+(function explainsWhenSkipped() {
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
+  const custom = W.applyQbSessionToProgress('循環器の復習', 30, 20);
+  eq('自由入力の学習内容は反映しない', W.getQBProgress(), {});
+  eq('反映しなかった理由を返す', custom && custom.skipped, 'unknown-subject');
+  eq('トーストで理由を出す', W.describeQbChanges(custom),
+     '循環器の復習 は教材進捗トラッカーに無いので、問題数は反映していません');
+
+  // 科目は表示名でも受ける（ログを編集すると subject_name が表示名になるため）
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({
+    '2C': { '1': { done: 0, total: 100, correct: 0 } }
+  }));
+  const byName = W.applyQbSessionToProgress('2C 循環器', 30, 20);
+  eq('表示名でも科目を引ける', W.getQBProgress()['2C']['1'], { done: 30, total: 100, correct: 20 });
+  eq('返す科目はIDにそろえる', byName && byName.subjectId, '2C');
+
+  // 問題数を入れていないログは、そもそも何も言わない
+  eq('問題数なしは無言', W.applyQbSessionToProgress('2C', null, null), null);
+  eq('0問も無言', W.applyQbSessionToProgress('2C', 0, 0), null);
+  eq('無言のときはトーストの文言も空', W.describeQbChanges(null), '');
+})();
+
 // ---------- 逆算プラン ----------
 (function planMatching() {
   const linkedLog = { subject_name: '4B2C', questions_solved: 10 };

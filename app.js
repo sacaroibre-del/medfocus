@@ -1058,13 +1058,15 @@ document.addEventListener('click', e => {
 });
 
 // ==================== TOAST ====================
-function showToast(msg){
+// ms を渡すと表示時間を伸ばせる。読ませたい文（反映できなかった理由など）は
+// 既定の2.8秒だと読み切る前に消える。
+function showToast(msg, ms){
   let t = document.getElementById('toast-notif');
   if(!t){ t = document.createElement('div'); t.id='toast-notif'; t.className='toast'; document.body.appendChild(t); }
   t.innerHTML = msg;
   requestAnimationFrame(()=>{ t.classList.add('show'); });
   clearTimeout(t._timer);
-  t._timer = setTimeout(()=>{ t.classList.remove('show'); }, 2800);
+  t._timer = setTimeout(()=>{ t.classList.remove('show'); }, Math.max(1200, Number(ms) || 2800));
 }
 
 
@@ -1279,21 +1281,40 @@ async function fetchStudyLogs() {
 // その周の残りを埋めきったら、あふれた分を次の周へ繰り越す。
 // 反映は保存時の1回だけ。あとからログを編集・削除しても進捗は戻さない
 // （戻すと手で直した値まで巻き戻してしまい、かえって危険なため）。
+//
+// 反映できなかったときも null を返さず、理由を返す。黙って捨てると
+// 「解いたのに進捗が増えない」だけが残って、原因が画面のどこにも出ない。
 function applyQbSessionToProgress(subjectId, solved, correct) {
   if (!subjectId) return null;
   const s = Number(solved);
   if (!Number.isFinite(s) || s <= 0) return null;
-  // 自由入力の科目はトラッカー上の対応先が無いので触らない
-  const known = subjectCategories.some(c => c.subjects.some(sub => sub.id === subjectId));
-  if (!known) return null;
+  // 科目は ID でも表示名でも受ける。学習ログの subject_name には保存時の ID と
+  // 編集後の表示名のどちらも入りうる（subjectIdMap 参照）。
+  // 自由入力の学習内容はトラッカー上の対応先が無い。触らないが、そのことは返す。
+  const sid = subjectIdOfName(subjectId);
+  if (!sid) return { subjectId, skipped: 'unknown-subject', changes: [] };
 
   const qb = getQBProgress();
-  const rounds = { ...(qb[subjectId] || {}) };
+  const rounds = { ...(qb[sid] || {}) };
   const keys = Object.keys(rounds).map(k => parseInt(k, 10))
                      .filter(Number.isFinite).sort((a, b) => a - b);
-  // 繰り越し先の総数は1周目の登録値を使う。未登録なら何もしない
+  // 繰り越し先の総数は1周目の登録値を使う
   const baseTotal = keys.length ? (rounds[String(keys[0])].total || 0) : 0;
-  if (!baseTotal) return null;
+
+  // 総数が未登録でも、解いた数は残す。総数は本を見ながら入れるものなので、
+  // 先に解き始めることがある（vol.4 はとくに）。ここで捨てると実績が消える。
+  // 総数 0 のまま積んで、トーストで登録を促す。
+  if (!baseTotal) {
+    const key = keys.length ? String(keys[0]) : '1';
+    const cur = Object.assign({ done: 0, total: 0, correct: 0 }, rounds[key] || {});
+    const before = cur.done || 0;
+    const add = Number.isFinite(Number(correct)) ? Math.max(0, Number(correct)) : 0;
+    rounds[key] = Object.assign({}, cur, { done: before + s, correct: (cur.correct || 0) + add });
+    qb[sid] = rounds;
+    saveQBProgress(qb);
+    return { subjectId: sid, noTotal: true, leftover: 0,
+             changes: [{ round: key, from: before, to: before + s, total: 0, added: s }] };
+  }
 
   let remaining = s;
   let remainingCorrect = Number.isFinite(Number(correct)) ? Number(correct) : 0;
@@ -1325,18 +1346,33 @@ function applyQbSessionToProgress(subjectId, solved, correct) {
   }
 
   if (!changes.length) return null;
-  qb[subjectId] = rounds;
+  qb[sid] = rounds;
   saveQBProgress(qb);   // ここで進捗スナップショットも更新される
-  return { subjectId, changes, leftover: remaining };
+  return { subjectId: sid, changes, leftover: remaining };
 }
 
-// 何がどう動いたかをトーストで具体的に見せる（黙って書き換えない）
+// 何がどう動いたか（動かせなかったか）をトーストで具体的に見せる。
+// 黙って書き換えないのと同じだけ、黙って捨てないことも大事。
 function describeQbChanges(result) {
   if (!result) return '';
   const name = normalizeSubjectName(result.subjectId);
-  const parts = result.changes.map(c =>
-    `${c.round}周目 ${c.from}→${c.to}/${c.total}問${c.to >= c.total ? '(完了)' : ''}`);
-  return `${name} ${parts.join(' / ')}`;
+  if (result.skipped === 'unknown-subject') {
+    return `${name} は教材進捗トラッカーに無いので、問題数は反映していません`;
+  }
+  const parts = (result.changes || []).map(c => c.total > 0
+    ? `${c.round}周目 ${c.from}→${c.to}/${c.total}問${c.to >= c.total ? '(完了)' : ''}`
+    : `${c.round}周目 ${c.from}→${c.to}問`);
+  const tail = result.noTotal ? '／総数が未登録です。教材進捗で総数を入れてください' : '';
+  return `${name} ${parts.join(' / ')}${tail}`;
+}
+
+// 保存後のトースト。教材進捗を動かせなかったときは印と表示時間を変えて、
+// 見落とさないようにする（黙って捨てると「解いたのに増えない」だけが残る）。
+function showQbToast(result, plain) {
+  const note = describeQbChanges(result);
+  if (!note) { showToast(IC.check + plain); return; }
+  const warn = !!(result && (result.skipped || result.noTotal));
+  showToast((warn ? IC.warn : IC.check) + ' 記録しました（' + note + '）', warn ? 7000 : 4000);
 }
 
 // study_logs.video_edition は add_video_editions.sql で足す列。
@@ -1363,10 +1399,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
 
   if (!hasDB()) {
     // オフライン／デモモード: 学習ログは保存しないが、教材進捗はローカルで更新する
-    const applied = applyQb();
-    showToast(applied
-      ? IC.check + ' 記録しました（' + describeQbChanges(applied) + '）'
-      : IC.check + ' 勉強記録を保存しました！（デモ）');
+    showQbToast(applyQb(), ' 勉強記録を保存しました！（デモ）');
     return true;
   }
   try {
@@ -1414,9 +1447,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       const de = new Date(logicalDate); de.setHours(28, 59, 59, 999);
       const todayTotal = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
       saveDailySnapshot(dateKey, goalForToday, todayTotal);
-      showToast(qbApplied
-        ? IC.check + ' 記録しました（' + describeQbChanges(qbApplied) + '）'
-        : IC.check + ' 勉強記録を保存しました！');
+      showQbToast(qbApplied, ' 勉強記録を保存しました！');
       return true;
     }
   } catch (err) {
