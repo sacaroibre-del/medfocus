@@ -307,29 +307,33 @@ async function fetchSleepLogs() {
     return getSleepLogs();
   }
   try {
-    // ① まずマイグレーション（localStorageを上書きする前に実行）
-    await migrateSleepLogsToSupabase();
+    // ダッシュボードに入るたび取り直していたので、他と同じくキャッシュに乗せる。
+    // 書き換えは upsert/delete 側で invalidateCache するので、自分の操作は即座に効く。
+    cachedSleepLogs = await cachedFetch('sleep_logs', async () => {
+      // ① まずマイグレーション（localStorageを上書きする前に実行）
+      await migrateSleepLogsToSupabase();
 
-    // ② Supabaseから最新データを取得
-    const { data, error } = await supabase
-      .from('sleep_logs')
-      .select('date, wake_up, bedtime')
-      .eq('user_id', session.user.id)
-      .order('date', { ascending: false });
-    if (error) throw error;
+      // ② Supabaseから最新データを取得
+      const { data, error } = await supabase
+        .from('sleep_logs')
+        .select('date, wake_up, bedtime')
+        .eq('user_id', session.user.id)
+        .order('date', { ascending: false });
+      if (error) throw error;
 
-    // ③ Supabaseのデータが0件でも、既存localStorageを保護して返す
-    const remoteData = data || [];
-    if (remoteData.length === 0) {
-      // Supabase側がまだ空 → localStorageのデータを使い続ける
-      const localData = (() => { try { return JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]'); } catch(e) { return []; } })();
-      cachedSleepLogs = localData;
-      return cachedSleepLogs;
-    }
-
-    cachedSleepLogs = remoteData;
-    // localStorageにも同期（バックアップ）
-    saveSleepLogs(cachedSleepLogs);
+      // ③ Supabaseのデータが0件でも、既存localStorageを保護して返す
+      const remoteData = data || [];
+      if (remoteData.length === 0) {
+        // Supabase側がまだ空 → localStorageのデータを使い続ける
+        const localData = (() => { try { return JSON.parse(localStorage.getItem('medfocus_sleep_log') || '[]'); } catch(e) { return []; } })();
+        setCache('sleep_logs', localData);
+        return localData;
+      }
+      setCache('sleep_logs', remoteData);
+      // localStorageにも同期（バックアップ）
+      saveSleepLogs(remoteData);
+      return remoteData;
+    });
     return cachedSleepLogs;
   } catch(e) {
     console.warn('fetchSleepLogs fallback to localStorage:', e);
@@ -371,6 +375,7 @@ async function upsertSleepLog(dateKey, type, timeStr) {
   if (!entry) { entry = { date: dateKey }; cachedSleepLogs.push(entry); }
   entry[type] = timeStr;
   saveSleepLogs(cachedSleepLogs);
+  invalidateCache('sleep_logs');
 
   if (!hasDB()) return; // オフラインは終了
   try {
@@ -398,6 +403,7 @@ async function deleteSleepLog(dateKey) {
     const local = getSleepLogs().filter(l => l.date !== dateKey);
     saveSleepLogs(local);
   }
+  invalidateCache('sleep_logs');
   if (!hasDB()) return;
   try {
     await supabase.from('sleep_logs').delete().match({ user_id: session.user.id, date: dateKey });
@@ -1182,10 +1188,13 @@ if (typeof Chart !== 'undefined') {
 
 async function fetchCountdowns() {
   if (!supabase) return;
-  const cached = getCached('countdowns');
-  if (cached) { examCountdowns = cached; return; }
-  const { data, error } = await supabase.from('exam_countdowns').select('*').order('exam_date', { ascending: true });
-  if (!error && data) { examCountdowns = data; setCache('countdowns', data); }
+  const data = await cachedFetch('countdowns', async () => {
+    const { data, error } = await supabase.from('exam_countdowns').select('*').order('exam_date', { ascending: true });
+    if (error || !data) { console.warn('fetchCountdowns error:', error && error.message); return examCountdowns; }
+    setCache('countdowns', data);
+    return data;
+  });
+  if (data) examCountdowns = data;
 }
 
 const CBT_CHECKLIST = [
@@ -1265,10 +1274,14 @@ let checklistProgressCache = [];
 
 async function fetchChecklists() {
   if (!hasDB()) return [];
-  const cached = getCached('checklists');
-  if (cached) { checklistProgressCache = cached; return cached; }
-  const { data, error } = await supabase.from('user_checklist_progress').select('category, topic, completed').eq('user_id', session.user.id);
-  if (!error && data) { checklistProgressCache = data; setCache('checklists', data); }
+  const data = await cachedFetch('checklists', async () => {
+    const { data, error } = await supabase.from('user_checklist_progress')
+      .select('category, topic, completed').eq('user_id', session.user.id);
+    if (error || !data) { console.warn('fetchChecklists error:', error && error.message); return checklistProgressCache; }
+    setCache('checklists', data);
+    return data;
+  });
+  checklistProgressCache = data || checklistProgressCache;
   return checklistProgressCache;
 }
 
@@ -1299,13 +1312,27 @@ async function uploadImage(file, bucket = 'avatars') {
 }
 
 // ==================== SUPABASE DATA HELPERS ====================
-// Data cache with TTL to avoid redundant network requests on navigation
+// 取得結果のキャッシュ。ページを移るたびに取り直していると、そのたびネットワーク
+// 待ちになって切り替えが重く感じる。そこで
+//   ・新しいものはそのまま使う（ネットワークに行かない）
+//   ・古くなったものは「いったんそのまま返してから、裏で取り直す」。
+//     取り直した結果が変わっていたら、いま出ているページだけ描き直す。
+//   ・同じ取得が同時に走ったら1本にまとめる（ページ内で何度も呼ばれるため）
+// 自分で書き換えたときは invalidateCache でその場で捨てるので、操作は即座に効く。
 const _dataCache = {};
-const CACHE_TTL = 30000; // 30 seconds
+const _inflight = {};
+const CACHE_TTL = 30000;                  // これより新しければ取り直さない
+const CACHE_STALE_MAX = 15 * 60 * 1000;   // これより古いものは待ってでも取り直す
 
 function getCached(key) {
   const entry = _dataCache[key];
   if (entry && (Date.now() - entry.ts) < CACHE_TTL) return entry.data;
+  return null;
+}
+// 期限切れでも「ひとまず出す」ぶんには使えるもの
+function getStale(key) {
+  const entry = _dataCache[key];
+  if (entry && (Date.now() - entry.ts) < CACHE_STALE_MAX) return entry.data;
   return null;
 }
 function setCache(key, data) {
@@ -1314,6 +1341,68 @@ function setCache(key, data) {
 function invalidateCache(key) {
   if (key) delete _dataCache[key];
   else Object.keys(_dataCache).forEach(k => delete _dataCache[k]);
+}
+
+// 取得の共通口。loader は「取ってきて、成功したら setCache して返す」関数。
+function cachedFetch(key, loader) {
+  const fresh = getCached(key);
+  if (fresh !== null) return Promise.resolve(fresh);
+  const stale = getStale(key);
+  if (stale !== null) { revalidateCache(key, loader); return Promise.resolve(stale); }
+  return singleFlight(key, loader);
+}
+
+// 同じキーの取得が重ならないようにする。キャッシュするかは loader に任せる
+// （途中で失敗したぶんを固定してしまわないため）。
+function singleFlight(key, loader) {
+  if (_inflight[key]) return _inflight[key];
+  const p = Promise.resolve().then(loader).finally(() => { delete _inflight[key]; });
+  _inflight[key] = p;
+  return p;
+}
+
+// 裏で取り直す。中身が変わっていたら、いま出ているページだけ描き直す
+function revalidateCache(key, loader) {
+  if (_inflight[key]) return;
+  const before = _dataCache[key] && _dataCache[key].data;
+  singleFlight(key, loader)
+    .then(after => { if (cachedDataChanged(before, after)) scheduleRouteRefresh(); })
+    .catch(e => console.warn('revalidate ' + key + ':', e));
+}
+function cachedDataChanged(a, b) {
+  if (a === b) return false;
+  if (Array.isArray(a) && Array.isArray(b) && a.length !== b.length) return true;
+  try { return JSON.stringify(a) !== JSON.stringify(b); } catch (e) { return true; }
+}
+
+// 裏で取り直した結果が変わったときの描き直し。
+// 出しているものがそのままデータの写しであるページだけにする。学習記録は
+// タイマー・メモ・保存前の入力を抱えているので描き直さない（ノルマだけは
+// mountTodayPlanInto がその場で入れ替える）。設定も入力中のものが消えるため外す。
+const AUTO_REFRESH_ROUTES = ['/', '/insights', '/calendar', '/plans', '/qb', '/countdown'];
+let _routeRefreshTimer = null;
+function scheduleRouteRefresh() {
+  clearTimeout(_routeRefreshTimer);
+  _routeRefreshTimer = setTimeout(() => {
+    if (!AUTO_REFRESH_ROUTES.includes(currentRoute) || !routes[currentRoute]) return;
+    // 入力中・モーダル中は見送る（打ちかけのものが消えるほうが困る）。
+    // 見送っても次の切り替えで反映される。
+    const a = document.activeElement;
+    if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return;
+    if (document.querySelector('.modal-overlay, .timer-overlay')) return;
+    renderRoute(currentRoute);
+  }, 500);
+}
+
+// ログイン直後に、よく使うぶんを裏で温めておく。最初の切り替えでいきなり
+// ネットワーク待ちになるのを防ぐ（失敗しても画面には出さない）。
+function prefetchCommonData() {
+  const idle = window.requestIdleCallback || (cb => setTimeout(cb, 400));
+  idle(() => {
+    [fetchStudyLogs, fetchChecklists, fetchCountdowns, fetchPlans, fetchPlanTasks,
+     fetchQuestionRecords, fetchCalendarEvents]
+      .forEach(fn => { try { Promise.resolve(fn()).catch(() => {}); } catch (e) {} });
+  });
 }
 
 // PostgREST は1リクエストで返す行数に上限がある（既定1000行）。
@@ -1325,30 +1414,49 @@ const STUDY_LOG_MAX_PAGES = 100;   // 暴走よけ（5万件ぶん）
 
 async function fetchStudyLogs() {
   if (!hasDB()) return [];
-  const cached = getCached('study_logs');
-  if (cached) return cached;
+  return cachedFetch('study_logs', async () => {
+    const page = (from, withCount) => {
+      let q = supabase.from('study_logs')
+        .select('*', withCount ? { count: 'exact' } : undefined)
+        .eq('user_id', session.user.id)
+        // started_at が同値のときに並びがぶれると range でこぼれるので id で固定する
+        .order('started_at', { ascending: false })
+        .order('id', { ascending: false })
+        .range(from, from + STUDY_LOG_PAGE - 1);
+      return q;
+    };
 
-  const all = [];
-  let failed = false;
-  for (let page = 0, from = 0; page < STUDY_LOG_MAX_PAGES; page++) {
-    const { data, error } = await supabase.from('study_logs')
-      .select('*')
-      .eq('user_id', session.user.id)
-      // started_at が同値のときに並びがぶれると range でこぼれるので id で固定する
-      .order('started_at', { ascending: false })
-      .order('id', { ascending: false })
-      .range(from, from + STUDY_LOG_PAGE - 1);
-    if (error) { console.error('fetchStudyLogs error:', error.message); failed = true; break; }
-    if (!data || data.length === 0) break;
-    all.push(...data);
-    from += data.length;
-    // data.length < ページ幅でも「サーバ側の上限」の可能性があるので、
-    // 空が返るまでは打ち切らない
-  }
+    // 1ページ目で総件数も一緒に聞く。残りは件数から割り出して同時に取る。
+    // 直列に「空が返るまで」繰り返すと、件数が増えるほど往復が積み上がる。
+    const head = await page(0, true);
+    if (head.error) { console.error('fetchStudyLogs error:', head.error.message); return getStale('study_logs') || []; }
+    const first = head.data || [];
+    if (!first.length) { setCache('study_logs', []); return []; }
 
-  // 途中で失敗したぶんをキャッシュすると、欠けたまま固定されてしまう
-  if (!failed) setCache('study_logs', all);
-  return all;
+    // サーバ側の行数上限で1ページ目が短く返ることがあるので、実際に返った幅を使う
+    const width = first.length;
+    const total = typeof head.count === 'number' ? head.count : null;
+    let all = first;
+    if (total === null) {
+      // 件数が取れない環境向けの保険。今までどおり空が返るまで順に取る
+      for (let i = 1, from = width; i < STUDY_LOG_MAX_PAGES; i++) {
+        const { data, error } = await page(from, false);
+        if (error) { console.error('fetchStudyLogs error:', error.message); return getStale('study_logs') || all; }
+        if (!data || !data.length) break;
+        all = all.concat(data); from += data.length;
+      }
+    } else if (total > width) {
+      const pages = Math.min(Math.ceil(total / width), STUDY_LOG_MAX_PAGES);
+      const rest = await Promise.all(
+        Array.from({ length: pages - 1 }, (_, i) => page((i + 1) * width, false)));
+      const bad = rest.find(r => r.error);
+      // 途中で失敗したぶんをキャッシュすると、欠けたまま固定されてしまう
+      if (bad) { console.error('fetchStudyLogs error:', bad.error.message); return getStale('study_logs') || all; }
+      rest.forEach(r => { all = all.concat(r.data || []); });
+    }
+    setCache('study_logs', all);
+    return all;
+  });
 }
 
 // 1セッションの演習実績を教材進捗トラッカーへ反映する。
@@ -2881,12 +2989,39 @@ document.addEventListener('click', e => {
 const routes={};
 function registerRoute(p,h){routes[p]=h;}
 function navigate(p){if(currentRoute===p)return;window.history.pushState({},'',p);renderRoute(p);}
+// ページの描画はデータ待ちで数百ms〜数秒かかることがある。その間は前のページが
+// 出たままなので、押せていないように見える。上端の細い進捗バーで「切り替え中」
+// だけ先に返す。150ms 以内に描き終わるならバーは出さない（点滅を避ける）。
+let _routeBusyTimer = null;
+function routeProgressEl() {
+  let el = document.getElementById('route-progress');
+  if (!el) { el = document.createElement('div'); el.id = 'route-progress'; document.body.appendChild(el); }
+  return el;
+}
+function setRouteBusy(on) {
+  const el = routeProgressEl();
+  clearTimeout(_routeBusyTimer);
+  if (on) {
+    _routeBusyTimer = setTimeout(() => { el.className = ''; void el.offsetWidth; el.className = 'active'; }, 150);
+    return;
+  }
+  // 出していないなら何もしない。出していたら最後まで伸ばしてから消す
+  if (el.className !== 'active') { el.className = ''; return; }
+  el.className = 'done';
+  _routeBusyTimer = setTimeout(() => { if (el.className === 'done') el.className = ''; }, 400);
+}
 function renderRoute(p){
   currentRoute=p;
   const h=routes[p]||routes['/'];
-  if(h)h();
-  
+  // サイドバーの選択は各ページの renderSidebar が currentRoute から引くので、
+  // ここでは描画を挟まない経路のために当て直すだけ
   document.querySelectorAll('.nav-item').forEach(i=>i.classList.toggle('active',i.dataset.route===p));
+  if(!h) return;
+  setRouteBusy(true);
+  let r;
+  try { r = h(); } catch(e) { setRouteBusy(false); throw e; }
+  Promise.resolve(r).then(() => setRouteBusy(false),
+                          e => { setRouteBusy(false); console.error('route render error:', e); });
 }
 function initRouter(){
   window.addEventListener('popstate',()=>renderRoute(window.location.pathname));
@@ -2963,13 +3098,16 @@ function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLab
 async function renderDashboard(){
 
   const ct=document.getElementById('page-container');
-  const logs = await fetchStudyLogs();
-  const checks = await fetchChecklists();
-  await fetchSleepLogs(); // Supabaseから睡眠ログを取得・キャッシュ更新
-  // 解き直す問題をここで出すので、記録を読んでおく。ブートストラップは
-  // 初回描画を待たせないよう await していないため、ここで確実に読む。
-  // 読めなくてもダッシュボード全体は落とさない。
-  try { _qRecords = await fetchQuestionRecords(); } catch(e) { console.warn('question records:', e); }
+  // 互いに関係の無い取得なので同時に投げる。直列だと往復が積み上がって
+  // ダッシュボードに入るたび待たされる
+  const [logs, checks] = await Promise.all([
+    fetchStudyLogs(),
+    fetchChecklists(),
+    fetchSleepLogs(),           // Supabaseから睡眠ログを取得・キャッシュ更新
+    // 初回描画を待たせないよう await していないため、ここで確実に読む。
+    fetchQuestionRecords().then(r => { _qRecords = r; })
+                          .catch(e => console.warn('question records:', e))
+  ]);
 
   const logicalToday = getLogicalDate(new Date());
 
@@ -3174,8 +3312,9 @@ async function renderDashboard(){
   }
 
   // 試験逆算ペースメーター（目標リングの直下に出す）
-  // 逆算プランの今日のノルマ。同期に失敗してもダッシュボード全体は落とさない
-  const planSync = await syncPlans(false).catch(e => { console.warn('plan sync error:', e); return null; });
+  // 逆算プランの今日のノルマ。同期は取得も計算も重いので、すでに同期済みのときだけ
+  // ここで一緒に描き、まだなら描画後に差し込む（ダッシュボードの表示を待たせない）
+  const planSync = cachedPlanSync();
 
   // 「今日の一手」用。インサイトで使っている計算をそのまま持ってくる。
   // 単価はペースメーターの残り時間にも使うので先に出す。
@@ -3353,8 +3492,8 @@ async function renderDashboard(){
       `}
     </div>`}
 
-    <!-- 今日のノルマ（逆算プラン） -->
-    ${todayPlanCardHTML(planSync)}
+    <!-- 今日のノルマ（逆算プラン）。同期が間に合っていなければ描画後に差し込む -->
+    <div id="dash-today-plan">${todayPlanCardHTML(planSync)}</div>
 
     <!-- 今日の一手 -->
     ${(dashSubjects.hasData || dashPending.length > 0 || dashBudget.hasData) ? `
@@ -3592,11 +3731,9 @@ async function renderDashboard(){
 
   // --- Event Listeners ---
   // Period tabs
-  // 再テストの○✕
-  document.querySelectorAll('[data-retest-ok]').forEach(b =>
-    b.addEventListener('click', () => markRetest(b.dataset.retestOk, true)));
-  document.querySelectorAll('[data-retest-ng]').forEach(b =>
-    b.addEventListener('click', () => markRetest(b.dataset.retestNg, false)));
+  // 上で描けていれば○✕を繋ぐだけ、まだなら裏で同期してから差し込む
+  wireRetestButtons(document);
+  mountTodayPlanInto('dash-today-plan', planSync, '/');
 
   document.getElementById('pacer-exam')?.addEventListener('change', e => { setPacerExamId(e.target.value); renderDashboard(); });
   document.getElementById('pacer-round')?.addEventListener('change', e => { setPacerTargetRound(parseInt(e.target.value, 10)); renderDashboard(); });
@@ -3910,6 +4047,19 @@ function bindBulkActivityEvents(logs) {
   });
 }
 
+// 「今日のノルマ」を後から差し込む。プランの同期はページ描画より重く、待たせると
+// ページの切り替えがそのぶん遅くなるので、先に表示を返してから埋める。
+// slotId は描画時に置いた空の入れ物、pre は描画に使った同期結果。
+async function mountTodayPlanInto(slotId, pre, route) {
+  const sync = await syncPlans(false).catch(e => { console.warn('plan sync error:', e); return null; });
+  // pre と同じなら描画時のものがそのまま出ているので触らない
+  if (!sync || sync === pre || currentRoute !== route) return;
+  const slot = document.getElementById(slotId);
+  if (!slot) return;
+  slot.innerHTML = todayPlanCardHTML(sync);
+  wireRetestButtons(slot);
+}
+
 async function renderStudy(){
   const ct=document.getElementById('page-container');
   if(!ct) return;
@@ -3947,6 +4097,10 @@ async function renderStudy(){
     }
     dayIndex[key].logs.push(l);
   });
+
+  // 今日のノルマ。プランの同期はページ描画より重いので、すでに同期済みのときだけ
+  // ここで一緒に描き、まだなら描画後に差し込む（ページの表示を待たせない）
+  const studyPlanSync = cachedPlanSync();
 
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
@@ -4104,6 +4258,8 @@ async function renderStudy(){
           </div>
         ` : ''}
       </div>
+      <!-- 今日のノルマ: 右カラムの学習ログの上（CSS 側で配置）。同期が間に合っていなければ描画後に差し込む -->
+      <div id="study-today-plan" class="study-plan-slot">${todayPlanCardHTML(studyPlanSync)}</div>
       <div class="study-log-card card animate-slide-up ${isCardCollapsed('study-log') ? 'is-collapsed' : ''}" style="animation-delay:.1s">
         <div class="card-header study-log-header">
           <div class="card-title">${IC.list}学習ログ ${cardCollapseBtnHTML('study-log')}</div>
@@ -4273,6 +4429,10 @@ async function renderStudy(){
     </div>
     </div>`;
 
+
+  // 上で描けていれば○✕を繋ぐだけ、まだなら裏で同期してから学習ログの上へ差し込む
+  wireRetestButtons(ct);
+  mountTodayPlanInto('study-today-plan', studyPlanSync, '/study');
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
   const status=document.getElementById('timer-status');const btnT=document.getElementById('btn-toggle');
@@ -5983,10 +6143,13 @@ function videoTrackerBlockHtml(sid, raw) {
 }
 
 async function renderQBProgress(){
-  await loadQBFromSupabase();
-  await loadVideoFromSupabase();
-  // 誤答・自信なしの記録。読めなくてもトラッカー全体は落とさない
-  try { _qRecords = await fetchQuestionRecords(); } catch (e) { console.warn('question records:', e); }
+  // 互いに関係の無い取得なので同時に投げる（直列だと往復が積み上がる）
+  await Promise.all([
+    loadQBFromSupabase(),
+    loadVideoFromSupabase(),
+    fetchQuestionRecords().then(r => { _qRecords = r; })
+                          .catch(e => console.warn('question records:', e))
+  ]);
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
   const rawVideo=getVideoProgress();
@@ -8929,12 +9092,14 @@ function qbAccTable(bins) {
 
 async function renderInsights(){
   const ct=document.getElementById('page-container');
-  await loadQBFromSupabase();
-  await loadVideoFromSupabase();
-  await fetchCountdowns();   // 試験までの逆算に使う
-  // 「後の時点の伸び」を測るのに使う。読めなくてもインサイト全体は落とさない
-  try { await fetchMockExams(); } catch (e) { console.warn('mock exams:', e); }
-  const allLogs=await fetchStudyLogs();
+  // 互いに関係の無い取得なので同時に投げる（直列だと往復が積み上がる）
+  const [, , , , allLogs] = await Promise.all([
+    loadQBFromSupabase(),
+    loadVideoFromSupabase(),
+    fetchCountdowns(),   // 試験までの逆算に使う
+    fetchMockExams().catch(e => console.warn('mock exams:', e)),
+    fetchStudyLogs()
+  ]);
   const logs=applyInsightFilters(allLogs);
   const logicalToday=getLogicalDate(new Date());
 
@@ -13350,14 +13515,14 @@ function setLocalCalendarEvents(list) {
 
 async function fetchCalendarEvents() {
   if (!hasDB()) return getLocalCalendarEvents();
-  const cached = getCached('calendar_events');
-  if (cached) return cached;
-  // 学生1人の予定は多くても数百件なので、月ごとに切らず全件を取って30秒キャッシュする
-  const { data, error } = await supabase.from('calendar_events')
-    .select('*').eq('user_id', session.user.id).order('start_date', { ascending: true });
-  if (error) { console.error('fetchCalendarEvents error:', error.message); return []; }
-  setCache('calendar_events', data || []);
-  return data || [];
+  return cachedFetch('calendar_events', async () => {
+    // 学生1人の予定は多くても数百件なので、月ごとに切らず全件を取る
+    const { data, error } = await supabase.from('calendar_events')
+      .select('*').eq('user_id', session.user.id).order('start_date', { ascending: true });
+    if (error) { console.error('fetchCalendarEvents error:', error.message); return getStale('calendar_events') || []; }
+    setCache('calendar_events', data || []);
+    return data || [];
+  });
 }
 
 async function saveCalendarEvent(input) {
@@ -13542,7 +13707,11 @@ function openEventModal(existing, defaultDateKey, onChange) {
 
 // 表示中のカレンダーに流し込むデータをそろえる。
 async function calendarSources() {
-  const [logs, events, sync] = await Promise.all([fetchStudyLogs(), fetchCalendarEvents(), syncPlans(false)]);
+  // 取得どうしは同時に投げる。ただし試験日は逆算の入力なので、
+  // プランの同期はそれが揃ってから始める
+  const logsP = fetchStudyLogs(), eventsP = fetchCalendarEvents();
+  await fetchCountdowns();
+  const [logs, events, sync] = await Promise.all([logsP, eventsP, syncPlans(false)]);
   if (sync.rebuilt.length) showToast(IC.check + ' 実績に合わせて配り直しました: ' + sync.rebuilt.join('、'));
   return {
     todayKey: todayPlanKey(),
@@ -13593,7 +13762,6 @@ async function renderCalendar() {
     </div>
     <div id="cal-root"><div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">読み込み中...</div></div>`;
 
-  await fetchCountdowns();
   let sources = await calendarSources();
 
   // 画面から離れていたら描き直さない（await の間に別ページへ移動している場合）
@@ -13731,13 +13899,13 @@ function setLocalList(key, list) { try { localStorage.setItem(key, JSON.stringif
 
 async function fetchPlans() {
   if (!hasDB()) return getLocalList(PLANS_LS_KEY);
-  const cached = getCached('study_plans');
-  if (cached) return cached;
-  const { data, error } = await supabase.from('study_plans').select('*')
-    .eq('user_id', session.user.id).order('due_date', { ascending: true });
-  if (error) { console.error('fetchPlans error:', error.message); return []; }
-  setCache('study_plans', data || []);
-  return data || [];
+  return cachedFetch('study_plans', async () => {
+    const { data, error } = await supabase.from('study_plans').select('*')
+      .eq('user_id', session.user.id).order('due_date', { ascending: true });
+    if (error) { console.error('fetchPlans error:', error.message); return getStale('study_plans') || []; }
+    setCache('study_plans', data || []);
+    return data || [];
+  });
 }
 
 // ---------- 模試の記録 ----------
@@ -13754,8 +13922,10 @@ async function fetchMockExams() {
     _mockExams = getLocalList(MOCK_EXAMS_LS_KEY);
     return _mockExams;
   }
-  const cached = getCached('mock_exams');
-  if (cached) { _mockExams = cached; return cached; }
+  _mockExams = await cachedFetch('mock_exams', loadMockExams);
+  return _mockExams;
+}
+async function loadMockExams() {
   const { data, error } = await supabase.from('mock_exams').select('*')
     .eq('user_id', session.user.id).order('taken_on', { ascending: true });
   if (error) {
@@ -13766,12 +13936,10 @@ async function fetchMockExams() {
     } else {
       console.error('fetchMockExams error:', error.message);
     }
-    _mockExams = getLocalList(MOCK_EXAMS_LS_KEY);
-    return _mockExams;
+    return getLocalList(MOCK_EXAMS_LS_KEY);
   }
   setCache('mock_exams', data || []);
-  _mockExams = data || [];
-  return _mockExams;
+  return data || [];
 }
 
 // 模試を保存する。1回の模試で複数科目ぶんを同じ日付で入れる。
@@ -13823,8 +13991,9 @@ function questionRecordKey(r) {
 
 async function fetchQuestionRecords() {
   if (!hasDB() || _questionRecordsMissing) return getLocalList(QUESTION_RECORDS_LS_KEY);
-  const cached = getCached('qb_question_records');
-  if (cached) return cached;
+  return cachedFetch('qb_question_records', () => loadQuestionRecords());
+}
+async function loadQuestionRecords() {
   const { data, error } = await supabase.from('qb_question_records').select('*')
     .eq('user_id', session.user.id);
   if (error) {
@@ -13916,21 +14085,39 @@ function setRoundWrongOnly(qb, subjectId, round, value) {
 
 async function fetchPlanTasks() {
   if (!hasDB()) return getLocalList(PLAN_TASKS_LS_KEY);
-  const cached = getCached('plan_tasks');
-  if (cached) return cached;
-  // 長いプランが複数あると PostgREST の既定上限(1000行)を超えるので、空が返るまで range で取る
-  const all = [];
-  for (let page = 0, from = 0; page < 40; page++) {
-    const { data, error } = await supabase.from('plan_tasks').select('*')
+  return cachedFetch('plan_tasks', async () => {
+    // 長いプランが複数あると PostgREST の既定上限(1000行)を超える。1ページ目で
+    // 総件数も聞いて、残りは同時に取る（直列に繰り返すと往復が積み上がる）
+    const page = (from, withCount) => supabase.from('plan_tasks')
+      .select('*', withCount ? { count: 'exact' } : undefined)
       .eq('user_id', session.user.id)
       .order('due_date', { ascending: true }).order('id', { ascending: true })
       .range(from, from + 499);
-    if (error) { console.error('fetchPlanTasks error:', error.message); return all; }
-    if (!data || !data.length) break;
-    all.push(...data); from += data.length;
-  }
-  setCache('plan_tasks', all);
-  return all;
+    const head = await page(0, true);
+    if (head.error) { console.error('fetchPlanTasks error:', head.error.message); return getStale('plan_tasks') || []; }
+    const first = head.data || [];
+    if (!first.length) { setCache('plan_tasks', []); return []; }
+    const width = first.length;
+    const total = typeof head.count === 'number' ? head.count : null;
+    let all = first;
+    if (total === null) {
+      for (let i = 1, from = width; i < 40; i++) {
+        const { data, error } = await page(from, false);
+        if (error) { console.error('fetchPlanTasks error:', error.message); return getStale('plan_tasks') || all; }
+        if (!data || !data.length) break;
+        all = all.concat(data); from += data.length;
+      }
+    } else if (total > width) {
+      const pages = Math.min(Math.ceil(total / width), 40);
+      const rest = await Promise.all(
+        Array.from({ length: pages - 1 }, (_, i) => page((i + 1) * width, false)));
+      const bad = rest.find(r => r.error);
+      if (bad) { console.error('fetchPlanTasks error:', bad.error.message); return getStale('plan_tasks') || all; }
+      rest.forEach(r => { all = all.concat(r.data || []); });
+    }
+    setCache('plan_tasks', all);
+    return all;
+  });
 }
 
 function scheduleToTaskRows(plan, schedule, seqOffset) {
@@ -14592,9 +14779,59 @@ function canUseSequenced(res) {
 
 // ---------- 同期：実績を重ね、遅れていれば残りを配り直す ----------
 // カレンダーとプラン一覧の両方がここを通る。30秒はキャッシュして無駄な書き込みを避ける。
-let _planSyncAt = 0, _planSyncResult = null;
+let _planSyncAt = 0, _planSyncResult = null, _planSyncInflight = null;
+const PLAN_SYNC_TTL = 30000;                   // これより新しければ組み直さない
+const PLAN_SYNC_STALE_MAX = 15 * 60 * 1000;    // これより古ければ待ってでも組み直す
+
+// 同期済みで新しいものがあればそれを返す（無ければ null）。
+// 描画を待たせずに「今日のノルマ」を出したいページで使う。
+function cachedPlanSync() {
+  return (_planSyncResult && Date.now() - _planSyncAt < PLAN_SYNC_TTL) ? _planSyncResult : null;
+}
+
+// プランの同期は取得も計算も重い。期限が切れただけなら、前の結果をそのまま返して
+// 裏で組み直す。組み直した結果が変わっていたら、いま出ているページを描き直す。
+// （_planSyncAt = 0 で捨てたときは「古すぎる」扱いになり、待って組み直す）
 async function syncPlans(force) {
-  if (!force && _planSyncResult && Date.now() - _planSyncAt < 30000) return _planSyncResult;
+  if (!force && _planSyncResult && Date.now() - _planSyncAt < PLAN_SYNC_TTL) return _planSyncResult;
+  if (!force && _planSyncResult && Date.now() - _planSyncAt < PLAN_SYNC_STALE_MAX) {
+    revalidatePlanSync();
+    return _planSyncResult;
+  }
+  return planSyncOnce(force);
+}
+
+// 同じ組み直しが同時に走らないようにする（書き込みを含むため特に重要）
+function planSyncOnce(force) {
+  if (_planSyncInflight) return _planSyncInflight;
+  _planSyncInflight = runPlanSync(force).finally(() => { _planSyncInflight = null; });
+  return _planSyncInflight;
+}
+
+function revalidatePlanSync() {
+  if (_planSyncInflight) return;
+  const before = planSyncSignature(_planSyncResult);
+  planSyncOnce(false)
+    .then(after => { if (planSyncSignature(after) !== before) scheduleRouteRefresh(); })
+    .catch(e => console.warn('plan sync error:', e));
+}
+
+// 画面に出ているもの（プランの見出しと今日ぶん）だけを比べる。
+// 全タスクを突き合わせると数千行の比較になるので、そこは件数で見る。
+function planSyncSignature(sync) {
+  if (!sync) return '';
+  const today = sync.todayKey;
+  const todays = (sync.tasks || []).filter(t => String(t.due_date).slice(0, 10) === today);
+  try {
+    return JSON.stringify([
+      (sync.plans || []).map(p => [p.id, p.status, p.title, p.total_volume, p.due_date]),
+      todays.map(t => [t.plan_id, t.kind, t.title, t.target_amount, t.done_amount, t.completed]),
+      (sync.tasks || []).length
+    ]);
+  } catch (e) { return String(Math.random()); }
+}
+
+async function runPlanSync(force) {
   const [plans, tasksRaw, logs] = await Promise.all([fetchPlans(), fetchPlanTasks(), fetchStudyLogs()]);
   const today = todayPlanKey();
   const byPlan = {};
@@ -15517,6 +15754,15 @@ function retestBlockHTML(todayKey) {
   </div>`;
 }
 
+// 再テストの○✕を繋ぐ。ダッシュボードと学習記録の両方から押せる。
+function wireRetestButtons(root) {
+  const r = root || document;
+  r.querySelectorAll('[data-retest-ok]').forEach(b =>
+    b.addEventListener('click', () => markRetest(b.dataset.retestOk, true)));
+  r.querySelectorAll('[data-retest-ng]').forEach(b =>
+    b.addEventListener('click', () => markRetest(b.dataset.retestNg, false)));
+}
+
 // 再テストの○✕を押したときの保存。記録を1件だけ書き換える。
 async function markRetest(key, correct) {
   const [sid, roundStr, noStr] = String(key || '').split('|');
@@ -15527,7 +15773,8 @@ async function markRetest(key, correct) {
   Object.assign(hit, applyRetestResult(hit, correct, todayPlanKey()));
   await persistMarks(sid, round, rows);
   showToast(correct ? IC.check + ' 正解にしました' : IC.warn + ' もう一度7日後に出します');
-  renderDashboard();
+  // 学習記録ページからも押せるので、いま出ているページを描き直す
+  if (currentRoute === '/study') renderStudy(); else renderDashboard();
 }
 
 // ダッシュボード用「今日のノルマ」。進行中プランの今日ぶんを1枚にまとめる。
@@ -15611,13 +15858,16 @@ registerRoute('/settings',()=>{if(!session){renderLogin();return;}ensureAppLayou
 // （進捗を編集しなかった日でも断面があることで、差分計算が正しく日割りになる）
 async function bootstrapProgressTracking() {
   try {
-    await loadQBFromSupabase();
-    await loadVideoFromSupabase();
-    await fetchProgressSnapshots();
+    // 断面は「進捗を読んでから残す」順番だけ要る。読み込みどうしは同時でいい
+    await Promise.all([loadQBFromSupabase(), loadVideoFromSupabase(), fetchProgressSnapshots()]);
     saveProgressSnapshot();
-    _qRecords = await fetchQuestionRecords();
-    await fetchMockExams();
+    await Promise.all([
+      fetchQuestionRecords().then(r => { _qRecords = r; }),
+      fetchMockExams()
+    ]);
   } catch(e) { console.warn('progress bootstrap error:', e); }
+  // 次のページ切り替えでいきなりネットワーク待ちにならないよう、裏で温めておく
+  prefetchCommonData();
 }
 
 let authSubscription = null;

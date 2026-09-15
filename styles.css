@@ -3604,6 +3604,16 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .cal-item-check { width:22px; height:22px; border-radius:var(--radius-full); border:1px solid var(--color-border); display:grid; place-items:center; font-size:0.75rem; flex:none; align-self:center; color:var(--color-accent-green); }
 .cal-item-check.on { background:rgba(16,185,129,0.15); border-color:var(--color-accent-green); }
 
+/* ===== ページ切り替え中の進捗バー ===== */
+/* 描画がデータ待ちになる間、前のページが出たままでも「切り替え中」だとわかるように */
+#route-progress { position:fixed; top:0; left:0; height:3px; width:0; opacity:0; z-index:9999; pointer-events:none;
+  background:linear-gradient(90deg, var(--color-accent-teal), var(--color-accent-blue)); }
+#route-progress.active { width:85%; opacity:1; transition:width 3s cubic-bezier(.05,.75,.1,1); }
+#route-progress.done { width:100%; opacity:0; transition:width .2s ease, opacity .35s ease .1s; }
+@media (prefers-reduced-motion:reduce) {
+  #route-progress.active, #route-progress.done { transition:opacity .15s linear; }
+}
+
 /* ===== ダッシュボード: 今日のノルマ ===== */
 .today-plan-card { margin-bottom:var(--space-md); }
 .tp-list { display:flex; flex-direction:column; }
@@ -3634,10 +3644,33 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .study-layout:has(> .study-log-card.is-collapsed) { grid-template-rows:auto 1fr; }
 .study-layout:has(> .study-log-card.is-collapsed) > .stopwatch-card { grid-row:1 / span 2; }
 .study-layout:has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:2; grid-row:2; align-self:start; }
+/* 今日のノルマは右カラムの学習ログの上（タイマーは左で2行ぶん）。DOM は
+   タイマー → ノルマ → 学習ログ → QB分析 の順。ノルマは後から差し込むので
+   入れ物だけ先に置いてあり、中身が無い日は箱ごと消す。
+   畳んだときの指定より後に書いて、ノルマがあるときはこちらを効かせる */
+.study-layout > .study-plan-slot:empty { display:none; }
+.study-layout > .study-plan-slot > .today-plan-card { margin-bottom:0; }
+.study-layout:has(> .study-plan-slot:not(:empty)) { grid-template-rows:auto 1fr auto; }
+.study-layout:has(> .study-plan-slot:not(:empty)) > .stopwatch-card { grid-column:1; grid-row:1 / span 2; }
+.study-layout:has(> .study-plan-slot:not(:empty)) > .study-plan-slot { grid-column:2; grid-row:1; align-self:start; }
+.study-layout:has(> .study-plan-slot:not(:empty)) > .study-log-card { grid-column:2; grid-row:2; }
+.study-layout:has(> .study-plan-slot:not(:empty)) > .study-check-card { grid-column:1 / -1; grid-row:3; }
+/* 学習ログを畳んだときは、QB分析も右カラムへ上げる（既存の畳み動作と同じ） */
+.study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) { grid-template-rows:auto auto 1fr; }
+.study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) > .stopwatch-card { grid-row:1 / span 3; }
+.study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:2; grid-row:3; align-self:start; }
 @media (max-width:1200px) {
   .study-layout:has(> .study-log-card.is-collapsed) { grid-template-rows:none; }
   .study-layout:has(> .study-log-card.is-collapsed) > .stopwatch-card,
   .study-layout:has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:auto; grid-row:auto; }
+  .study-layout:has(> .study-plan-slot:not(:empty)),
+  .study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) { grid-template-rows:none; }
+  .study-layout:has(> .study-plan-slot:not(:empty)) > .stopwatch-card,
+  .study-layout:has(> .study-plan-slot:not(:empty)) > .study-plan-slot,
+  .study-layout:has(> .study-plan-slot:not(:empty)) > .study-log-card,
+  .study-layout:has(> .study-plan-slot:not(:empty)) > .study-check-card,
+  .study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) > .stopwatch-card,
+  .study-layout:has(> .study-plan-slot:not(:empty)):has(> .study-log-card.is-collapsed) > .study-check-card { grid-column:auto; grid-row:auto; }
 }
 .card.is-collapsed > .card-header { margin-bottom:0; border-bottom:none !important; padding-bottom:0 !important; }
 .card.is-collapsed .card-collapse-btn svg { transform:rotate(-90deg); }
