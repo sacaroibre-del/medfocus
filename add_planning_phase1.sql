@@ -13,6 +13,11 @@
 --    同じバッチに混ぜると、まだ存在しない列を参照する確認クエリが実行前の
 --    解析ではじかれ、DDL ごとロールバックされます
 --  - 巻き戻しは add_planning_phase1_rollback.sql
+--  - 何度実行しても同じ結果になります（途中で失敗しても、直してから
+--    もう一度このファイルを頭から流せば続きが入ります）
+--  - ドル引用符（$ で囲むブロック）は使っていません。また、文字列リテラルの
+--    中にセミコロンを入れていません。どちらも、セミコロンで文を割る実行環境が
+--    文の途中で切ってしまい、そこから先が実行されなくなるためです
 --
 -- ここに入れないもの:
 --  - 目標想起率 R* / 余裕日数 … 全体設定なので localStorage
@@ -30,19 +35,23 @@
 ALTER TABLE study_plans
   ADD COLUMN IF NOT EXISTS exam_countdown_id UUID;
 
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'study_plans_exam_countdown_fk'
-  ) THEN
-    ALTER TABLE study_plans
-      ADD CONSTRAINT study_plans_exam_countdown_fk
-      FOREIGN KEY (exam_countdown_id) REFERENCES exam_countdowns(id) ON DELETE SET NULL;
-  END IF;
-END $$;
+-- 外部キーは「あれば落として付け直す」形にします。
+-- Postgres に ADD CONSTRAINT IF NOT EXISTS が無いためですが、DO $ ... $ の
+-- ドル引用符ブロックは避けています。セミコロンで文を割る実行環境が
+-- ブロックの途中で切ってしまい、そこから先が実行されないことがあるためです。
+-- この2文はドル引用符を使わないので、何度実行しても同じ結果になります。
+--
+-- なお DROP するのはこのマイグレーション自身が作る制約1つだけで、
+-- 既存の制約には触れません。
+ALTER TABLE study_plans
+  DROP CONSTRAINT IF EXISTS study_plans_exam_countdown_fk;
+
+ALTER TABLE study_plans
+  ADD CONSTRAINT study_plans_exam_countdown_fk
+  FOREIGN KEY (exam_countdown_id) REFERENCES exam_countdowns(id) ON DELETE SET NULL;
 
 COMMENT ON COLUMN study_plans.exam_countdown_id IS
-  'Exam this plan is aimed at (exam_countdowns.id). NULL = no exam date; scoring falls back to defaults.';
+  'Exam this plan is aimed at (exam_countdowns.id). NULL means no exam date, so scoring falls back to defaults.';
 
 CREATE INDEX IF NOT EXISTS idx_study_plans_exam
   ON study_plans (exam_countdown_id);
