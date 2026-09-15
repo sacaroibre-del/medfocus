@@ -7359,34 +7359,64 @@ function roundAccuracy(rounds, r) {
 }
 
 // ---------- スコアで使う正答率 p ----------
-// 直近周の正答率を、その周の解答数に応じて累積へ引き寄せる（縮小推定）。
-//   p = (n直近·p直近 + m·p累積) / (n直近 + m)     m = PLANNING_CONFIG.accuracy.priorWeight
-// 2周目を10問解いただけの正答率は当てにならないので、序盤は累積に寄せ、
-// 解くほど直近周の値へ寄っていく。
+// 少ない解答数の正答率をそのまま信じないよう、2段階で縮小する。
 //
-// p累積は「登録済みの全周」から取る。直近周もそこに含まれるので、周が1つしか
-// 無い科目では p累積 = p直近 となり、この式は素通りになる。それで正しい
-// ——寄せる先が無いのだから、1周目だけの科目は1周目の値そのものでよい。
+//   p0     = 全科目・全周をならした正答率（データが無ければ中立値 0.5）
+//   p過去  = 直近周を「除いた」周の正答率、n過去 = その解答数
+//   p過去' = (n過去·p過去 + m0·p0) / (n過去 + m0)     n過去 = 0 なら p0
+//   p      = (n直近·p直近 + m·p過去') / (n直近 + m)
 //
-// 返り値は 0〜1。正答数がどこにも入っていなければ p: null（呼び出し側で中立値に倒す）。
-function blendedRoundAccuracy(rounds) {
-  const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10))
-    .filter(Number.isFinite).sort((a, b) => a - b);
-  let solved = 0, correct = 0, recent = null;
-  keys.forEach(k => {
-    const cur = rounds[String(k)];
-    const c = Number(cur && cur.correct);
-    if (!cur || !(cur.done > 0) || !Number.isFinite(c)) return;
-    solved += cur.done; correct += c;
-    recent = { round: k, n: cur.done, p: c / cur.done };   // 昇順なので最後に残るのが直近
-  });
-  if (!recent || solved <= 0) {
-    return { p: null, round: null, nRecent: 0, pRecent: null, pCumulative: null, hasData: false };
-  }
-  const pCum = correct / solved;
+// 直近周を p過去 から除くのが要点。含めると直近周が二重に数えられ、
+// 「10問だけ解いた2周目」が自分自身を根拠に補強されてしまう。
+// p0 へ寄せる段を挟むのは、周が1つしか無い科目（1周目だけ・5問中5問正解など）に
+// 寄せる先を与えるため。1段だけだと、そういう科目が 1.0 のまま素通りする。
+//
+// 返り値の p は 0〜1。正答数がどこにも入っていない科目は p0 を返し、
+// hasData: false で「正答率未入力」と表示できるようにする。
+function blendedRoundAccuracy(rounds, p0) {
+  const neutral = PLANNING_CONFIG.accuracy.neutral;
+  const base = Number.isFinite(Number(p0)) ? Number(p0) : neutral;
   const m = Number(PLANNING_CONFIG.accuracy.priorWeight) || 0;
-  const p = (recent.n * recent.p + m * pCum) / (recent.n + m);
-  return { p, round: recent.round, nRecent: recent.n, pRecent: recent.p, pCumulative: pCum, hasData: true };
+  const m0 = Number(PLANNING_CONFIG.accuracy.globalPriorWeight) || 0;
+
+  const entries = Object.keys(rounds || {}).map(k => parseInt(k, 10))
+    .filter(Number.isFinite).sort((a, b) => a - b)
+    .map(k => {
+      const cur = (rounds || {})[String(k)];
+      const c = Number(cur && cur.correct);
+      return (cur && cur.done > 0 && Number.isFinite(c)) ? { round: k, n: cur.done, p: c / cur.done } : null;
+    })
+    .filter(Boolean);
+
+  if (!entries.length) {
+    return { p: base, round: null, nRecent: 0, pRecent: null,
+             nPast: 0, pPast: null, pPastShrunk: base, p0: base, hasData: false };
+  }
+
+  const recent = entries[entries.length - 1];          // 昇順なので最後が直近周
+  const past = entries.slice(0, -1);                   // 直近周は除く
+  const nPast = past.reduce((s, e) => s + e.n, 0);
+  const pPast = nPast > 0 ? past.reduce((s, e) => s + e.n * e.p, 0) / nPast : null;
+  const pPastShrunk = nPast > 0 ? (nPast * pPast + m0 * base) / (nPast + m0) : base;
+  const p = (recent.n * recent.p + m * pPastShrunk) / (recent.n + m);
+
+  return { p, round: recent.round, nRecent: recent.n, pRecent: recent.p,
+           nPast, pPast, pPastShrunk, p0: base, hasData: true };
+}
+
+// 全科目・全周をならした正答率 p0。縮小推定の最終的な寄せ先。
+// 「全体的に正答率が高い人／低い人」の個人差をここで吸収する。
+// 正答数がどこにも入っていなければ中立値。
+function globalQbAccuracy(qb) {
+  let solved = 0, correct = 0;
+  Object.values(qb || {}).forEach(rounds => {
+    Object.values(rounds || {}).forEach(r => {
+      const c = Number(r && r.correct);
+      if (!r || !(r.done > 0) || !Number.isFinite(c)) return;
+      solved += r.done; correct += c;
+    });
+  });
+  return solved > 0 ? correct / solved : PLANNING_CONFIG.accuracy.neutral;
 }
 
 function buildRoundGainByGap(qbProgress, reviewStats) {
@@ -7453,11 +7483,11 @@ const PLANNING_CONFIG = {
 
   // ---------- 正答率の見積もり ----------
   accuracy: {
-    // 直近周の正答率を累積へ引き寄せる強さ（事前標本数）。
-    // p = (n直近·p直近 + m·p累積) / (n直近 + m)
-    // 直近周の解答数が少ないうちは累積に寄り、増えるほど直近周の値になる。
+    // 直近周を「過去の周」へ引き寄せる強さ（事前標本数 m）。
     priorWeight: 10,
-    // 正答数がどこにも入っていないときの中立値（0〜1）。
+    // 過去の周を「全科目の平均 p0」へ引き寄せる強さ（事前標本数 m0）。
+    globalPriorWeight: 10,
+    // 正答率がどこにも無いときの中立値（0〜1）。p0 の既定値でもある。
     neutral: 0.5
   },
 

@@ -4,8 +4,11 @@
 --
 -- 方針:
 --  - 追加のみ。既存の列・テーブル・データには一切触れません
+--    （既存テーブルへの操作は study_plans への ADD COLUMN / ADD CONSTRAINT /
+--      CREATE INDEX のみ。UPDATE・DELETE・型変更・既存列の DROP はありません）
 --  - 追加する列はすべて NULL 可。未入力なら JS 側が既定値へ落ちます
 --  - 適用前でもアプリは動きます（mock_exams が無ければ模試は空として扱う）
+--  - 巻き戻しは末尾の「ロールバック」節にまとめてあります
 --
 -- ここに入れないもの:
 --  - 目標想起率 R* / 余裕日数 … 全体設定なので localStorage
@@ -74,11 +77,18 @@ COMMENT ON COLUMN mock_exams.subject_id IS
 COMMENT ON COLUMN mock_exams.correct_questions IS
   'Stored as a count, not a rate, so the question count can weight the shrinkage estimate.';
 
--- 科目ごとに時系列で引く（「この周を終えた後の模試」を探す用）
+-- ユーザー × 日付（「この周を終えた後に受けた模試」を時系列で引く）
+CREATE INDEX IF NOT EXISTS idx_mock_exams_user_date
+  ON mock_exams (user_id, taken_on);
+-- ユーザー × 科目 × 日付（科目を絞って同じことをする）
 CREATE INDEX IF NOT EXISTS idx_mock_exams_user_subject_date
   ON mock_exams (user_id, subject_id, taken_on);
 
--- 既存テーブルと同じ RLS パターン（本人のみ全操作可）
+-- RLS。既存の study_logs / exam_countdowns と同じパターンに揃えています。
+-- FOR ALL は SELECT / INSERT / UPDATE / DELETE の4つすべてを対象にします
+-- （USING が SELECT・UPDATE・DELETE の可視性を、WITH CHECK が INSERT・UPDATE の
+--   書き込み内容を縛るので、4操作とも user_id = auth.uid() に閉じます）。
+-- FORCE はテーブル所有者にも RLS を効かせるためで、既存3テーブルと同じ扱いです。
 ALTER TABLE mock_exams ENABLE ROW LEVEL SECURITY;
 ALTER TABLE mock_exams FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "own mock_exams" ON mock_exams;
@@ -105,6 +115,7 @@ CREATE TABLE IF NOT EXISTS qb_question_records (
   is_correct   BOOLEAN NOT NULL,
   confidence   TEXT,                    -- 'high' | 'mid' | 'low'。NULL = 未入力
   error_type   TEXT,                    -- 'unknown'(知らない) | 'confuse'(混同) | 'misread'(読み違い)
+  recorded_on  DATE,                    -- その問題を解いた日。NULL = 未入力
   created_at   TIMESTAMPTZ DEFAULT now(),
   updated_at   TIMESTAMPTZ DEFAULT now(),
   CONSTRAINT qb_question_records_round_sane CHECK (round > 0),
@@ -125,13 +136,18 @@ COMMENT ON COLUMN qb_question_records.confidence IS
   'How sure the user was. high + is_correct=false is the case worth re-testing (day 1 and day 7).';
 COMMENT ON COLUMN qb_question_records.error_type IS
   'Why it was missed. confuse groups with other confused questions in the same subject.';
+COMMENT ON COLUMN qb_question_records.recorded_on IS
+  'Date the question was answered. Drives the day-1 / day-7 re-test schedule. NULL = not recorded.';
 
+-- ユーザー × 日付（高確信誤答の再テストを「解いた翌日・7日後」で引く）
+CREATE INDEX IF NOT EXISTS idx_qb_question_records_user_date
+  ON qb_question_records (user_id, recorded_on);
 -- 「その教材・その周の誤答と自信なし」を引く（2周目の範囲を出す用）
 CREATE INDEX IF NOT EXISTS idx_qb_question_records_scope
   ON qb_question_records (user_id, subject_id, round);
--- 高確信誤答の再テスト対象を引く用
-CREATE INDEX IF NOT EXISTS idx_qb_question_records_retest
-  ON qb_question_records (user_id, is_correct, confidence)
+-- 誤答だけを引く用（再テスト対象の絞り込み）
+CREATE INDEX IF NOT EXISTS idx_qb_question_records_wrong
+  ON qb_question_records (user_id, subject_id, confidence)
   WHERE is_correct = FALSE;
 
 ALTER TABLE qb_question_records ENABLE ROW LEVEL SECURITY;
@@ -143,8 +159,11 @@ CREATE POLICY "own qb_question_records" ON qb_question_records
   WITH CHECK (user_id = auth.uid());
 
 
--- ---------- 確認 ----------
--- 追加された列・テーブルを確認する
+-- ==================================================
+-- 確認クエリ（適用後にそのまま実行してください）
+-- ==================================================
+
+-- (1) 追加された列・テーブルがあること
 SELECT 'study_plans.exam_countdown_id' AS item,
        EXISTS (SELECT 1 FROM information_schema.columns
                WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id') AS ok
@@ -154,3 +173,88 @@ SELECT 'mock_exams',
 UNION ALL
 SELECT 'qb_question_records',
        EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'qb_question_records');
+
+-- (2) 追加した列が NULL 可であること（既存行に影響が出ていないこと）
+SELECT column_name, is_nullable, column_default
+FROM information_schema.columns
+WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id';
+
+-- (3) 外部キーが ON DELETE SET NULL であること
+--     delete_rule が 'SET NULL' と出れば正しい
+SELECT tc.constraint_name, rc.delete_rule, rc.update_rule
+FROM information_schema.table_constraints tc
+JOIN information_schema.referential_constraints rc
+  ON rc.constraint_name = tc.constraint_name
+WHERE tc.constraint_name = 'study_plans_exam_countdown_fk';
+
+-- (4) RLS が有効かつ FORCE されていること（rls_enabled / rls_forced が true）
+SELECT relname AS table_name, relrowsecurity AS rls_enabled, relforcerowsecurity AS rls_forced
+FROM pg_class
+WHERE relnamespace = 'public'::regnamespace
+  AND relname IN ('mock_exams','qb_question_records')
+ORDER BY relname;
+
+-- (5) ポリシーが4操作すべてを user_id = auth.uid() に閉じていること
+--     cmd = 'ALL' は SELECT / INSERT / UPDATE / DELETE すべてを含みます。
+--     qual（USING）と with_check の両方に user_id = auth.uid() が出ることを確認してください。
+SELECT tablename, policyname, cmd, roles, qual, with_check
+FROM pg_policies
+WHERE schemaname = 'public'
+  AND tablename IN ('mock_exams','qb_question_records')
+ORDER BY tablename;
+
+-- (6) user_id と日付のインデックスがあること
+SELECT tablename, indexname, indexdef
+FROM pg_indexes
+WHERE schemaname = 'public'
+  AND tablename IN ('mock_exams','qb_question_records','study_plans')
+  AND indexname LIKE 'idx_%'
+ORDER BY tablename, indexname;
+
+-- (7) 既存データが1行も変わっていないこと（件数が適用前と同じであること）
+SELECT 'study_plans' AS t, count(*) AS rows FROM study_plans
+UNION ALL SELECT 'study_logs', count(*) FROM study_logs
+UNION ALL SELECT 'plan_tasks', count(*) FROM plan_tasks
+UNION ALL SELECT 'exam_countdowns', count(*) FROM exam_countdowns;
+
+-- (8) 追加した列が既存行で NULL のままであること（0 と出れば正しい）
+SELECT count(*) AS plans_with_exam_ref
+FROM study_plans WHERE exam_countdown_id IS NOT NULL;
+
+
+-- ==================================================
+-- ロールバック
+--   巻き戻すときだけ、下のブロックのコメントを外して実行してください。
+--   mock_exams / qb_question_records は DROP するとデータごと消えます。
+--   ①の列は追加しただけなので、落としても既存データには影響しません。
+-- ==================================================
+/*
+-- ③ 問題単位の記録を取り消す
+DROP POLICY IF EXISTS "own qb_question_records" ON qb_question_records;
+DROP INDEX IF EXISTS idx_qb_question_records_wrong;
+DROP INDEX IF EXISTS idx_qb_question_records_scope;
+DROP INDEX IF EXISTS idx_qb_question_records_user_date;
+DROP TABLE IF EXISTS qb_question_records;
+
+-- ② 模試を取り消す
+DROP POLICY IF EXISTS "own mock_exams" ON mock_exams;
+DROP INDEX IF EXISTS idx_mock_exams_user_subject_date;
+DROP INDEX IF EXISTS idx_mock_exams_user_date;
+DROP TABLE IF EXISTS mock_exams;
+
+-- ① プランの試験日参照を取り消す
+DROP INDEX IF EXISTS idx_study_plans_exam;
+ALTER TABLE study_plans DROP CONSTRAINT IF EXISTS study_plans_exam_countdown_fk;
+ALTER TABLE study_plans DROP COLUMN IF EXISTS exam_countdown_id;
+
+-- 取り消せたことの確認（3件とも false になる）
+SELECT 'study_plans.exam_countdown_id' AS item,
+       EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id') AS still_there
+UNION ALL
+SELECT 'mock_exams',
+       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'mock_exams')
+UNION ALL
+SELECT 'qb_question_records',
+       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'qb_question_records');
+*/

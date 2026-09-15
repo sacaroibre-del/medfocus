@@ -1022,39 +1022,69 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   eq('対応づけの無い科目は中立のまま', W.cbtExamWeightOf('anki'), 1);
 })();
 
-// ---------- 正答率 p（直近周を累積へ引き寄せる） ----------
+// ---------- 正答率 p（2段階の縮小推定） ----------
+//   p過去' = (n過去·p過去 + m0·p0) / (n過去 + m0)    n過去=0 なら p0
+//   p      = (n直近·p直近 + m·p過去') / (n直近 + m)
 (function blendedAccuracy() {
-  const m = 10;   // PLANNING_CONFIG.accuracy.priorWeight
-  // 1周目だけ: 寄せる先が無いので素通り
-  const only1 = W.blendedRoundAccuracy({ '1': { total: 200, done: 200, correct: 120 } });
-  ok('1周目だけなら直近周の値そのもの', Math.abs(only1.p - 0.6) < 1e-9, only1);
-  eq('直近周の番号', only1.round, 1);
-  eq('直近周の解答数', only1.nRecent, 200);
+  const m = 10, m0 = 10;   // PLANNING_CONFIG.accuracy.priorWeight / globalPriorWeight
+  const NEUTRAL = 0.5;     // PLANNING_CONFIG.accuracy.neutral
 
-  // 2周目を10問だけ解いた直後: 累積に強く寄る
-  const early = W.blendedRoundAccuracy({
+  // --- 少ない解答数をそのまま信じない（ご指定のケース①） ---
+  const tiny = W.blendedRoundAccuracy({ '1': { total: 100, done: 5, correct: 5 } }, NEUTRAL);
+  ok('1周目 5/5 でも p は 1.0 にならない', tiny.p < 1, tiny.p);
+  eq('寄せる先が無いので p過去\' は p0', tiny.pPastShrunk, NEUTRAL);
+  ok('p = (5×1.0 + 10×0.5)/15', Math.abs(tiny.p - (5 * 1 + m * NEUTRAL) / (5 + m)) < 1e-9, tiny.p);
+
+  // --- 直近周が二重に数えられていない（ご指定のケース②） ---
+  const two = W.blendedRoundAccuracy({
     '1': { total: 200, done: 200, correct: 120 },   // 60%
     '2': { total: 200, done: 10,  correct: 10 }     // 100%（10問だけ）
-  });
-  const pCum = (120 + 10) / (200 + 10);
-  eq('直近周は2周目', early.round, 2);
-  ok('累積は全周から出す', Math.abs(early.pCumulative - pCum) < 1e-9, early.pCumulative);
-  ok('p は (10×1.0 + 10×累積)/20', Math.abs(early.p - (10 * 1 + m * pCum) / (10 + m)) < 1e-9, early.p);
-  ok('10問だけの100%をそのまま信じない', early.p < 0.85, early.p);
+  }, NEUTRAL);
+  eq('直近周は2周目', two.round, 2);
+  eq('直近周の解答数', two.nRecent, 10);
+  eq('p過去 は1周目だけ（直近周を含まない）', two.nPast, 200);
+  ok('p過去 = 120/200 = 0.6 ちょうど', Math.abs(two.pPast - 0.6) < 1e-9, two.pPast);
+  // 二重に数えていれば p過去 は (120+10)/210 = 0.619… になるはず
+  ok('直近周を混ぜた 130/210 にはなっていない', Math.abs(two.pPast - 130 / 210) > 1e-6, two.pPast);
+  const expectPast = (200 * 0.6 + m0 * NEUTRAL) / (200 + m0);
+  ok('p過去\' は p0 へ少しだけ寄る', Math.abs(two.pPastShrunk - expectPast) < 1e-9, two.pPastShrunk);
+  ok('p = (10×1.0 + 10×p過去\')/20',
+     Math.abs(two.p - (10 * 1 + m * expectPast) / (10 + m)) < 1e-9, two.p);
+  ok('10問だけの100%をそのまま信じない', two.p < 0.85, two.p);
 
-  // 2周目が進むほど直近周の値へ寄る
+  // --- 解くほど直近周の値へ寄る ---
   const late = W.blendedRoundAccuracy({
     '1': { total: 200, done: 200, correct: 120 },
     '2': { total: 200, done: 200, correct: 200 }
-  });
-  ok('解くほど直近周に寄る', late.p > early.p, { early: early.p, late: late.p });
-  ok('それでも累積のぶんだけ1.0より下', late.p < 1, late.p);
+  }, NEUTRAL);
+  ok('解くほど直近周に寄る', late.p > two.p, { early: two.p, late: late.p });
+  ok('それでも過去のぶんだけ1.0より下', late.p < 1, late.p);
 
-  // 正答数が未入力
-  const none = W.blendedRoundAccuracy({ '1': { total: 200, done: 50 } });
-  eq('正答数が無ければ p は null', none.p, null);
-  eq('データ無しの印', none.hasData, false);
-  eq('空でも落ちない', W.blendedRoundAccuracy(null).p, null);
+  // --- p0 が効く（全体的に正答率が高い人は寄せ先も高い） ---
+  const lowP0 = W.blendedRoundAccuracy({ '1': { total: 100, done: 5, correct: 5 } }, 0.4);
+  const highP0 = W.blendedRoundAccuracy({ '1': { total: 100, done: 5, correct: 5 } }, 0.9);
+  ok('p0 が高いほど p も高い', highP0.p > lowP0.p, { low: lowP0.p, high: highP0.p });
+
+  // --- 正答数が未入力なら p0、ただし表示用の印は残る ---
+  const none = W.blendedRoundAccuracy({ '1': { total: 200, done: 50 } }, 0.62);
+  eq('正答数が無ければ p は p0', none.p, 0.62);
+  eq('「正答率未入力」を出せるよう印は残す', none.hasData, false);
+  eq('空でも落ちない', W.blendedRoundAccuracy(null, 0.62).p, 0.62);
+  eq('p0 未指定なら中立値', W.blendedRoundAccuracy(null).p, NEUTRAL);
+})();
+
+// ---------- p0（全科目・全周をならした正答率） ----------
+(function globalAccuracy() {
+  const qb = {
+    '2C': { '1': { total: 100, done: 100, correct: 60 }, '2': { total: 100, done: 50, correct: 40 } },
+    '2J': { '1': { total: 100, done: 100, correct: 80 } },
+    '2Q': { '1': { total: 100, done: 20 } }                      // 正答数未入力は数えない
+  };
+  ok('全科目・全周の合計から出す',
+     Math.abs(W.globalQbAccuracy(qb) - (60 + 40 + 80) / (100 + 50 + 100)) < 1e-9,
+     W.globalQbAccuracy(qb));
+  eq('データが無ければ中立値', W.globalQbAccuracy({}), 0.5);
+  eq('空でも落ちない', W.globalQbAccuracy(null), 0.5);
 })();
 
 // ---------- 科目ごとの1問あたりの分 ----------
