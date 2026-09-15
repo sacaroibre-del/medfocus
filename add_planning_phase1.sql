@@ -8,7 +8,11 @@
 --      CREATE INDEX のみ。UPDATE・DELETE・型変更・既存列の DROP はありません）
 --  - 追加する列はすべて NULL 可。未入力なら JS 側が既定値へ落ちます
 --  - 適用前でもアプリは動きます（mock_exams が無ければ模試は空として扱う）
---  - 巻き戻しは末尾の「ロールバック」節にまとめてあります
+--  - このファイルは DDL だけです。確認は add_planning_phase1_verify.sql を
+--    「このファイルを実行し終えたあと、別に」実行してください。
+--    同じバッチに混ぜると、まだ存在しない列を参照する確認クエリが実行前の
+--    解析ではじかれ、DDL ごとロールバックされます
+--  - 巻き戻しは add_planning_phase1_rollback.sql
 --
 -- ここに入れないもの:
 --  - 目標想起率 R* / 余裕日数 … 全体設定なので localStorage
@@ -41,7 +45,7 @@ COMMENT ON COLUMN study_plans.exam_countdown_id IS
   'Exam this plan is aimed at (exam_countdowns.id). NULL = no exam date; scoring falls back to defaults.';
 
 CREATE INDEX IF NOT EXISTS idx_study_plans_exam
-  ON study_plans (exam_countdown_id) WHERE exam_countdown_id IS NOT NULL;
+  ON study_plans (exam_countdown_id);
 
 
 -- ---------- ② 模試の記録 ----------
@@ -157,104 +161,3 @@ CREATE POLICY "own qb_question_records" ON qb_question_records
   FOR ALL TO authenticated
   USING (user_id = auth.uid())
   WITH CHECK (user_id = auth.uid());
-
-
--- ==================================================
--- 確認クエリ（適用後にそのまま実行してください）
--- ==================================================
-
--- (1) 追加された列・テーブルがあること
-SELECT 'study_plans.exam_countdown_id' AS item,
-       EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id') AS ok
-UNION ALL
-SELECT 'mock_exams',
-       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'mock_exams')
-UNION ALL
-SELECT 'qb_question_records',
-       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'qb_question_records');
-
--- (2) 追加した列が NULL 可であること（既存行に影響が出ていないこと）
-SELECT column_name, is_nullable, column_default
-FROM information_schema.columns
-WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id';
-
--- (3) 外部キーが ON DELETE SET NULL であること
---     delete_rule が 'SET NULL' と出れば正しい
-SELECT tc.constraint_name, rc.delete_rule, rc.update_rule
-FROM information_schema.table_constraints tc
-JOIN information_schema.referential_constraints rc
-  ON rc.constraint_name = tc.constraint_name
-WHERE tc.constraint_name = 'study_plans_exam_countdown_fk';
-
--- (4) RLS が有効かつ FORCE されていること（rls_enabled / rls_forced が true）
-SELECT relname AS table_name, relrowsecurity AS rls_enabled, relforcerowsecurity AS rls_forced
-FROM pg_class
-WHERE relnamespace = 'public'::regnamespace
-  AND relname IN ('mock_exams','qb_question_records')
-ORDER BY relname;
-
--- (5) ポリシーが4操作すべてを user_id = auth.uid() に閉じていること
---     cmd = 'ALL' は SELECT / INSERT / UPDATE / DELETE すべてを含みます。
---     qual（USING）と with_check の両方に user_id = auth.uid() が出ることを確認してください。
-SELECT tablename, policyname, cmd, roles, qual, with_check
-FROM pg_policies
-WHERE schemaname = 'public'
-  AND tablename IN ('mock_exams','qb_question_records')
-ORDER BY tablename;
-
--- (6) user_id と日付のインデックスがあること
-SELECT tablename, indexname, indexdef
-FROM pg_indexes
-WHERE schemaname = 'public'
-  AND tablename IN ('mock_exams','qb_question_records','study_plans')
-  AND indexname LIKE 'idx_%'
-ORDER BY tablename, indexname;
-
--- (7) 既存データが1行も変わっていないこと（件数が適用前と同じであること）
-SELECT 'study_plans' AS t, count(*) AS rows FROM study_plans
-UNION ALL SELECT 'study_logs', count(*) FROM study_logs
-UNION ALL SELECT 'plan_tasks', count(*) FROM plan_tasks
-UNION ALL SELECT 'exam_countdowns', count(*) FROM exam_countdowns;
-
--- (8) 追加した列が既存行で NULL のままであること（0 と出れば正しい）
-SELECT count(*) AS plans_with_exam_ref
-FROM study_plans WHERE exam_countdown_id IS NOT NULL;
-
-
--- ==================================================
--- ロールバック
---   巻き戻すときだけ、下のブロックのコメントを外して実行してください。
---   mock_exams / qb_question_records は DROP するとデータごと消えます。
---   ①の列は追加しただけなので、落としても既存データには影響しません。
--- ==================================================
-/*
--- ③ 問題単位の記録を取り消す
-DROP POLICY IF EXISTS "own qb_question_records" ON qb_question_records;
-DROP INDEX IF EXISTS idx_qb_question_records_wrong;
-DROP INDEX IF EXISTS idx_qb_question_records_scope;
-DROP INDEX IF EXISTS idx_qb_question_records_user_date;
-DROP TABLE IF EXISTS qb_question_records;
-
--- ② 模試を取り消す
-DROP POLICY IF EXISTS "own mock_exams" ON mock_exams;
-DROP INDEX IF EXISTS idx_mock_exams_user_subject_date;
-DROP INDEX IF EXISTS idx_mock_exams_user_date;
-DROP TABLE IF EXISTS mock_exams;
-
--- ① プランの試験日参照を取り消す
-DROP INDEX IF EXISTS idx_study_plans_exam;
-ALTER TABLE study_plans DROP CONSTRAINT IF EXISTS study_plans_exam_countdown_fk;
-ALTER TABLE study_plans DROP COLUMN IF EXISTS exam_countdown_id;
-
--- 取り消せたことの確認（3件とも false になる）
-SELECT 'study_plans.exam_countdown_id' AS item,
-       EXISTS (SELECT 1 FROM information_schema.columns
-               WHERE table_name = 'study_plans' AND column_name = 'exam_countdown_id') AS still_there
-UNION ALL
-SELECT 'mock_exams',
-       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'mock_exams')
-UNION ALL
-SELECT 'qb_question_records',
-       EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'qb_question_records');
-*/
