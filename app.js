@@ -12697,6 +12697,60 @@ async function createPlan(input, schedule) {
   return plan;
 }
 
+// 科目ぶんまとめて作る。createPlan を科目の数だけ回すと、往復もトーストも
+// 科目数ぶん出てしまうので、プラン行とノルマ行をそれぞれ1回の insert にまとめる。
+// items は [{ input, schedule }]。schedule.ok でないものは呼ぶ前に外しておく。
+function bulkPlanKeyOf(p) {
+  const unit = p.unit || 'q';
+  return `${p.subject_id}|${unit}|${unit === 'video' ? (p.video_edition || '') : (p.target_round || 1)}`;
+}
+
+async function createPlansBulk(items) {
+  const list = (items || []).filter(it => it && it.schedule && it.schedule.ok);
+  if (!list.length) return [];
+  const rows = list.map(it => Object.assign(planRowFromInput(it.input, it.schedule, it.schedule.startKey), { status: 'active' }));
+
+  if (!hasDB()) {
+    const plans = rows.map(r => Object.assign({ id: generateUID(), created_at: new Date().toISOString() }, r));
+    const tasks = [];
+    plans.forEach((p, i) => scheduleToTaskRows(p, list[i].schedule, 0)
+      .forEach(t => tasks.push(Object.assign({ id: generateUID() }, t))));
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).concat(plans));
+    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).concat(tasks));
+    showToast(IC.check + ` ${plans.length}件のプランを作成しました`);
+    return plans;
+  }
+
+  // 未作成の任意列があれば落として入れ直す（createPlan の writePlanRow と同じ扱い）
+  const insertPlans = () => supabase.from('study_plans')
+    .insert(rows.map(r => Object.assign({ user_id: session.user.id }, stripMissingPlanColumns(r)))).select();
+  let res = await insertPlans();
+  for (let i = 0; i < 2 && res.error && notePlanColumnMissing(res.error); i++) res = await insertPlans();
+  if (res.error) {
+    console.error('createPlansBulk error:', res.error);
+    showToast(IC.x + ' 作成に失敗しました: ' + res.error.message);
+    return [];
+  }
+  const plans = res.data || [];
+
+  // 返ってきた順に頼らず、科目・単位・周回（版）で逆算結果を引き当てる
+  const byKey = {};
+  list.forEach((it, i) => { byKey[bulkPlanKeyOf(rows[i])] = it.schedule; });
+  const taskRows = [];
+  plans.forEach(p => {
+    const sched = byKey[bulkPlanKeyOf(p)];
+    if (sched) scheduleToTaskRows(p, sched, 0).forEach(t => taskRows.push(Object.assign({ user_id: session.user.id }, t)));
+  });
+  // プラン数 × 稼働日数ぶんの行になるので、PostgREST の上限に当たらないよう分けて送る
+  for (let i = 0; i < taskRows.length; i += 500) {
+    const { error } = await supabase.from('plan_tasks').insert(taskRows.slice(i, i + 500));
+    if (error) { console.error('createPlansBulk tasks error:', error); showToast(IC.x + ' ノルマの保存に失敗しました: ' + error.message); break; }
+  }
+  invalidateCache('study_plans'); invalidateCache('plan_tasks');
+  showToast(IC.check + ` ${plans.length}件のプランを作成しました`);
+  return plans;
+}
+
 // 登録済みプランの編集。ノルマは呼び出し側で replaceFutureTasks して置き換える。
 // start_date はフォームの値をそのまま残す（schedule.startKey は今日へ寄せられており、
 // それを保存すると開始日より前の学習ログが消化に数えられなくなるため）。
@@ -13309,6 +13363,225 @@ function openPlanWizard(onDone, existing) {
   };
 }
 
+// 科目ごとにウィザードを開き直すのは現実的でないので、締切・曜日・周回は共通、
+// 科目ごとには「入れるかどうか」と「総量」だけ選ばせる。締切を揃えても、
+// どれから手を付けるかは優先順位の順番詰めが決めるので困らない。
+const BULK_PLAN_LIMIT = 40;   // 一度に作る上限（ノルマ行が増えすぎるのを防ぐ）
+
+function openBulkPlanWizard(onDone, existingPlans) {
+  const todayKey = todayPlanKey();
+  const dueDefault = defaultPlanDue(examCountdowns, todayKey);
+  // 同じ科目・単位・周回（版）の進行中プランは二重に作らない。
+  // 版の列がまだ無い環境では既存の版が空で入るので、そちらも一致とみなす。
+  const taken = new Set();
+  (existingPlans || []).filter(p => p.status === 'active').forEach(p => {
+    taken.add(bulkPlanKeyOf(p));
+    if ((p.unit || 'q') === 'video') taken.add(`${p.subject_id}|video|`);
+  });
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in';
+  modal.style.zIndex = '2000';
+  const dowBoxes = CAL_DOW_LABELS.map((d, i) =>
+    `<label class="plan-dow"><input type="checkbox" data-dow="${i}" checked /> ${d}</label>`).join('');
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up" style="max-width:560px;">
+      <div class="modal-header">
+        <div class="modal-title">逆算プランをまとめて作る</div>
+        <button class="modal-close" data-bw-close>✕</button>
+      </div>
+      <div class="modal-body" id="bw-step1">
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>やること</label>
+          <div class="cal-seg" style="display:inline-flex">
+            ${PLAN_UNITS.map((u, i) => `<button data-bw-unit="${u.id}" class="${i === 0 ? 'active' : ''}">${u.label}</button>`).join('')}
+          </div>
+        </div>
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1;" id="bw-round-field">
+            <label>周回</label>
+            <select id="bw-round" style="width:100%">${[1,2,3,4,5].map(n => `<option value="${n}">${n}周目</option>`).join('')}</select>
+          </div>
+          <div class="settings-field" style="flex:1; display:none;" id="bw-edition-field">
+            <label>版</label>
+            <select id="bw-edition" style="width:100%">
+              <option value="auto">自動（科目ごとの主軸）</option>
+              ${VIDEO_EDITION_IDS.map(e => `<option value="${e}">${videoEditionLabel(e)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="settings-field" style="flex:1;"><label>開始日</label><input type="date" id="bw-start" value="${todayKey}" style="margin-bottom:0" /></div>
+          <div class="settings-field" style="flex:1;"><label>締切日</label><input type="date" id="bw-due" value="${dueDefault.key}" style="margin-bottom:0" /></div>
+        </div>
+        <div class="plan-hint" style="margin:-6px 0 12px;">${dueDefault.title
+          ? `締切は「${esc(dueDefault.title)}」の日を全科目に入れてあります。`
+          : '締切の初期値は30日後です。設定に試験日を登録しておくと、そちらが入ります。'}
+          締切が同じでも、どれから手を付けるかは学習状況（残り時間・正答率・放置日数）の優先順位が決めます。</div>
+        <div class="settings-field" style="margin-bottom:12px;">
+          <label>勉強する曜日</label>
+          <div class="plan-dow-row">${dowBoxes}</div>
+        </div>
+        <label style="display:flex; align-items:center; gap:8px; font-size:var(--font-size-sm); margin-bottom:12px; cursor:pointer;">
+          <input type="checkbox" id="bw-auto" checked style="width:auto; margin:0" /> 遅れたら残りを自動で配り直す
+        </label>
+        <div class="plan-bulk-head">
+          <strong>科目</strong>
+          <span id="bw-count" class="plan-bulk-count"></span>
+          <span class="cal-spacer"></span>
+          <button class="btn-log-action" data-bw-all>全選択</button>
+          <button class="btn-log-action" data-bw-none>全解除</button>
+        </div>
+        <div class="plan-bulk-list" id="bw-list"></div>
+        <div class="plan-hint" style="margin-bottom:12px;">総量は教材進捗の「残り」を入れてあります。手で直せます。進捗の登録が無い科目は自分で入れてください。</div>
+        <button class="btn btn-primary" id="bw-next" style="width:100%; justify-content:center;">まとめて逆算する →</button>
+      </div>
+      <div class="modal-body" id="bw-step2" style="display:none">
+        <div id="bw-preview"></div>
+        <div style="display:flex; gap:8px; margin-top:16px;">
+          <button class="btn btn-secondary" id="bw-back" style="flex:1; justify-content:center;">← 戻る</button>
+          <button class="btn btn-primary" id="bw-create" style="flex:2; justify-content:center;">この内容で作成</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const $ = sel => modal.querySelector(sel);
+  const close = () => modal.remove();
+  $('[data-bw-close]').onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  let unit = 'q';
+
+  // いまの設定での科目ごとの初期値。総量は教材進捗の残り、すでに同じプランが
+  // 進行中の科目と、その版が無い科目は選べないようにする。
+  const rowStateOf = (sid) => {
+    const round = Number($('#bw-round').value) || 1;
+    const edPref = $('#bw-edition').value;
+    const edition = unit === 'video' ? (edPref === 'auto' ? resolvedVideoEditionOf(sid) : edPref) : null;
+    if (unit === 'video' && !videoEditionAvailableFor(sid, edition)) {
+      return { sid, edition, disabled: true, note: `${videoEditionLabel(edition)}なし` };
+    }
+    const key = `${sid}|${unit}|${unit === 'video' ? edition : round}`;
+    if (taken.has(key)) return { sid, edition, disabled: true, note: '登録済み' };
+    const sug = planVolumeSuggestion(unit, sid, round, edition);
+    if (!sug) return { sid, edition, volume: null, checked: false, note: '教材進捗なし' };
+    if (sug.remaining <= 0) return { sid, edition, volume: sug.total, checked: false, note: `消化済み（全 ${sug.total}${sug.label}）` };
+    return { sid, edition, volume: sug.remaining, checked: true, note: `残り ${sug.remaining} / 全 ${sug.total}${sug.label}` };
+  };
+
+  const updateCount = () => {
+    const n = [...modal.querySelectorAll('[data-bw-sub]')].filter(c => c.checked).length;
+    $('#bw-count').textContent = `選択 ${n}件`;
+    $('#bw-count').classList.toggle('warn', n > BULK_PLAN_LIMIT);
+  };
+
+  const renderList = () => {
+    const u = planUnitLabel(unit);
+    $('#bw-list').innerHTML = subjectCategories.filter(c => c.id !== 'cat-other').map(cat => {
+      const rows = cat.subjects.map(s => {
+        const st = rowStateOf(s.id);
+        return `<label class="plan-bulk-row${st.disabled ? ' is-off' : ''}">
+          <input type="checkbox" data-bw-sub="${esc(s.id)}" ${st.checked ? 'checked' : ''} ${st.disabled ? 'disabled' : ''} />
+          <span class="plan-bulk-name">${esc(s.name)}</span>
+          <span class="plan-bulk-note">${esc(st.note)}</span>
+          ${st.disabled ? '' : `<input type="number" class="plan-bulk-vol" data-bw-vol="${esc(s.id)}" min="1" step="1"
+            value="${st.volume ?? ''}" placeholder="総量" /><span class="plan-bulk-unit">${u}</span>`}
+        </label>`;
+      }).join('');
+      return `<div class="plan-bulk-group">${esc(cat.name)}</div>${rows}`;
+    }).join('');
+    modal.querySelectorAll('[data-bw-sub]').forEach(c => c.addEventListener('change', updateCount));
+    // 総量を入れたらその科目は作る意思があるとみなす
+    modal.querySelectorAll('[data-bw-vol]').forEach(inp => inp.addEventListener('input', () => {
+      const box = modal.querySelector(`[data-bw-sub="${inp.dataset.bwVol}"]`);
+      if (box && !box.checked && Number(inp.value) > 0) { box.checked = true; updateCount(); }
+    }));
+    updateCount();
+  };
+
+  modal.querySelectorAll('[data-bw-unit]').forEach(b => b.addEventListener('click', () => {
+    unit = b.dataset.bwUnit;
+    modal.querySelectorAll('[data-bw-unit]').forEach(x => x.classList.toggle('active', x === b));
+    $('#bw-round-field').style.display = unit === 'q' ? '' : 'none';
+    $('#bw-edition-field').style.display = unit === 'video' ? '' : 'none';
+    renderList();
+  }));
+  $('#bw-round').onchange = renderList;
+  $('#bw-edition').onchange = renderList;
+  $('[data-bw-all]').onclick = () => {
+    modal.querySelectorAll('[data-bw-sub]:not(:disabled)').forEach(c => { c.checked = true; }); updateCount();
+  };
+  $('[data-bw-none]').onclick = () => {
+    modal.querySelectorAll('[data-bw-sub]').forEach(c => { c.checked = false; }); updateCount();
+  };
+  renderList();
+
+  const readSelection = () => {
+    const round = Number($('#bw-round').value) || 1;
+    const excludeWeekdays = [...modal.querySelectorAll('[data-dow]')].filter(c => !c.checked).map(c => Number(c.dataset.dow));
+    const startDate = $('#bw-start').value, dueDate = $('#bw-due').value;
+    const auto = $('#bw-auto').checked;
+    const picked = [], missing = [];
+    modal.querySelectorAll('[data-bw-sub]').forEach(box => {
+      if (!box.checked) return;
+      const sid = box.dataset.bwSub;
+      const volInput = modal.querySelector(`[data-bw-vol="${sid}"]`);
+      const volume = volInput && volInput.value !== '' ? Number(volInput.value) : null;
+      if (!(volume > 0)) { missing.push(subjectNameOf(sid)); return; }
+      const st = rowStateOf(sid);
+      const edTag = unit === 'video' ? ` ${videoEditionLabel(st.edition)}` : '';
+      picked.push({
+        title: `${subjectNameOf(sid)} ${planUnitName(unit)}${edTag}${unit === 'q' ? ` ${round}周目` : ''}`,
+        unit, subject_id: sid,
+        target_round: unit === 'q' ? round : null,
+        video_edition: unit === 'video' ? st.edition : null,
+        totalVolume: Math.floor(volume), daily_capacity: null,
+        startDate, dueDate, excludeWeekdays, auto_redistribute: auto
+      });
+    });
+    return { picked, missing };
+  };
+
+  let lastItems = null;
+  $('#bw-next').onclick = () => {
+    const { picked, missing } = readSelection();
+    if (missing.length) { showToast(IC.warn + ` 総量が空です: ${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' ほか' : ''}`); return; }
+    if (!picked.length) { showToast(IC.warn + ' 科目を選んでください'); return; }
+    if (picked.length > BULK_PLAN_LIMIT) { showToast(IC.warn + ` 一度に作れるのは${BULK_PLAN_LIMIT}件までです`); return; }
+    lastItems = picked.map(inp => ({ input: inp, schedule: buildPlanSchedule({
+      title: inp.title, startDate: inp.startDate, dueDate: inp.dueDate, totalVolume: inp.totalVolume,
+      unit: inp.unit, excludeWeekdays: inp.excludeWeekdays, todayKey }) }));
+    const ok = lastItems.every(it => it.schedule.ok);
+    $('#bw-preview').innerHTML = ok ? bulkPreviewHTML(lastItems, unit) : planPreviewHTML(lastItems[0].schedule, unit);
+    $('#bw-create').style.display = ok ? '' : 'none';
+    $('#bw-step1').style.display = 'none'; $('#bw-step2').style.display = '';
+  };
+  $('#bw-back').onclick = () => { $('#bw-step2').style.display = 'none'; $('#bw-step1').style.display = ''; };
+  $('#bw-create').onclick = async function () {
+    if (!lastItems || !lastItems.length || !lastItems.every(it => it.schedule.ok)) return;
+    this.disabled = true;
+    const plans = await createPlansBulk(lastItems);
+    this.disabled = false;
+    if (!plans.length) return;
+    _planSyncAt = 0;
+    close();
+    if (onDone) onDone(plans);
+  };
+}
+
+function bulkPreviewHTML(items, unit) {
+  const u = planUnitLabel(unit);
+  const first = items[0].schedule;
+  const due = parseDateKey(first.dueKey);
+  const total = items.reduce((s, it) => s + it.schedule.totalVolume, 0);
+  const rows = items.map(it => {
+    const sc = it.schedule;
+    return `<div class="plan-preview-row"><span>${esc(it.input.title)}</span><span>${sc.totalVolume}${u}
+      <span class="dim">→ 1日 ${Math.round(sc.perDay * 10) / 10}${u}</span></span></div>`;
+  }).join('');
+  return `<div class="plan-preview-summary"><strong>${items.length}件</strong>のプランを作ります・締切 ${due.getMonth() + 1}/${due.getDate()}・稼働 ${first.workingDayCount}日・合計 <strong>${total}${u}</strong>
+      <span>1日あたりはプランを単体で均した場合の値です。実際は優先順位の高いものからその日の目標学習時間を埋めるので、早く終わる科目と後ろにずれる科目が出ます。</span>
+    </div><div class="plan-preview-list">${rows}</div>`;
+}
+
 // 科目の優先度の内訳。順番が実績から自動で決まるので、根拠を出さないと
 // 「なぜこの科目が先なのか」に答えられず、直しようもなくなる。
 // プランを持っている科目だけに絞る（全科目を出しても順番には効かない）。
@@ -13404,6 +13677,7 @@ async function renderPlans() {
         <div class="cal-spacer"></div>
         ${finished.length ? `<button class="btn btn-secondary" data-plan-show-finished style="padding:6px 14px;font-size:var(--font-size-xs)">${
           showFinishedPlans ? '終わったプランを隠す' : `終わったプラン ${finished.length}件`}</button>` : ''}
+        <button class="btn btn-secondary" data-plan-bulk style="padding:6px 14px;font-size:var(--font-size-xs)">＋ まとめて追加</button>
         <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
       </div>
       ${planSequenceNoteHTML(sync)}${subjectPriorityTableHTML(sync)}
@@ -13411,9 +13685,10 @@ async function renderPlans() {
           sync.sequence && sync.sequence.byPlan[p.id])).join('')}</div>`
         : (plans.length
           ? `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">進行中のプランはありません。終わったプランは上のボタンから見られます。</div>`
-          : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。</div>`)}`;
+          : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。科目ぶん一気に並べるなら「＋ まとめて追加」。</div>`)}`;
 
     root.querySelector('[data-plan-new]').onclick = () => openPlanWizard(() => draw(true));
+    root.querySelector('[data-plan-bulk]').onclick = () => openBulkPlanWizard(() => draw(true), sync.plans);
     root.querySelector('[data-plan-show-finished]')?.addEventListener('click', () => {
       showFinishedPlans = !showFinishedPlans; draw(false);
     });

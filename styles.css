@@ -3494,6 +3494,25 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .plan-preview-row:last-child { border-bottom:none; }
 .plan-preview-row.ellipsis { justify-content:center; color:var(--color-text-tertiary); }
 .plan-preview-error { padding:var(--space-md); color:var(--color-accent-pink); font-size:var(--font-size-sm); }
+.plan-preview-row .dim { color:var(--color-text-tertiary); font-weight:400; }
+/* まとめて追加: 科目の一覧 */
+.plan-bulk-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:var(--font-size-sm); font-weight:700; }
+.plan-bulk-count { font-size:var(--font-size-xs); font-weight:400; color:var(--color-text-tertiary); }
+.plan-bulk-count.warn { color:var(--color-accent-pink); }
+.plan-bulk-list { max-height:min(42vh,300px); overflow-y:auto; border:1px solid var(--color-border); border-radius:var(--radius-md); margin-bottom:10px; }
+.plan-bulk-group { position:sticky; top:0; z-index:1; padding:6px 12px; background:var(--color-bg-elevated);
+  font-size:0.6875rem; font-weight:800; letter-spacing:0.04em; color:var(--color-text-tertiary); }
+.plan-bulk-row { display:flex; align-items:center; gap:8px; padding:6px 12px; border-bottom:1px solid var(--color-border);
+  font-size:var(--font-size-sm); cursor:pointer; }
+.plan-bulk-row:last-child { border-bottom:none; }
+.plan-bulk-row.is-off { opacity:0.5; cursor:default; }
+.plan-bulk-row input[type="checkbox"] { width:auto; margin:0; flex:none; }
+.plan-bulk-name { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.plan-bulk-note { font-size:var(--font-size-xs); color:var(--color-text-tertiary); white-space:nowrap; }
+.plan-bulk-row .plan-bulk-vol { width:78px; flex:none; margin:0; padding:4px 6px; text-align:right;
+  font-size:var(--font-size-xs); -moz-appearance:textfield; }
+.plan-bulk-vol::-webkit-outer-spin-button, .plan-bulk-vol::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
+.plan-bulk-unit { width:14px; flex:none; font-size:var(--font-size-xs); color:var(--color-text-tertiary); }
 .cal-item-check { width:22px; height:22px; border-radius:var(--radius-full); border:1px solid var(--color-border); display:grid; place-items:center; font-size:0.75rem; flex:none; align-self:center; color:var(--color-accent-green); }
 .cal-item-check.on { background:rgba(16,185,129,0.15); border-color:var(--color-accent-green); }
 
