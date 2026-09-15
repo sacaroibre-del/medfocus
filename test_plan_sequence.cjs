@@ -1557,6 +1557,91 @@ const scope = (o) => W.roundScope(Object.assign({
   eq('元は変えない', src['2Q']['1'].wrong_only, undefined);
 })();
 
+// ---------- 絞り込んだ範囲が予定の量に効くこと ----------
+(function scopeReachesTheSchedule() {
+  const mkState = (id, sid, round, vol) => ({
+    plan: plan({ id, subject_id: sid, unit: 'q', target_round: round, total_volume: vol,
+                 start_date: '2026-09-01', due_date: '2026-12-31' }),
+    mine: round === 1
+      ? [{ id: id + '-t', due_date: '2026-09-06', target_amount: vol, done_amount: vol, completed: true }]
+      : [],
+    canAuto: round !== 1
+  });
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 600;
+
+  // 1周目を 200問中 190問正解（95%）→ 誤答のみが既定でオン
+  const qb = { '2Q': { '1': { total: 200, done: 200, correct: 190 } } };
+  const est = W.buildPlanSequence(
+    [mkState('s1', '2Q', 1, 200), mkState('s2', '2Q', 2, 200)],
+    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, records: [] });
+  const sc = est.byPlan['s2'].scope;
+  eq('記録が無いので推定', sc.mode, 'estimated');
+  eq('推定フラグ', sc.estimated, true);
+  ok('200問まるごとではない', sc.count < 200, sc.count);
+  const placed = est.byPlan['s2'].items.reduce((a, i) => a + i.targetAmount, 0);
+  eq('予定に置かれた量も絞られたぶん', placed, sc.count);
+
+  // 記録を入れると、その件数そのものになる
+  const records = [
+    { subject_id: '2Q', round: 1, question_no: 3,  is_correct: false, confidence: 'high' },
+    { subject_id: '2Q', round: 1, question_no: 7,  is_correct: false, confidence: 'low'  },
+    { subject_id: '2Q', round: 1, question_no: 12, is_correct: true,  confidence: 'low'  },
+    { subject_id: '2Q', round: 1, question_no: 40, is_correct: true,  confidence: 'high' }
+  ];
+  const rec = W.buildPlanSequence(
+    [mkState('r1', '2Q', 1, 200), mkState('r2', '2Q', 2, 200)],
+    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, records });
+  const rs = rec.byPlan['r2'].scope;
+  eq('記録から出した', rs.mode, 'recorded');
+  eq('推定ではない', rs.estimated, false);
+  eq('誤答2問 + 自信なしの正答1問', rs.count, 3);
+  eq('番号も持つ', rs.questions, [3, 7, 12]);
+  eq('予定の量もその3問', rec.byPlan['r2'].items.reduce((a, i) => a + i.targetAmount, 0), 3);
+
+  // 正答率が低い教材は絞らない（全問やる）
+  const weakQb = { '2J': { '1': { total: 200, done: 200, correct: 100 } } };
+  const weak = W.buildPlanSequence(
+    [mkState('w1', '2J', 1, 200), mkState('w2', '2J', 2, 200)],
+    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb: weakQb, records: [] });
+  eq('誤答のみはオフなので範囲は出ない', weak.byPlan['w2'].scope, null);
+  eq('全問ぶん置かれる', weak.byPlan['w2'].items.reduce((a, i) => a + i.targetAmount, 0), 200);
+
+  // 1周目は絞らない（絞る根拠になる前の周が無い）
+  eq('1周目に範囲は出ない', est.byPlan['s1'], undefined);
+  W.planGoalMinutesOf = goalWas;
+})();
+
+// 全問正解でもプランが消えないこと（推定は0問に丸めない）
+(function perfectRoundStillLeavesSomething() {
+  const r = W.roundScope({ total: 30, minPerQuestion: 2, prevRound: 1, p: 1.0, records: [], wrongOnly: true });
+  eq('0問にはしない', r.count, 1);
+  eq('推定だと分かる', r.estimated, true);
+})();
+
+// ---------- 範囲の説明（推定だと分かること） ----------
+(function scopeNote() {
+  const p2 = plan({ id: 'z', unit: 'q', target_round: 2, subject_id: '2Q' });
+  eq('全問なら何も出さない', W.planScopeNoteHTML(p2, { scope: { mode: 'full' } }), '');
+  eq('範囲が無ければ何も出さない', W.planScopeNoteHTML(p2, {}), '');
+
+  const rec = W.planScopeNoteHTML(p2, { scope: { mode: 'recorded', count: 3, estimated: false } });
+  ok('件数を出す', rec.includes('誤答のみ 3問'), rec);
+  ok('推定とは言わない', !rec.includes('推定'), rec);
+  ok('全問に戻せる', rec.includes('data-scope-off'), rec);
+
+  const est = W.planScopeNoteHTML(p2, { scope: { mode: 'estimated', count: 20, estimated: true } });
+  ok('推定だと分かる', est.includes('推定'), est);
+  ok('およその件数', est.includes('約20問'), est);
+  ok('どうすれば実測になるか書く', est.includes('誤答の番号を入れる'), est);
+})();
+
+// ---------- 再テストの表示 ----------
+(function retestBlock() {
+  const was = W.window ? null : null;
+  eq('対象が無ければ何も出さない', W.retestBlockHTML('2026-09-10'), '');
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

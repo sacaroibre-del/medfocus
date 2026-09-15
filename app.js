@@ -5874,6 +5874,8 @@ function videoTrackerBlockHtml(sid, raw) {
 async function renderQBProgress(){
   await loadQBFromSupabase();
   await loadVideoFromSupabase();
+  // 誤答・自信なしの記録。読めなくてもトラッカー全体は落とさない
+  try { _qRecords = await fetchQuestionRecords(); } catch (e) { console.warn('question records:', e); }
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
   const rawVideo=getVideoProgress();
@@ -5983,6 +5985,7 @@ async function renderQBProgress(){
                     </div>
                     <span data-accpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};">${r.done>0?accPct+'%':'---'}</span>
                   </div>
+                  ${qbMarksHTML(s.id, rk)}
                 </div>`;
               }).join(''):'<div style="font-size:0.75rem;color:var(--color-text-tertiary);padding:4px 8px;">未登録</div>'}
             </div>`;
@@ -6092,6 +6095,135 @@ async function renderQBProgress(){
       refreshQbDerived();   // 全再描画しない（開いている vol とフォーカスを保つ）
     });
   });
+
+  // 誤答・自信なしの番号欄。入力どおりに置き換える（消した番号は記録からも消す）。
+  // 既に種類を入れてある番号は、その入力を引き継ぐ。
+  ct.querySelectorAll('.qb-marks-input').forEach(inp => {
+    inp.addEventListener('change', async () => {
+      const sid = inp.dataset.sub, round = Number(inp.dataset.round) || 0;
+      const nums = parseQuestionNumbers(inp.value);
+      const prev = {};
+      questionRecordsFor(sid, round).forEach(r => { prev[r.question_no] = r; });
+      const rows = nums.map(no => {
+        const old = prev[no];
+        return {
+          question_no: no,
+          // 番号を書くのは「落とした問題」なので、既定は誤答。○は手で切り替える
+          is_correct: old ? !!old.is_correct : false,
+          confidence: old ? (old.confidence || null) : null,
+          error_type: old ? (old.error_type || null) : null,
+          recorded_on: (old && old.recorded_on) || toLocalDateKey(getLogicalDate(new Date()))
+        };
+      });
+      inp.value = formatQuestionNumbers(nums);   // 入力を正規化して返す
+      await persistMarks(sid, round, rows);
+    });
+  });
+
+  // チップ: 正誤 → 確信度 → 種類 を押すたびに切り替える
+  bindMarkChips(ct);
+}
+
+// チップに動きを付ける。初回の描画と、保存後の描き直しの両方から呼ぶ。
+function bindMarkChips(root) {
+  if (!root) return;
+  root.querySelectorAll('[data-mark-correct]').forEach(b =>
+    b.addEventListener('click', () => applyMarkChip(b, 'markCorrect', null)));
+  root.querySelectorAll('[data-mark-conf]').forEach(b =>
+    b.addEventListener('click', () => applyMarkChip(b, 'markConf', QB_CONFIDENCE_CYCLE)));
+  root.querySelectorAll('[data-mark-err]').forEach(b =>
+    b.addEventListener('click', () => applyMarkChip(b, 'markErr', QB_ERROR_CYCLE)));
+}
+
+// 記録を保存し、その周のチップだけ描き直す。
+// 全再描画しないのは、開いている vol と入力欄のフォーカスを保つため
+// （既存の refreshQbDerived と同じ方針）。
+async function persistMarks(sid, round, rows) {
+  const saved = await replaceQuestionRecords(sid, round, rows);
+  const sidLower = String(sid).toLowerCase();
+  _qRecords = _qRecords
+    .filter(r => !(String(r.subject_id || '').toLowerCase() === sidLower && Number(r.round) === Number(round)))
+    .concat(saved);
+  const box = document.querySelector(`[data-markchips="${sid}|${round}"]`);
+  if (box) {
+    const recs = questionRecordsFor(sid, round).slice().sort((a, b) => a.question_no - b.question_no);
+    box.innerHTML = recs.map(r => qbMarkChipHTML(sid, round, r)).join('');
+    bindMarkChips(box);
+    const head = box.closest('.qb-marks')?.querySelector('.qb-marks-count');
+    const target = recs.filter(r => !r.is_correct || r.confidence === 'low').length;
+    if (head) head.textContent = `${recs.length}問（次の周の対象 ${target}問）`;
+  }
+  _planSyncAt = 0;   // 範囲が変わったので予定を組み直す
+}
+
+// チップ1つぶんの切り替えを適用して保存する
+async function applyMarkChip(btn, field, cycle) {
+  const [sid, roundStr, noStr] = String(btn.dataset[field] || '').split('|');
+  const round = Number(roundStr) || 0, no = Number(noStr) || 0;
+  const rows = questionRecordsFor(sid, round).map(r => Object.assign({}, r));
+  const hit = rows.find(r => Number(r.question_no) === no);
+  if (!hit) return;
+  if (field === 'markCorrect') {
+    hit.is_correct = !hit.is_correct;
+    if (hit.is_correct) hit.error_type = null;
+  } else if (field === 'markConf') {
+    hit.confidence = cycleNext(cycle, hit.confidence);
+  } else {
+    hit.error_type = cycleNext(cycle, hit.error_type);
+  }
+  await persistMarks(sid, round, rows);
+}
+
+// ---------- 誤答・自信なしの入力欄（教材進捗トラッカー） ----------
+// 全問を入れさせない。「落としたところ」だけを番号で入れてもらい、
+// 2周目の範囲を絞るのに使う。入れなくても推定モードで動くので、任意入力。
+let _qRecords = [];
+
+function questionRecordsFor(subjectId, round) {
+  const sid = String(subjectId || '').toLowerCase();
+  const r = Number(round) || 0;
+  return _qRecords.filter(x => String(x.subject_id || '').toLowerCase() === sid && Number(x.round) === r);
+}
+
+const QB_CONFIDENCE_CYCLE = [null, 'high', 'mid', 'low'];
+const QB_CONFIDENCE_LABEL = { high: '自信あり', mid: '半々', low: '自信なし' };
+const QB_ERROR_CYCLE = [null, 'unknown', 'confuse', 'misread'];
+const QB_ERROR_LABEL = { unknown: '知らない', confuse: '混同', misread: '読み違い' };
+const cycleNext = (list, cur) => list[(list.indexOf(cur === undefined ? null : cur) + 1) % list.length];
+
+// 1問ぶんのチップ。番号・正誤・確信度・誤答タイプを順に押して変える。
+function qbMarkChipHTML(sid, round, rec) {
+  const no = rec.question_no;
+  const conf = rec.confidence || null;
+  const err = rec.error_type || null;
+  const key = `${sid}|${round}|${no}`;
+  return `<div class="qb-mark" data-mark="${esc(key)}">
+    <span class="qb-mark-no">${no}</span>
+    <button class="qb-mark-btn ${rec.is_correct ? 'ok' : 'ng'}" data-mark-correct="${esc(key)}"
+            title="正誤を切り替える">${rec.is_correct ? '○' : '✕'}</button>
+    <button class="qb-mark-btn ${conf ? 'set c-' + conf : ''}" data-mark-conf="${esc(key)}"
+            title="確信度を切り替える">${conf ? QB_CONFIDENCE_LABEL[conf] : '確信度'}</button>
+    <button class="qb-mark-btn ${err ? 'set' : ''}" data-mark-err="${esc(key)}"
+            title="誤答の種類を切り替える"${rec.is_correct ? ' disabled' : ''}>${err ? QB_ERROR_LABEL[err] : '種類'}</button>
+  </div>`;
+}
+
+// 周ごとの「誤答・自信なし」欄。既定は畳んでおく（毎回開く欄ではないため）。
+function qbMarksHTML(sid, round) {
+  const recs = questionRecordsFor(sid, round).slice().sort((a, b) => a.question_no - b.question_no);
+  const nums = formatQuestionNumbers(recs.map(r => r.question_no));
+  const target = recs.filter(r => !r.is_correct || r.confidence === 'low').length;
+  return `<details class="qb-marks">
+    <summary class="qb-marks-head">誤答・自信なし${
+      recs.length ? `<span class="qb-marks-count">${recs.length}問（次の周の対象 ${target}問）</span>` : ''}</summary>
+    <div class="qb-marks-body">
+      <input type="text" class="qb-marks-input" data-sub="${esc(sid)}" data-round="${esc(String(round))}"
+             value="${esc(nums)}" placeholder="3,7,12-14" />
+      <div class="qb-marks-hint">外した問題と、正解したけれど自信がなかった問題の番号だけ入れてください。全問入れる必要はありません。「12-14」のような範囲でも書けます。</div>
+      <div class="qb-marks-chips" data-markchips="${esc(sid + '|' + round)}">${
+        recs.map(r => qbMarkChipHTML(sid, round, r)).join('')}</div>
+    </div>
+  </details>`;
 }
 
 // ==================== INSIGHTS FILTER STATE ====================
@@ -6934,10 +7066,15 @@ function roundScope(input) {
              remainMin: uniq.length * minPerQ, estimated: false };
   }
 
-  // 記録が無い。正答率から「外した割合」で見積もる。正答率も無ければ全問に倒す
+  // 記録が無い。正答率から「外した割合」で見積もる。正答率も無ければ全問に倒す。
+  //
+  // 0問には丸めない。p が 1.0 になるのは「全問正解した」ときだが、それは
+  // 20問を1周しただけでも起きる。データが薄いだけで完璧とは限らないのに
+  // 0問にすると、その教材の次の周が予定から黙って消えてしまう。
+  // 最低1問残して、画面に出したうえで本人に判断してもらう。
   const p = Number(o.p);
   const wrongRate = (o.p === null || o.p === undefined || !Number.isFinite(p)) ? 1 : Math.max(0, Math.min(1, 1 - p));
-  const count = Math.round(total * wrongRate);
+  const count = Math.max(1, Math.round(total * wrongRate));
   return { mode: 'estimated', count, questions: null, remainMin: count * minPerQ, estimated: true };
 }
 
@@ -12116,6 +12253,7 @@ function buildSequencedPlanSchedules(input) {
       round: Number(e.plan.target_round) || 0,
       // 前の周を終えてから空ける日数。渡されなければ翌日から（最短）。
       gapDays: Math.max(1, Math.floor(Number(e.gapDays != null ? e.gapDays : e.reviewGapDays) || 0) || 1),
+      scope: e.scope || null,
       // 締切クランプの材料。実際に詰めるかは前の周の完了日が決まってから決める
       dueKey: String(e.plan && e.plan.due_date || '').slice(0, 10) || null,
       examKey: e.examKey || null,
@@ -12242,7 +12380,9 @@ function buildSequencedPlanSchedules(input) {
       // 期間内に置ききれなかったぶん（暴走よけに当たった場合）
       unplaced: e.left,
       // 解禁日と状態（前の周がある教材のみ。無ければ null）
-      unlock: e.unlock || null
+      unlock: e.unlock || null,
+      // やる範囲（全問 / 記録から / 推定）
+      scope: e.scope || null
     };
   });
   return { byPlan, order, warnings };
@@ -13659,6 +13799,32 @@ function roundUnlockPlan(input) {
            shortened: effectiveGap < gapDays, status, isBehind, bufferDays };
 }
 
+// そのプランがこの周でやる範囲。問題演習の2周目以降だけ絞る。
+// 講義動画と1周目は常に全部（絞る根拠になる前の周が無いため）。
+//
+// 正答率は生の値ではなく縮小推定後の p を使う。生の値だと「1周目 20/20」の
+// 教材が p = 1.0 になり、やり直す問題が 0件になってプランごと消える。
+// 少ない解答数をそのまま信じないための p が、ここでも効く。
+function planRoundScope(plan, ctx) {
+  const round = Number(plan && plan.target_round) || 0;
+  if (!plan || plan.unit === 'video' || round < 2) return null;
+  const c = ctx || {};
+  const sid = String(plan.subject_id || '').toLowerCase();
+  const rounds = (c.qbByKey || {})[sid];
+  const acc = blendedRoundAccuracy(rounds, c.p0);
+  const p = acc.hasData ? acc.p : null;
+  const wrongOnly = roundWrongOnly(rounds, round, p);
+  if (!wrongOnly) return null;
+  const records = (c.records || []).filter(r =>
+    String(r.subject_id || '').toLowerCase() === sid);
+  return roundScope({
+    total: Number(plan.total_volume) || 0,
+    minPerQuestion: c.minPerUnit,
+    prevRound: round - 1,
+    p, records, wrongOnly: true
+  });
+}
+
 // ---------- 優先順位どおりに順番へ詰める ----------
 // 1件だけでも順番詰めを使う。以前は「詰める相手がいない」として期間へ均していたが、
 // 「問題演習は分割しない」と噛み合わず、残り1プランになった途端に
@@ -13725,6 +13891,8 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   const qbByKey = {};
   Object.entries(o.qb || {}).forEach(([k, v]) => { qbByKey[String(k).toLowerCase()] = v; });
   const baseGapDays = roundGapBaseDays(o.roundGain);
+  // 縮小推定の寄せ先。全科目・全周をならした正答率
+  const p0 = globalQbAccuracy(o.qb);
   // 締切クランプに要る材料。試験日はプランの参照から、1日に割ける分は
   // 手入力の量か「その日の目標学習時間 ÷ 進行中の教材数」から出す。
   const countdowns = o.countdowns || [];
@@ -13782,7 +13950,11 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     if (!st.canAuto) return;
     const total = Number(st.plan.total_volume) || 0;
     const done = planDoneAmount(st.mine);
-    const remaining = Math.max(0, total - done);
+    // 2周目以降で「誤答のみ」の教材は、全問ではなく落としたところだけを数える。
+    // 記録があればその件数、無ければ 全体 × (1 − p) の推定。
+    const scope = planRoundScope(st.plan, { qbByKey, records: o.records, p0 });
+    const scopedTotal = scope && scope.mode !== 'full' ? scope.count : total;
+    const remaining = Math.max(0, scopedTotal - done);
     const group = planGroupKey(st.plan);
     if (remaining <= 0) return;   // 見終わった日は上のループで拾っている
     // 実測が足りないプランも仮の単価で並べる。落とすとその科目だけ
@@ -13799,7 +13971,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
           baseGapDays)
       : 0;
     entries.push({
-      plan: st.plan, remaining, minPerUnit, gapDays,
+      plan: st.plan, remaining, minPerUnit, gapDays, scope,
       examKey: planExamDateOf(st.plan, countdowns),
       dailyMin: planDailyMinutes(st.plan, minPerUnit, activeCount, goalMinutesToday),
       startKey: start && start > todayKey ? start : todayKey,
@@ -13883,7 +14055,8 @@ async function syncPlans(force) {
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
     planSpentMinutesOn(logs, today) + planTickedMinutesOn(state, today, unitCost),
-    { qb: qbProgress, roundGain, countdowns: examCountdowns, bufferDays: planningBufferDays() });
+    { qb: qbProgress, roundGain, countdowns: examCountdowns, bufferDays: planningBufferDays(),
+      records: _qRecords });
 
   const tasks = [];
   const rebuilt = [];
@@ -13936,6 +14109,21 @@ function planStatusBadge(plan, prog, seq) {
 function formatPlanDateShort(key) {
   const d = parseDateKey(key);
   return d ? `${d.getMonth() + 1}/${d.getDate()}` : '';
+}
+
+// この周でやる範囲。全問でなければ、何問を対象にしていて、それが記録によるものか
+// 推定なのかを出す。推定だと分かるようにしておかないと、勝手に量が減ったように見える。
+function planScopeNoteHTML(plan, seq) {
+  const sc = seq && seq.scope;
+  if (!sc || sc.mode === 'full') return '';
+  const unit = planUnitLabel(plan.unit);
+  if (sc.mode === 'recorded') {
+    return `<div class="plan-scope-note">この周は<strong>誤答のみ ${sc.count}${unit}</strong>（前の周で外した問題と、自信がなかった問題）。
+      <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>`;
+  }
+  return `<div class="plan-scope-note">この周は<strong>誤答のみ 約${sc.count}${unit}</strong>（<span class="plan-scope-est">推定</span>）。
+    教材進捗で誤答の番号を入れると、推定ではなく実際の対象に切り替わります。
+    <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>`;
 }
 
 // 解禁日の内訳を1行で説明する。締切に合わせて間隔を詰めたときだけ出す。
@@ -14004,7 +14192,7 @@ function planCardHTML(plan, tasks, todayKey, seq) {
     </div>
     <div class="plan-meta">${planUnitName(plan.unit)}${plan.unit === 'video' && isVideoEdition(plan.video_edition) ? `（${videoEditionLabel(plan.video_edition)}）` : ''}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
       ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
-    ${bar}${stats}${planUnlockNoteHTML(seq)}${seq && seq.overdue && !(seq.unlock && seq.unlock.status === 'tight') ? `<div class="plan-warn">${IC.warn} 優先順位どおりに詰めると締切に ${seq.overDays}日 間に合いません。順番を変えるか、締切か総量を見直してください。</div>` : ''}
+    ${bar}${stats}${planScopeNoteHTML(plan, seq)}${planUnlockNoteHTML(seq)}${seq && seq.overdue && !(seq.unlock && seq.unlock.status === 'tight') ? `<div class="plan-warn">${IC.warn} 優先順位どおりに詰めると締切に ${seq.overDays}日 間に合いません。順番を変えるか、締切か総量を見直してください。</div>` : ''}
     <div class="plan-actions">
       <button class="btn-log-action" data-plan-edit>編集</button>
       ${active && hasVolume ? '<button class="btn-log-action" data-plan-rebuild>再逆算</button>' : ''}
@@ -14588,17 +14776,55 @@ async function renderPlans() {
         if (!confirm(`「${plan.title}」を削除しますか？ノルマも一緒に消えます。`)) return;
         await deletePlan(id); draw(true);
       });
+      // 「誤答のみ」をやめて全問に戻す。教材（科目×周）ごとの設定
+      card.querySelector('[data-scope-off]')?.addEventListener('click', async () => {
+        saveQBProgress(setRoundWrongOnly(getQBProgress(), plan.subject_id, plan.target_round, false));
+        _planSyncAt = 0;
+        showToast(IC.check + ' 全問に戻しました');
+        draw(true);
+      });
     });
   }
   draw(false);
 }
 
 
+// 高確信の誤答の再テスト。今日ぶんがあれば「今日のノルマ」の下に出す。
+// 自信があったのに外した問題は直したつもりになりやすく、何も言われなければ
+// 二度と開かない。日付が来たときだけ、番号を添えて思い出させる。
+function retestBlockHTML(todayKey) {
+  const due = highConfidenceRetests(_qRecords, todayKey);
+  if (!due.length) return '';
+  const bySubject = {};
+  due.forEach(r => {
+    const k = String(r.subject_id || '');
+    (bySubject[k] = bySubject[k] || { day1: [], day7: [] });
+    (r.retestDay === 1 ? bySubject[k].day1 : bySubject[k].day7).push(r.question_no);
+  });
+  const lines = Object.entries(bySubject).map(([sid, g]) => {
+    const parts = [];
+    if (g.day1.length) parts.push(`翌日 ${formatQuestionNumbers(g.day1)}`);
+    if (g.day7.length) parts.push(`7日後 ${formatQuestionNumbers(g.day7)}`);
+    return `<div class="tp-retest-item">${esc(subjectNameOf(sid))}　${parts.join(' / ')}</div>`;
+  }).join('');
+  return `<div class="tp-retest">
+    <div class="tp-retest-head">${IC.warn} 解き直す問題（${due.length}問）</div>
+    ${lines}
+    <div class="tp-retest-note">自信があったのに外した問題です。直後は解けても1週間ほどで元の誤答が戻ることがあるので、翌日と7日後の2回だけ出しています。</div>
+  </div>`;
+}
+
 // ダッシュボード用「今日のノルマ」。進行中プランの今日ぶんを1枚にまとめる。
 function todayPlanCardHTML(sync) {
   if (!sync) return '';
   const active = sync.plans.filter(p => p.status === 'active');
-  if (!active.length) return '';
+  const retest = retestBlockHTML(sync.todayKey);
+  if (!active.length) {
+    // プランが無くても、解き直す問題があるなら出す
+    return retest ? `<div class="card today-plan-card animate-slide-up" style="animation-delay:.08s">
+      <div class="card-header"><div class="card-title">${IC.target}今日のノルマ</div></div>${retest}
+    </div>` : '';
+  }
   const today = sync.todayKey;
   // その日にやる分のないプラン（休みの日）は載せない。今日のタスクか節目があるものだけ
   const rows = active.map(plan => {
@@ -14627,13 +14853,13 @@ function todayPlanCardHTML(sync) {
       <div class="tp-main">${main}</div>
     </div>`;
   }).join('');
-  if (!rows) return '';
+  if (!rows && !retest) return '';
   return `<div class="card today-plan-card animate-slide-up" style="animation-delay:.08s">
     <div class="card-header">
       <div class="card-title">${IC.target}今日のノルマ</div>
       <a href="/calendar" data-route="/calendar" class="next-move-link">カレンダーで見る →</a>
     </div>
-    <div class="tp-list">${rows}</div>
+    <div class="tp-list">${rows}</div>${retest}
   </div>`;
 }
 
@@ -14673,6 +14899,7 @@ async function bootstrapProgressTracking() {
     await loadVideoFromSupabase();
     await fetchProgressSnapshots();
     saveProgressSnapshot();
+    _qRecords = await fetchQuestionRecords();
   } catch(e) { console.warn('progress bootstrap error:', e); }
 }
 
