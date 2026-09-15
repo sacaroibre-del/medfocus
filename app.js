@@ -11864,11 +11864,18 @@ function planPriorityOrder(plans, opts) {
     const due = String(p.due_date || '').slice(0, 10) || '9999-12-31';
     if (!groupDue[g] || due < groupDue[g]) groupDue[g] = due;
   });
-  // 締切が目前の科目だけ、締切順で前に出す
+  // 締切優先枠。余裕（締切までの日数 − 残りに要る日数）が bufferDays 以下の科目は、
+  // スコアに関係なく上位へ出す。ここを逃すと間に合わなくなるため。
+  // 残りに要る日数を出せない科目は、従来どおり「締切まで何日か」だけで見る。
+  const deadlineFirst = (o.deadlineFirst && typeof o.deadlineFirst.has === 'function') ? o.deadlineFirst : null;
   const urgent = g => {
+    if (deadlineFirst && deadlineFirst.has(g)) return true;
+    if (deadlineFirst) return false;
     const d = diffDateKeys(groupDue[g], today);
     return Number.isFinite(d) && d <= PLAN_DEADLINE_URGENT_DAYS;
   };
+  // 同点のときに見る残り時間（科目ぶんの合計）
+  const remainOf = typeof o.remainMinOf === 'function' ? o.remainMinOf : null;
   return list
     .map((p, i) => ({ p, i }))
     .sort((a, b) => {
@@ -11892,6 +11899,10 @@ function planPriorityOrder(plans, opts) {
         }
         const c2 = String(groupDue[ga]).localeCompare(String(groupDue[gb]));
         if (c2) return c2;                                    // スコアが並べば締切順
+        if (remainOf) {
+          const rv = (Number(remainOf(gb)) || 0) - (Number(remainOf(ga)) || 0);   // 多いほど先
+          if (rv) return rv;
+        }
         const s = subjectOrderIndex(sa) - subjectOrderIndex(sb);
         if (s) return s;
         return ga.localeCompare(gb);
@@ -12047,6 +12058,34 @@ const CBT_EXAM_WEIGHT_NORMALIZER = (function buildExamWeightNormalizer() {
 // スコアで使う出題重み W。平均が 1.0 になるよう正規化した cbtExamWeightOf。
 function cbtExamWeightNorm(sid) { return cbtExamWeightOf(sid) * CBT_EXAM_WEIGHT_NORMALIZER; }
 
+// ---------- 忘却と学習可能性 ----------
+// decay(t) = (1 + t/(9S))^-1
+// いまの想起率 p が、t 日後にどこまで落ちるかの目安。S は記憶の安定度（日）で、
+// 9S 日後にちょうど半分になる。細かい再現より「先の試験ほど今の出来を割り引く」
+// という向きが合っていればよいので、1本の式で足りる。
+function recallDecay(days) {
+  const S = Number(PLANNING_CONFIG.score.stabilityDays) || 1;
+  const t = Math.max(0, Number(days) || 0);
+  return 1 / (1 + t / (9 * S));
+}
+
+// L = 4p(1−p) + ε
+// 「習得済みでも難しすぎもしない中間帯を優先する」ための項。p=0.5 で最大になり、
+// 両端では ε だけ残る。ε は端の項目も拾うための下駄で、試験まで日数があるうちは
+// 大きく取る（余裕があるなら難しいものにも手を出してよい）。
+function learnabilityEpsilon(daysToExam) {
+  const cfg = PLANNING_CONFIG.score;
+  if (daysToExam === null || daysToExam === undefined || !Number.isFinite(Number(daysToExam))) {
+    return cfg.epsilonNoExam;
+  }
+  const raw = Number(daysToExam) / cfg.epsilonDaysDivisor;
+  return Math.min(cfg.epsilonMax, Math.max(cfg.epsilonMin, raw));
+}
+function learnability(p, daysToExam) {
+  const v = Math.max(0, Math.min(1, Number(p)));
+  return 4 * v * (1 - v) + learnabilityEpsilon(daysToExam);
+}
+
 // ---------- 科目の優先度を学習状況から出す ----------
 // 締切だけでは、同じ試験日に向けたプランどうしの順番が決まらない。
 // 「いま手をつけて効く順」を実績から出して、締切が並んだときの順番に使う。
@@ -12114,18 +12153,37 @@ function buildSubjectPriority(input) {
 
   // vol.4 は元の科目へ畳んでから数える（4連問の2Cは循環器の一部）
   const g = {};
-  const bucket = sid => (g[sid] = g[sid] || { id: sid, remainMin: 0, weightMin: 0, solved: 0, correct: 0 });
+  const bucket = sid => (g[sid] = g[sid] || { id: sid, remainMin: 0, weightMin: 0, solved: 0, correct: 0,
+                                              rounds: {}, doneKey: null, qbMin: 0, qbQuestions: 0 });
 
   Object.entries(qb).forEach(([rawId, rounds]) => {
     const sid = baseSubjectIdOf(rawId) || rawId;
     const p = subjectPlan(rounds, roundOf(rawId));
     if (!p) return;
     const b = bucket(sid);
-    if (minPerQ) {
-      b.remainMin += p.remaining * minPerQ;
-      b.weightMin += p.total * minPerQ;
-    }
+    // 1問あたりの分は 科目別の実測 → 全体の実測 → 仮の単価 の順に落ちる。
+    // 実測が無いからと 0 にすると、その科目だけ残り時間が消えてスコアが 0 になり、
+    // 順番から抜け落ちてしまう。仮でも置いて並べ、仮だったことは画面に出す。
+    const perQ = minutesPerQuestionFor(rawId, unitCost, o.unitCostBySubject);
+    b.remainMin += p.remaining * perQ;
+    b.weightMin += p.total * perQ;
     b.solved += p.solved; b.correct += p.correct;
+    // 周ごとの実績も畳んでおく。縮小推定後の p は「直近周」を見るので、
+    // 合算した solved/correct だけでは出せない。
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      if (!r) return;
+      if (r.completed_at && (!b.doneKey || r.completed_at > b.doneKey)) {
+        b.doneKey = String(r.completed_at).slice(0, 10);
+      }
+      // 正答数が入っていない周は p の材料にしない。0問正解として数えると、
+      // 「入れていないだけ」の科目が正答率0%扱いで最上位に来てしまう。
+      const c = Number(r.correct);
+      if (!(r.done > 0) || !Number.isFinite(c)) return;
+      const slot = (b.rounds[rk] = b.rounds[rk] || { done: 0, correct: 0 });
+      slot.done += r.done;
+      slot.correct += c;
+    });
+    if (minPerQ) { b.qbMin += p.remaining * minPerQ; b.qbQuestions += p.remaining; }
   });
 
   Object.entries(video).forEach(([rawId, v]) => {
@@ -12140,29 +12198,55 @@ function buildSubjectPriority(input) {
   });
 
   const totalWeightMin = Object.values(g).reduce((s, b) => s + b.weightMin, 0);
+
+  // 縮小推定の寄せ先。全科目・全周をならした正答率
+  const p0 = globalQbAccuracy(qb);
+  // 試験日。1つだけ（「どの試験に向けて勉強しているか」は1本のはず）
+  const examKey = o.examKey ? String(o.examKey).slice(0, 10) : null;
+  const daysToExam = examKey ? Math.max(0, diffDateKeys(examKey, today) || 0) : null;
+  const bySubjectCost = o.unitCostBySubject || null;
+
   const ranked = Object.values(g).map(b => {
+    // 正答率。直近周を過去の周へ、過去の周を全体平均へ、と2段階で縮める。
+    // 材料がまったく無い科目は全体平均ではなく中立値 0.5 に置く。全体平均に
+    // 寄せると、ふだんの正答率が高い人ほど未入力科目の伸びしろが 0 になり、
+    // 手つかずの科目が永久に後回しになる。
+    const acc = blendedRoundAccuracy(b.rounds, p0);
+    const p = acc.hasData ? acc.p : PLANNING_CONFIG.accuracy.neutral;
     const accuracy = b.solved > 0 ? b.correct / b.solved * 100 : null;
-    const wrongRate = accuracy === null ? SUBJECT_UNKNOWN_WRONG_RATE : (100 - accuracy) / 100;
-    const lastKey = lastTouched[b.id] || null;
-    const staleFactor = subjectStaleFactor(lastKey, today);
-    const exam = cbtExamInfoOf(b.id);
-    const examWeight = cbtExamWeightOf(b.id);
+
+    // 試験日時点の予測想起率。直近周を終えた日からの経過で割り引く
+    const fromKey = b.doneKey || today;
+    const t = examKey ? Math.max(0, diffDateKeys(examKey, fromKey) || 0) : 0;
+    const decay = recallDecay(t);
+    const recallPred = p * decay;
+    const gain = Math.max(0, planningRecallTarget() - recallPred);
+    const L = learnability(p, daysToExam);
+    const examWeight = cbtExamWeightNorm(b.id);
     const cramFactor = cbtCramFactorOf(b.id);
+    const minPerQuestion = minutesPerQuestionFor(b.id, unitCost, bySubjectCost);
+
+    const exam = cbtExamInfoOf(b.id);
+    const lastKey = lastTouched[b.id] || null;
     return {
       id: b.id, name: subjectNameOf(b.id),
       remainMin: b.remainMin,
-      // 登録した教材の量（残り時間の母数）。試験での重みとは別物なので名前を分ける
       materialMin: b.weightMin,
       materialPct: totalWeightMin > 0 ? b.weightMin / totalWeightMin * 100 : 0,
-      // CBT本番での出題数の目安。CBT_EXAM_WEIGHT 由来で、教材の量には依存しない
       examQuestions: exam ? exam.questions : null,
       examPct: exam ? exam.pct : null,
       examDomain: exam ? exam.domain : null,
-      examWeight, cramFactor,
-      accuracy, wrongRate, solved: b.solved,
+      examWeight, cramFactor, minPerQuestion,
+      // スコアの内訳。画面で「なぜこの順番か」を出せるように全部返す
+      p, hasAccuracy: acc.hasData, accuracy, solved: b.solved,
+      decay, recallPred, gain, learnability: L, epsilon: learnabilityEpsilon(daysToExam),
       lastKey, staleDays: lastKey ? Math.max(0, diffDateKeys(today, lastKey) || 0) : null,
-      staleFactor,
-      score: b.remainMin * wrongRate * staleFactor * examWeight * cramFactor
+      // priority = W × G × L / C。量（remainMin）は掛けない。
+      // 「1分使ったときに試験の点がどれだけ伸びるか」を見たいので、残りの多さは
+      // 効き目ではなく別の話（締切に間に合うか・日々どれだけ割り当てるか）。
+      // 目標周回まで終わっている科目は、やることが無いので 0。
+      score: b.remainMin > 0 && minPerQuestion > 0
+        ? examWeight * gain * L * cramFactor / minPerQuestion : 0
     };
   }).sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
@@ -13982,9 +14066,31 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   if (entries.length < PLAN_SEQUENCE_MIN_PLANS) return null;
   const by = (subjectPriority && subjectPriority.bySubject) || null;
   const scoreOf = by ? (sid => (by[sid] ? by[sid].score : 0)) : null;
+
+  // 締切優先枠と、同点時に見る残り時間を科目ごとにまとめる
+  const deadlineFirst = new Set();
+  const remainByGroup = {};
+  entries.forEach(e => {
+    const g = planGroupKey(e.plan);
+    remainByGroup[g] = (remainByGroup[g] || 0) + e.remaining * e.minPerUnit;
+    const dueKey = String(e.plan.due_date || '').slice(0, 10);
+    if (!dueKey) return;
+    const daysLeft = diffDateKeys(dueKey, todayKey);
+    if (!Number.isFinite(daysLeft)) return;
+    const required = e.dailyMin > 0 ? Math.ceil((e.remaining * e.minPerUnit) / e.dailyMin) : null;
+    if (required === null) {
+      // 残りに要る日数を出せない。従来どおり締切までの日数だけで見る
+      if (daysLeft <= PLAN_DEADLINE_URGENT_DAYS) deadlineFirst.add(g);
+    } else if (daysLeft - required <= (Number.isFinite(Number(bufferDays)) ? Number(bufferDays) : planningBufferDays())) {
+      deadlineFirst.add(g);
+    }
+  });
+
   return buildSequencedPlanSchedules({
-    entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
-      .map(p => entries.find(e => e.plan.id === p.id)),
+    entries: planPriorityOrder(entries.map(e => e.plan), {
+      scoreOf, todayKey, inProgress, deadlineFirst,
+      remainMinOf: g => remainByGroup[g] || 0
+    }).map(p => entries.find(e => e.plan.id === p.id)),
     todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, roundDoneAt, videoGroups, spentTodayMin,
     bufferDays
   });
@@ -14040,8 +14146,12 @@ async function syncPlans(force) {
   // 締切が並んだときの科目の順は、教材進捗と学習ログから出す
   // （残り時間 × 誤答率 × 放置日数）。プラン一覧で内訳も出す。
   const qbProgress = getQBProgress();
+  const unitCostBySubject = buildUnitCostBySubject(logs);
   const subjectPriority = buildSubjectPriority({
-    qb: qbProgress, video: primaryVideoProgress(), unitCost,
+    qb: qbProgress, video: primaryVideoProgress(), unitCost, unitCostBySubject,
+    // 試験日は1つだけ（どの試験に向けて勉強しているか）。いちばん近い先の試験。
+    // 登録が無ければ null で、減衰なし・ε=0.3 の既定で動く
+    examKey: nextExamKey(examCountdowns, today),
     lastTouched: buildSubjectLastTouched(logs), todayKey: today,
     // 残り時間はプランの目標周回ぶんまで数える。1周目ぶんで切ると、1周目を
     // 終えた科目のスコアが 0 になって誤答率が効かなくなる。
@@ -14225,6 +14335,18 @@ function planPreviewHTML(sched, unit) {
 // 締切の初期値。科目ごとの締切は決めようがないので、登録済みの試験
 // （CBT本番など）のうち直近のものを既定にする。全部同じ日に揃えば、
 // 順番は締切ではなく科目の優先度で決まる。試験が無ければ従来どおり30日後。
+// いちばん近い先の試験日。1件も無ければ null。
+// defaultPlanDue と違い、無いときに「30日後」を作らない。
+// 存在しない試験日で想起率を割り引くと、根拠のない数字が順番を動かしてしまう。
+function nextExamKey(countdowns, todayKey) {
+  const t = todayKey || todayPlanKey();
+  const keys = (countdowns || [])
+    .map(e => String(e && e.exam_date || '').slice(0, 10))
+    .filter(k => k && k >= t)
+    .sort();
+  return keys[0] || null;
+}
+
 function defaultPlanDue(countdowns, todayKey) {
   const t = todayKey || todayPlanKey();
   const next = (countdowns || [])
@@ -14655,32 +14777,38 @@ function subjectPriorityTableHTML(sync) {
   const rows = sp.ranked.filter(r => wanted.has(r.id)).slice(0, 12);
   if (rows.length < 2) return '';
   const hours = m => (m / 60).toFixed(1) + 'h';
+  const pct = v => Math.round(v * 100) + '%';
   return `<details class="plan-prio">
     <summary>科目の優先度（学習状況から）</summary>
     <div class="plan-prio-scroll"><table class="plan-prio-table">
-      <thead><tr><th>科目</th><th>残り</th><th>CBT出題数<span class="dim">（目安）</span></th><th>正答率</th><th>最後に学習</th><th>影響度</th></tr></thead>
+      <thead><tr><th>科目</th><th>いまの出来<br><span class="dim">p</span></th><th>試験日の見込み<br><span class="dim">R_pred</span></th><th>伸びしろ<br><span class="dim">G</span></th><th>学習可能性<br><span class="dim">L</span></th><th>出題重み<br><span class="dim">W</span></th><th>1問<br><span class="dim">C</span></th><th>残り</th><th>1分あたり<br><span class="dim">の効き</span></th></tr></thead>
       <tbody>${rows.map(r => `<tr>
         <td>${esc(r.name)}${r.cramFactor < CBT_CRAM_MARK_BELOW
-              ? ` <span class="dim" title="直前の詰め込みが効くので、影響度を${r.cramFactor}倍にしています">直前型</span>` : ''}</td>
+              ? ` <span class="dim" title="直前の詰め込みが効くので、効きを${r.cramFactor}倍にしています">直前型</span>` : ''}</td>
+        <td>${pct(r.p)}${r.hasAccuracy ? '' : '<span class="dim" title="正答数がまだ入っていないので中立値で置いています">仮</span>'}</td>
+        <td>${pct(r.recallPred)}${r.decay < 1 ? `<span class="dim">（×${r.decay.toFixed(2)}）</span>` : ''}</td>
+        <td><strong>${pct(r.gain)}</strong></td>
+        <td>${r.learnability.toFixed(2)}</td>
+        <td>${r.examWeight.toFixed(2)}</td>
+        <td>${r.minPerQuestion.toFixed(1)}分</td>
         <td>${hours(r.remainMin)}</td>
-        <td>${r.examQuestions === null ? '<span class="dim">—</span>'
-              : `${r.examQuestions.toFixed(1)}問<span class="dim">（${r.examPct.toFixed(1)}%・${r.examDomain}領域）</span>`}</td>
-        <td>${r.accuracy === null ? '<span class="dim">未入力</span>' : Math.round(r.accuracy) + '%'}</td>
-        <td>${r.lastKey ? `${r.lastKey.slice(5).replace('-', '/')}<span class="dim">（${r.staleDays}日前）</span>` : '<span class="warn">未着手</span>'}</td>
-        <td><strong>${hours(r.score)}</strong></td>
+        <td><strong>${(r.score * 60).toFixed(2)}</strong><span class="dim">/h</span></td>
       </tr>`).join('')}</tbody>
     </table></div>
-    <div class="plan-seq-hint">影響度 ＝ 残り時間 × 誤答率 × 放置係数 × 出題比重 × 詰め込み係数。
-      「まだ間違えるであろう分量」の見積もりで、大きい科目から先に埋めます。
-      放置係数は最後に学習した日から90日で最大2倍（未着手は2倍）。
-      正答率が未入力の科目は誤答率50%として扱います。
-      出題比重は下の出題数が平均の何倍かで、0.5〜2.0倍に抑えています。
-      「直前型」は出題数が多くても直前の詰め込みで間に合う科目で、影響度を下げています
-      （出題数そのものは下げません）。</div>
+    <div class="plan-seq-hint">効き ＝ <strong>W × G × L ÷ C</strong>。「1分そこに使ったら、試験の点がどれだけ伸びるか」で並べています。
+      残りの多さは掛けません（量が多いことと、いま手を付けて効くことは別）。量は
+      ①その日の時間の配り方 ②締切に間に合うか ③同点のときの順番、の3か所で効きます。</div>
+    <div class="plan-seq-hint">
+      <strong>p</strong>＝いまの出来。直近の周を過去の周へ、過去の周を全体平均へ、と2段階で寄せた値です（少ない問題数の正答率をそのまま信じないため）。正答数が未入力の科目は50%として扱い「仮」と出します。<br>
+      <strong>R_pred</strong>＝試験日の時点でどれだけ思い出せるかの見込み。p を、直近の周を終えてから試験日までの日数で割り引きます（${PLANNING_CONFIG.score.stabilityDays * 9}日でおよそ半分）。試験日が未登録なら割り引きません。<br>
+      <strong>G</strong>＝目標${Math.round(planningRecallTarget() * 100)}% との差＝伸びしろ。すでに届いている科目は0になり、後ろへ回ります。<br>
+      <strong>L</strong>＝学習可能性。できなさすぎず・できすぎない中間帯がいちばん高くなります。試験まで日数があるうちは端の科目も拾います。<br>
+      <strong>W</strong>＝CBTでの出題重み（平均が1.0になるよう正規化）。<strong>C</strong>＝1問あたりの実測の分。時間のかかる科目ほど1分あたりの効きは下がります。<br>
+      「直前型」は出題数が多くても直前の詰め込みで間に合う科目で、効きを下げています（出題数そのものは下げません）。</div>
     <div class="plan-seq-hint">CBT出題数はコア・カリキュラムの領域別割合（A・B 32問／C 48問／D 112問／E 64問／F 64問・計320問）を、
       科目の重み（メジャー／準メジャー／マイナー）で按分した概算です。領域内の科目別内訳は公表されていないため、
       ここは目安として扱ってください。</div>
-    ${sp.questionCostKnown ? '' : `<div class="plan-seq-hint warn">${IC.warn} 1問あたりの実測が足りないので、QBの残り時間は影響度に入っていません。学習記録に「解いた問題数」を入れると入るようになります。</div>`}
+    ${sp.questionCostKnown ? '' : `<div class="plan-seq-hint warn">${IC.warn} 1問あたりの実測が足りないので、1問${PLAN_FALLBACK_MIN_PER_QUESTION}分と仮定して並べています。学習記録に「解いた問題数」を入れると実測に切り替わります。</div>`}
   </details>`;
 }
 
@@ -14700,9 +14828,9 @@ function planSequenceNoteHTML(sync) {
     <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。同じ教材の次の周は、前の周を終えてから${sync.roundGapBaseDays}日前後（${
       sync.roundGapMeasured ? 'あなたの記録でいちばん伸びた間隔' : '実測が貯まるまでの既定値'}）空けてから。前の周の正答率が低い科目ほど間隔を詰めて早めに回します。科目どうしは${
       (sync.subjectPriority && sync.subjectPriority.hasData)
-        ? '下の「科目の優先度」が高い順'
-        : '科目マスタの並び順（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
-      締切は普段は順番を決めません（締切まで${PLAN_DEADLINE_URGENT_DAYS}日を切った科目だけ先に割り込みます）。
+        ? '下の「科目の優先度」が高い順（1分あたりの効きで並べます）'
+        : '科目マスタの並び順（教材進捗と学習記録がたまると、出来・試験日・出題重み・1問あたりの分から決まります）'}。
+      締切に余裕が無くなった科目（残りに要る日数 + ${planningBufferDays()}日が締切を超える科目）だけ、順位に関係なく先に割り込みます。
       その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
     ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないので、講義動画1本${PLAN_FALLBACK_MIN_PER_VIDEO}分・1問${PLAN_FALLBACK_MIN_PER_QUESTION}分と仮定して並べています。学習記録に「解いた問題数」「見た本数」を入れると実測に切り替わります。</div>` : ''}
   </div>`;

@@ -508,62 +508,67 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
 })();
 
 (function scoreDrivers() {
-  // 残り・正答率・放置以外を揃えて、1つずつ効き目を見る
+  // priority = W × G × L / C。条件を1つずつ変えて効き目を見る
   const rounds = (total, done, correct) => ({ '1': { done, total, correct } });
 
-  // 放置しているほうが先に来る
-  const stale = prio({
-    qb: { '2C': rounds(100, 0, 0), '2J': rounds(100, 0, 0) },
-    lastTouched: { '2C': '2026-09-05', '2J': '2026-06-01' }
-  });
-  eq('同じ残量なら放置している科目が先', stale.ranked.map(r => r.id), ['2J', '2C']);
-  eq('放置していない側の係数', Math.round(stale.bySubject['2C'].staleFactor * 100) / 100, 1.01);
-  eq('放置している側の係数', stale.bySubject['2J'].staleFactor, 2);
-
-  // 正答率が低いほうが先に来る
+  // 正答率が低いほうが先に来る（伸びしろ G が大きく、L も中間帯に近い）
   const acc = prio({
     qb: { '2C': rounds(100, 50, 45), '2J': rounds(100, 50, 25) },
     lastTouched: { '2C': TODAY, '2J': TODAY }
   });
-  eq('同じ残量なら正答率が低い科目が先', acc.ranked.map(r => r.id), ['2J', '2C']);
+  eq('正答率が低い科目が先', acc.ranked.map(r => r.id), ['2J', '2C']);
   eq('正答率も出る', [Math.round(acc.bySubject['2C'].accuracy), Math.round(acc.bySubject['2J'].accuracy)], [90, 50]);
+  ok('伸びしろは低いほうが大きい', acc.bySubject['2J'].gain > acc.bySubject['2C'].gain);
 
-  // 残量（＝CBTの中での重さ）が大きいほうが先に来る
+  // 量はランクに効かない（旧モデルでは「残りが多い科目が先」だった）
   const size = prio({
     qb: { '2C': rounds(400, 0, 0), '2J': rounds(50, 0, 0) },
     lastTouched: { '2C': TODAY, '2J': TODAY }
   });
-  eq('同じ条件なら残りが多い科目が先', size.ranked.map(r => r.id), ['2C', '2J']);
-  eq('教材量の割合も出る',
-     size.ranked.map(r => Math.round(r.materialPct)), [89, 11]);
+  ok('残りが8倍でもスコアは同じ',
+     Math.abs(size.bySubject['2C'].score - size.bySubject['2J'].score) < 1e-9,
+     { '2C': size.bySubject['2C'].score, '2J': size.bySubject['2J'].score });
+  ok('残り時間そのものは持っている', size.bySubject['2C'].remainMin > size.bySubject['2J'].remainMin);
+  eq('教材量の割合も出る', size.ranked.map(r => Math.round(r.materialPct)), [89, 11]);
 
-  // 重い科目でも終わっていれば下がる
+  // 重い科目でも終わっていれば下がる（残り0はスコア0）
   const finished = prio({
     qb: { '2C': rounds(400, 400, 380), '2J': rounds(50, 0, 0) },
     lastTouched: { '2C': TODAY, '2J': TODAY }
   });
   eq('終わった科目は重くても後ろ', finished.ranked.map(r => r.id), ['2J', '2C']);
+  eq('残り0はスコア0', finished.bySubject['2C'].score, 0);
+
+  // 放置係数は無くなった。時間の効き目は「試験日までの減衰」が引き受ける
+  eq('放置係数は持たない', acc.bySubject['2C'].staleFactor, undefined);
+  eq('誤答率も持たない（p に一本化）', acc.bySubject['2C'].wrongRate, undefined);
 })();
 
 (function accuracyUnknownIsNeutral() {
-  // 正答数が未入力の科目を 0 点にすると、手つかずの科目ほど後回しになってしまう
+  // 正答数が未入力の科目を伸びしろ0にすると、手つかずの科目ほど後回しになる。
+  // 全体平均ではなく中立値 0.5 に置く（平均に寄せると、ふだんの正答率が高い人ほど
+  // 未入力科目が沈む）。
   const r = prio({
-    qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } } },
-    lastTouched: { '2C': TODAY }
+    qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } },
+          '2J': { '1': { done: 100, total: 100, correct: 98 } } },
+    lastTouched: { '2C': TODAY, '2J': TODAY }
   });
   eq('正答率は出せない', r.bySubject['2C'].accuracy, null);
-  eq('誤答率は中立の0.5で置く', r.bySubject['2C'].wrongRate, 0.5);
-  ok('影響度は0にならない', r.bySubject['2C'].score > 0);
+  eq('正答率未入力の印', r.bySubject['2C'].hasAccuracy, false);
+  eq('中立値 0.5 で置く', r.bySubject['2C'].p, 0.5);
+  ok('全体平均が高くてもスコアは0にならない', r.bySubject['2C'].score > 0, r.bySubject['2C'].score);
 })();
 
 (function reportsMissingQuestionCost() {
+  // 実測が無くても仮の単価で並べる。落とすとその科目だけ残り時間が0になり、
+  // スコアも0になって順番から抜け落ちるため。仮だったことは画面に出す。
   const noCost = W.buildSubjectPriority({
     qb: { '2C': { '1': { done: 0, total: 100, correct: 0 } } },
     unitCost: { hasQuestion: false, minPerQuestion: null }, todayKey: TODAY, lastTouched: {}
   });
   ok('実測が足りないことを返す', noCost.questionCostKnown === false);
-  eq('QBの残り時間は入らない', noCost.bySubject['2C'].remainMin, 0);
-  ok('順番には効かない（画面で理由を出す）', noCost.hasData === false);
+  eq('仮の単価で残り時間は出す', noCost.bySubject['2C'].remainMin, 100 * 2);
+  ok('順番にも効く', noCost.hasData === true);
   ok('実測があれば分かる', prio({ qb: {}, lastTouched: {} }).questionCostKnown === true);
 })();
 
@@ -1640,6 +1645,180 @@ const scope = (o) => W.roundScope(Object.assign({
 (function retestBlock() {
   const was = W.window ? null : null;
   eq('対象が無ければ何も出さない', W.retestBlockHTML('2026-09-10'), '');
+})();
+
+// ==================== Phase 3: 1分あたりの期待上乗せ ====================
+//   priority = W × G × L / C
+//   R_pred = p × decay(t)、decay(t) = (1 + t/(9S))^-1、S = 10日
+//   G = max(0, R* − R_pred)、R* = 0.90
+//   L = 4p(1−p) + ε、ε = clamp(試験までの日数/60, 0.1, 0.5)、試験日なしは 0.3
+//   C = 1問あたりの分
+
+(function decayAndGain() {
+  ok('t=0 なら減衰しない', Math.abs(W.recallDecay(0) - 1) < 1e-9);
+  // decay(90) = (1 + 90/90)^-1 = 0.5
+  ok('S=10 なら90日で半分', Math.abs(W.recallDecay(90) - 0.5) < 1e-9, W.recallDecay(90));
+  ok('先になるほど小さい', W.recallDecay(180) < W.recallDecay(90));
+  ok('負の日数は0扱い', Math.abs(W.recallDecay(-5) - 1) < 1e-9);
+})();
+
+(function learnabilityEpsilon() {
+  eq('試験日が無ければ 0.3', W.learnabilityEpsilon(null), 0.3);
+  // 120日先 → 120/60 = 2 → 上限0.5
+  eq('遠い試験は上限0.5', W.learnabilityEpsilon(120), 0.5);
+  // 12日先 → 0.2
+  ok('近づくと小さくなる', Math.abs(W.learnabilityEpsilon(12) - 0.2) < 1e-9, W.learnabilityEpsilon(12));
+  eq('目前なら下限0.1', W.learnabilityEpsilon(0), 0.1);
+
+  // L = 4p(1−p) + ε。中間帯がいちばん高い
+  const L = (p, days) => W.learnability(p, days);
+  ok('p=0.5 が最大', L(0.5, null) > L(0.2, null) && L(0.5, null) > L(0.9, null));
+  ok('p=0.5 なら 4×0.25+0.3 = 1.3', Math.abs(L(0.5, null) - 1.3) < 1e-9, L(0.5, null));
+  ok('p=1.0 なら ε だけ', Math.abs(L(1, null) - 0.3) < 1e-9, L(1, null));
+  ok('端でも0にはならない', L(0, null) > 0 && L(1, null) > 0);
+})();
+
+// ---------- スコア本体 ----------
+const PRIO = { minPerQuestion: 3, hasQuestion: true, minPerVideo: 40, hasVideo: true,
+               video: { kokushi: { minPerVideo: 40, has: true }, cbt: { minPerVideo: 7, has: true } } };
+const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, todayKey: '2026-09-15' }, o));
+
+(function weakSubjectOutranksStrongOne() {
+  // 2Q: 1周目 200問中120問正解（60%）／ 2J: 200問中180問正解（90%）
+  const qb = { '2Q': { '1': { total: 200, done: 200, correct: 120 } },
+               '2J': { '1': { total: 200, done: 200, correct: 180 } } };
+  const r = prio3({ qb, lastTouched: { '2Q': '2026-09-15', '2J': '2026-09-15' },
+                    targetRoundBy: { '2q': 2, '2j': 2 } });
+  ok('出来が悪い科目が上', r.bySubject['2Q'].score > r.bySubject['2J'].score,
+     { '2Q': r.bySubject['2Q'].score, '2J': r.bySubject['2J'].score });
+  eq('順位でも先頭', r.ranked[0].id, '2Q');
+})();
+
+(function volumeDoesNotBuyRank() {
+  // 2J の残りを大きくしても 2Q を抜かない（量はスコアに掛けない）
+  const qb = { '2Q': { '1': { total: 200, done: 200, correct: 120 } },
+               '2J': { '1': { total: 5000, done: 5000, correct: 4500 } } };
+  const r = prio3({ qb, lastTouched: { '2Q': '2026-09-15', '2J': '2026-09-15' },
+                    targetRoundBy: { '2q': 2, '2j': 2 } });
+  ok('2J の残り時間のほうが桁違いに大きい',
+     r.bySubject['2J'].remainMin > r.bySubject['2Q'].remainMin * 10,
+     { '2J': r.bySubject['2J'].remainMin, '2Q': r.bySubject['2Q'].remainMin });
+  ok('それでも順位は変わらない', r.bySubject['2Q'].score > r.bySubject['2J'].score,
+     { '2Q': r.bySubject['2Q'].score, '2J': r.bySubject['2J'].score });
+})();
+
+(function worksWithDefaultsOnly() {
+  // W・C・試験日がどれも無くても計算できる
+  const r = W.buildSubjectPriority({ qb: { '2Q': { '1': { total: 100, done: 100, correct: 60 } } },
+                                     todayKey: '2026-09-15', targetRoundBy: { '2q': 2 } });
+  const row = r.bySubject['2Q'];
+  ok('スコアが出る', Number.isFinite(row.score) && row.score > 0, row.score);
+  eq('出題重みは既定の中立', Math.round(row.examWeight * 1000) / 1000 > 0, true);
+  ok('1問あたりの分は仮の単価に落ちる', row.minPerQuestion > 0, row.minPerQuestion);
+  eq('試験日が無ければ ε は 0.3', Math.round(row.epsilon * 100) / 100, 0.3);
+  eq('試験日が無ければ減衰しない', row.decay, 1);
+})();
+
+(function unknownAccuracyUsesNeutral() {
+  // 正答数が未入力 → p は p0（データが無ければ 0.5）で計算し、印を残す
+  const r = prio3({ qb: { '2Q': { '1': { total: 100, done: 50 } } } });
+  const row = r.bySubject['2Q'];
+  eq('正答率未入力の印', row.hasAccuracy, false);
+  eq('中立値で計算する', row.p, 0.5);
+  ok('スコアは出る', row.score > 0, row.score);
+  // p=0.5 → G = 0.9 - 0.5 = 0.4、L = 1.3
+  ok('G は R* − 0.5', Math.abs(row.gain - 0.4) < 1e-9, row.gain);
+})();
+
+(function targetRoundStillZeroesFinished() {
+  // 目標周回まで終わっている科目は残りが0 → スコア0（従来どおり）
+  const qb = { '2Q': { '1': { total: 100, done: 100, correct: 60 } } };
+  const r = prio3({ qb, targetRoundBy: { '2q': 1 } });
+  eq('残り時間0', r.bySubject['2Q'].remainMin, 0);
+  eq('スコアも0', r.bySubject['2Q'].score, 0);
+})();
+
+(function examDatePullsScoreDown() {
+  // 試験が遠いほど、試験日時点の想起率が下がる → 伸びしろ G が大きい
+  const qb = { '2Q': { '1': { total: 100, done: 100, correct: 80 } } };
+  const near = prio3({ qb, targetRoundBy: { '2q': 2 }, examKey: '2026-09-20' });
+  const far  = prio3({ qb, targetRoundBy: { '2q': 2 }, examKey: '2027-03-15' });
+  ok('遠い試験のほうが減衰する', far.bySubject['2Q'].decay < near.bySubject['2Q'].decay,
+     { near: near.bySubject['2Q'].decay, far: far.bySubject['2Q'].decay });
+  ok('伸びしろも大きい', far.bySubject['2Q'].gain > near.bySubject['2Q'].gain);
+})();
+
+(function costDividesScore() {
+  // 1問に時間がかかる科目ほど、1分あたりの効きは小さい
+  const qb = { '2Q': { '1': { total: 100, done: 100, correct: 60 } } };
+  const cheap = W.buildSubjectPriority({ qb, todayKey: '2026-09-15', targetRoundBy: { '2q': 2 },
+    unitCost: { hasQuestion: true, minPerQuestion: 1 } });
+  const dear = W.buildSubjectPriority({ qb, todayKey: '2026-09-15', targetRoundBy: { '2q': 2 },
+    unitCost: { hasQuestion: true, minPerQuestion: 6 } });
+  ok('1問6分の科目はスコアが下がる', dear.bySubject['2Q'].score < cheap.bySubject['2Q'].score,
+     { cheap: cheap.bySubject['2Q'].score, dear: dear.bySubject['2Q'].score });
+  ok('おおむね反比例', Math.abs(cheap.bySubject['2Q'].score / dear.bySubject['2Q'].score - 6) < 0.01);
+})();
+
+// ---------- 試験日の取り出し ----------
+(function nextExam() {
+  const cds = [{ exam_date: '2026-08-01' }, { exam_date: '2026-11-20' }, { exam_date: '2027-02-01' }];
+  eq('いちばん近い先の試験', W.nextExamKey(cds, '2026-09-15'), '2026-11-20');
+  eq('過ぎた試験は見ない', W.nextExamKey([{ exam_date: '2026-01-01' }], '2026-09-15'), null);
+  eq('登録が無ければ null', W.nextExamKey([], '2026-09-15'), null);
+  eq('存在しない日を作らない', W.nextExamKey(null, '2026-09-15'), null);
+})();
+
+// ---------- 締切優先枠と、同点時のタイブレーク ----------
+(function deadlineLaneAndTiebreak() {
+  const mk = (id, sid, due) => plan({ id, subject_id: sid, unit: 'q', due_date: due });
+  // スコアでは 2J が上でも、締切に余裕の無い 2C が先に出る
+  const scoreOf = sid => (String(sid).toUpperCase() === '2J' ? 100 : 1);
+  const ordered = W.planPriorityOrder(
+    [mk('j', '2J', '2026-12-31'), mk('c', '2C', '2026-09-20')],
+    { scoreOf, todayKey: '2026-09-15', deadlineFirst: new Set(['2c']) });
+  eq('締切優先枠がスコアを上回る', ordered.map(p => p.id), ['c', 'j']);
+
+  // 枠に入っていなければスコア順
+  const normal = W.planPriorityOrder(
+    [mk('j', '2J', '2026-12-31'), mk('c', '2C', '2026-09-20')],
+    { scoreOf, todayKey: '2026-09-15', deadlineFirst: new Set() });
+  eq('枠が空ならスコア順', normal.map(p => p.id), ['j', 'c']);
+
+  // スコアも締切も同じなら、残り時間が多いほうが先
+  const flat = sid => 1;
+  const tie = W.planPriorityOrder(
+    [mk('small', '2J', '2026-10-01'), mk('big', '2C', '2026-10-01')],
+    { scoreOf: flat, todayKey: '2026-09-15', deadlineFirst: new Set(),
+      remainMinOf: g => (g === '2c' ? 900 : 100) });
+  eq('同点なら残りが多いほうが先', tie.map(p => p.id), ['big', 'small']);
+
+  // 締切のほうが残り時間より優先
+  const dueFirst = W.planPriorityOrder(
+    [mk('later', '2C', '2026-12-01'), mk('sooner', '2J', '2026-10-01')],
+    { scoreOf: flat, todayKey: '2026-09-15', deadlineFirst: new Set(),
+      remainMinOf: g => (g === '2c' ? 9000 : 10) });
+  eq('残りが多くても締切が近いほうが先', dueFirst.map(p => p.id), ['sooner', 'later']);
+})();
+
+// 締切優先枠が順番詰めまで通ること
+(function deadlineLaneReachesTheSchedule() {
+  const st = (id, sid, vol, due) => ({
+    plan: plan({ id, subject_id: sid, unit: 'q', target_round: 1, total_volume: vol,
+                 start_date: '2026-09-01', due_date: due }),
+    mine: [], canAuto: true
+  });
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 120;   // 1日120分 = 60問
+  // 2C: 100問(200分)、締切まで3日 → 要2日、余裕 3-2=1 ≦ bufferDays(1) → 優先枠
+  // 2J: 100問、締切は遠い
+  const res = W.buildPlanSequence(
+    [st('c', '2C', 100, '2026-09-18'), st('j', '2J', 100, '2026-12-31')],
+    '2026-09-15', { hasQuestion: true, minPerQuestion: 2 },
+    { bySubject: { '2C': { score: 1 }, '2J': { score: 100 } } }, 0, { bufferDays: 1 });
+  eq('締切の近い科目が先に置かれる', res.order[0], 'c');
+  ok('初日から進む', res.byPlan['c'].items[0].dateKey === '2026-09-15', res.byPlan['c'].items);
+  W.planGoalMinutesOf = goalWas;
 })();
 
 console.log();
