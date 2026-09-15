@@ -1389,6 +1389,174 @@ const unlock = (o) => W.roundUnlockPlan(Object.assign({
   ok('必要日数を出す', tight.includes('20日'), tight);
 })();
 
+// ==================== Phase 6: 2周目以降の範囲 ====================
+
+// ---------- 問題番号の入力（"3,7,12-14"） ----------
+(function questionNumberParsing() {
+  eq('カンマ区切り', W.parseQuestionNumbers('3,7,9'), [3, 7, 9]);
+  eq('範囲を展開する', W.parseQuestionNumbers('12-14'), [12, 13, 14]);
+  eq('混在', W.parseQuestionNumbers('3,7,12-14'), [3, 7, 12, 13, 14]);
+  eq('空白は無視', W.parseQuestionNumbers(' 3 , 7 , 12 - 14 '), [3, 7, 12, 13, 14]);
+  eq('全角のカンマ・数字・ハイフンも読む', W.parseQuestionNumbers('３，７，１２−１４'), [3, 7, 12, 13, 14]);
+  eq('読点でも区切る', W.parseQuestionNumbers('3、7'), [3, 7]);
+  eq('重複は畳む', W.parseQuestionNumbers('3,3,5,4-6'), [3, 4, 5, 6]);
+  eq('昇順に直す', W.parseQuestionNumbers('9,2,5'), [2, 5, 9]);
+  eq('逆向きの範囲も読む', W.parseQuestionNumbers('14-12'), [12, 13, 14]);
+  eq('空なら空配列', W.parseQuestionNumbers(''), []);
+  eq('null でも落ちない', W.parseQuestionNumbers(null), []);
+  eq('0 や負数は捨てる', W.parseQuestionNumbers('0,-3,5'), [5]);
+  eq('数字でないものは捨てる', W.parseQuestionNumbers('abc,5'), [5]);
+
+  eq('連番はまとめて書き戻す', W.formatQuestionNumbers([3, 7, 12, 13, 14]), '3,7,12-14');
+  eq('2連番は範囲にしない', W.formatQuestionNumbers([3, 4]), '3,4');
+  eq('3連番から範囲にする', W.formatQuestionNumbers([3, 4, 5]), '3-5');
+  eq('空なら空文字', W.formatQuestionNumbers([]), '');
+  eq('往復しても変わらない',
+     W.formatQuestionNumbers(W.parseQuestionNumbers('3,7,12-14')), '3,7,12-14');
+})();
+
+// ---------- 誤答のみモードの既定 ----------
+(function wrongOnlyDefault() {
+  // PLANNING_CONFIG.scope.wrongOnlyThreshold = 0.80
+  eq('正答率が高ければ既定でオン', W.wrongOnlyDefaultFor(0.85), true);
+  eq('ちょうど閾値でもオン', W.wrongOnlyDefaultFor(0.80), true);
+  eq('低ければオフ（全問やる）', W.wrongOnlyDefaultFor(0.79), false);
+  eq('正答率が無ければオフ', W.wrongOnlyDefaultFor(null), false);
+})();
+
+// ---------- 次の周にやる範囲と残り時間 ----------
+const scope = (o) => W.roundScope(Object.assign({
+  total: 200, minPerQuestion: 2, prevRound: 1, p: 0.9, records: [], wrongOnly: true
+}, o));
+
+(function scopeFromRecords() {
+  // 記録がある場合: 誤答 ∪ 確信度「低」の正答
+  const records = [
+    { round: 1, question_no: 3,  is_correct: false, confidence: 'high' },
+    { round: 1, question_no: 7,  is_correct: false, confidence: 'low'  },
+    { round: 1, question_no: 12, is_correct: true,  confidence: 'low'  },   // 正解だが自信なし
+    { round: 1, question_no: 20, is_correct: true,  confidence: 'high' },   // 対象外
+    { round: 2, question_no: 99, is_correct: false, confidence: 'low'  }    // 別の周は数えない
+  ];
+  const r = scope({ records });
+  eq('記録から出したと分かる', r.mode, 'recorded');
+  eq('誤答と自信なしの正答だけ', r.questions, [3, 7, 12]);
+  eq('件数', r.count, 3);
+  eq('残り時間は件数 × 1問あたり', r.remainMin, 6);
+  eq('推定ではない', r.estimated, false);
+})();
+
+(function scopeEstimatedWithoutRecords() {
+  // 記録が無い場合: 全体 × (1 − p)
+  const r = scope({ records: [], p: 0.9 });
+  eq('推定だと分かる', r.mode, 'estimated');
+  eq('全体 × (1 − p) = 200 × 0.1 = 20', r.count, 20);
+  eq('残り時間も推定ぶん', r.remainMin, 40);
+  eq('推定フラグ', r.estimated, true);
+  eq('番号は出せない', r.questions, null);
+
+  // 正答率が低いほど範囲は広がる
+  eq('p=0.5 なら半分', scope({ p: 0.5 }).count, 100);
+  eq('p が無ければ全問に倒す', scope({ p: null }).count, 200);
+})();
+
+(function scopeFullWhenOff() {
+  const r = scope({ wrongOnly: false, records: [{ round: 1, question_no: 3, is_correct: false }] });
+  eq('誤答のみがオフなら全問', r.mode, 'full');
+  eq('件数は全体', r.count, 200);
+  eq('記録があっても絞らない', r.questions, null);
+  eq('推定でもない', r.estimated, false);
+})();
+
+(function scopeEdges() {
+  eq('総数が無ければ0', scope({ total: 0 }).count, 0);
+  // 記録が「全問正解・全部自信あり」なら対象0件。推定に逃げない
+  const allRight = scope({ records: [{ round: 1, question_no: 1, is_correct: true, confidence: 'high' }] });
+  eq('対象0件でも記録は記録', allRight.mode, 'recorded');
+  eq('0件', allRight.count, 0);
+  eq('確信度が未入力の正答は対象外', scope({
+    records: [{ round: 1, question_no: 5, is_correct: true, confidence: null }] }).count, 0);
+  eq('確信度が未入力の誤答は対象', scope({
+    records: [{ round: 1, question_no: 5, is_correct: false, confidence: null }] }).count, 1);
+})();
+
+// ---------- 高確信の誤答の再テスト（翌日と7日後） ----------
+(function retestSchedule() {
+  const recs = [
+    // 自信があったのに外した → 翌日(9/16)と7日後(9/22)に出る
+    { subject_id: '2C', round: 1, question_no: 5, is_correct: false, confidence: 'high', recorded_on: '2026-09-15' },
+    // 自信なしの誤答は対象外（再テストではなく2周目の範囲で拾う）
+    { subject_id: '2C', round: 1, question_no: 6, is_correct: false, confidence: 'low',  recorded_on: '2026-09-15' },
+    // 正解は対象外
+    { subject_id: '2C', round: 1, question_no: 7, is_correct: true,  confidence: 'high', recorded_on: '2026-09-15' },
+    // 解いた日が無ければ出しようがない
+    { subject_id: '2C', round: 1, question_no: 8, is_correct: false, confidence: 'high', recorded_on: null }
+  ];
+  eq('解いた当日には出ない', W.highConfidenceRetests(recs, '2026-09-15').length, 0);
+
+  const d1 = W.highConfidenceRetests(recs, '2026-09-16');
+  eq('翌日に1件', d1.length, 1);
+  eq('その問題', d1[0].question_no, 5);
+  eq('何日後の回か', d1[0].retestDay, 1);
+
+  eq('あいだの日には出ない', W.highConfidenceRetests(recs, '2026-09-18').length, 0);
+
+  const d7 = W.highConfidenceRetests(recs, '2026-09-22');
+  eq('7日後にもう一度', d7.length, 1);
+  eq('7日後の回', d7[0].retestDay, 7);
+
+  eq('それ以降は出ない', W.highConfidenceRetests(recs, '2026-09-23').length, 0);
+  eq('空でも落ちない', W.highConfidenceRetests(null, '2026-09-16'), []);
+})();
+
+// ---------- 混同の誤答をまとめて交互に ----------
+(function confusedInterleaving() {
+  const recs = [
+    { subject_id: '2C', round: 1, question_no: 1, is_correct: false, error_type: 'confuse' },
+    { subject_id: '2C', round: 1, question_no: 2, is_correct: false, error_type: 'confuse' },
+    { subject_id: '2C', round: 1, question_no: 3, is_correct: false, error_type: 'confuse' },
+    { subject_id: '2C', round: 1, question_no: 4, is_correct: false, error_type: 'confuse' },
+    { subject_id: '2C', round: 1, question_no: 9, is_correct: false, error_type: 'unknown' },  // 混同ではない
+    { subject_id: '2J', round: 1, question_no: 7, is_correct: false, error_type: 'confuse' },
+    { subject_id: '2C', round: 2, question_no: 50, is_correct: false, error_type: 'confuse' }  // 別の周
+  ];
+  const g = W.interleaveConfused(recs, 1);
+  eq('科目ごとにまとまる', Object.keys(g).sort(), ['2C', '2J']);
+  // [1,2,3,4] → 前半[1,2] 後半[3,4] を交互 → [1,3,2,4]
+  eq('本の並びのまま続けない', g['2C'], [1, 3, 2, 4]);
+  eq('混同以外は入らない', g['2C'].includes(9), false);
+  eq('別の周は入らない', g['2C'].includes(50), false);
+  eq('1件だけならそのまま', g['2J'], [7]);
+
+  eq('周を指定しなければ全周から集める',
+     W.interleaveConfused(recs)['2C'].length, 5);
+  eq('何度呼んでも同じ並び', JSON.stringify(W.interleaveConfused(recs, 1)), JSON.stringify(g));
+  eq('空でも落ちない', W.interleaveConfused(null, 1), {});
+})();
+
+// ---------- 誤答のみモードのオンオフ ----------
+(function wrongOnlyToggle() {
+  const rounds = { '1': { total: 100, done: 100, correct: 90 }, '2': { total: 100, done: 0, correct: 0 } };
+  eq('未設定なら正答率から決まる（0.9 → オン）', W.roundWrongOnly(rounds, 2, 0.9), true);
+  eq('未設定で正答率が低ければオフ', W.roundWrongOnly(rounds, 2, 0.6), false);
+
+  const on = W.setRoundWrongOnly({ '2Q': rounds }, '2Q', 2, false);
+  eq('手で切ったらその値を覚える', W.roundWrongOnly(on['2Q'], 2, 0.9), false);
+  eq('進捗そのものは壊さない', on['2Q']['1'].correct, 90);
+
+  const back = W.setRoundWrongOnly(on, '2Q', 2, true);
+  eq('戻せる', W.roundWrongOnly(back['2Q'], 2, 0.1), true);
+
+  const fresh = W.setRoundWrongOnly({}, '2J', 3, true);
+  eq('無い周にも置ける', fresh['2J']['3'].wrong_only, true);
+  eq('進捗の枠も用意される', fresh['2J']['3'].done, 0);
+
+  // 元のオブジェクトを書き換えない（保存前の状態と比べられなくなるため）
+  const src = { '2Q': { '1': { total: 10, done: 10, correct: 9 } } };
+  W.setRoundWrongOnly(src, '2Q', 1, true);
+  eq('元は変えない', src['2Q']['1'].wrong_only, undefined);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

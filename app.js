@@ -6845,6 +6845,159 @@ function minutesPerQuestionFor(subjectId, unitCost, bySubject) {
   return PLAN_FALLBACK_MIN_PER_QUESTION;
 }
 
+// ==================== 問題単位の記録 ====================
+// 全問を入れさせる想定ではない。「誤答と自信なしの番号だけ」を入れてもらい、
+// 2周目以降の範囲を絞るのに使う。記録が無くても推定で動く。
+
+// "3,7,12-14" → [3,7,12,13,14]。全角のカンマ・数字・ハイフン、読点も読む。
+// 手で打つ欄なので、書き方の揺れで弾かずに拾えるものは拾う。
+function parseQuestionNumbers(text) {
+  if (!text) return [];
+  // 全角英数を半角へ、各種のカンマ・ダッシュを半角に寄せる
+  const norm = String(text)
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[、，]/g, ',')
+    .replace(/[−–—ー〜～]/g, '-');
+  const out = new Set();
+  norm.split(',').forEach(part => {
+    const t = part.trim();
+    if (!t) return;
+    const range = t.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (range) {
+      let a = parseInt(range[1], 10), b = parseInt(range[2], 10);
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return;
+      if (a > b) { const tmp = a; a = b; b = tmp; }   // 「14-12」も読む
+      for (let n = a; n <= b; n++) if (n > 0) out.add(n);
+      return;
+    }
+    const one = t.match(/^\d+$/);
+    if (!one) return;
+    const n = parseInt(t, 10);
+    if (n > 0) out.add(n);
+  });
+  return [...out].sort((a, b) => a - b);
+}
+
+// [3,7,12,13,14] → "3,7,12-14"。3連番以上だけ範囲にまとめる
+// （2連番を "3-4" にすると、かえって読みにくいため）。
+function formatQuestionNumbers(nums) {
+  const list = [...new Set((nums || []).map(Number).filter(n => Number.isFinite(n) && n > 0))]
+    .sort((a, b) => a - b);
+  const parts = [];
+  let i = 0;
+  while (i < list.length) {
+    let j = i;
+    while (j + 1 < list.length && list[j + 1] === list[j] + 1) j++;
+    if (j - i >= 2) { parts.push(list[i] + '-' + list[j]); i = j + 1; }
+    else { parts.push(String(list[i])); i++; }
+  }
+  return parts.join(',');
+}
+
+// 誤答のみモードを既定でオンにするか。前の周の正答率が高い教材は、
+// 全問やり直すより外したところに時間を使ったほうがよい。
+function wrongOnlyDefaultFor(prevAccuracy) {
+  const p = Number(prevAccuracy);
+  if (prevAccuracy === null || prevAccuracy === undefined || !Number.isFinite(p)) return false;
+  return p >= PLANNING_CONFIG.scope.wrongOnlyThreshold;
+}
+
+// 次の周にやる範囲と、それに要る時間。
+// input: { total, minPerQuestion, prevRound, p, records, wrongOnly }
+// 返り値: { mode, count, questions, remainMin, estimated }
+//   mode 'full'      誤答のみモードがオフ。全問やる
+//        'recorded'  問題単位の記録から出した（誤答 ∪ 確信度「低」の正答）
+//        'estimated' 記録が無いので 全体 × (1 − p) で見積もった
+//
+// 確信度が未入力の正答を対象に入れないのは、「入れていないだけ」の問題まで
+// 拾うと、記録を付けるほど範囲が広がる逆向きの動きになるため。
+// 誤答は確信度が未入力でも対象に入れる（外したことは確かなので）。
+function roundScope(input) {
+  const o = input || {};
+  const total = Math.max(0, Math.floor(Number(o.total) || 0));
+  const minPerQ = Number(o.minPerQuestion) > 0 ? Number(o.minPerQuestion) : PLAN_FALLBACK_MIN_PER_QUESTION;
+  const full = () => ({ mode: 'full', count: total, questions: null,
+                        remainMin: total * minPerQ, estimated: false });
+  if (!o.wrongOnly || total <= 0) return total <= 0
+    ? { mode: o.wrongOnly ? 'estimated' : 'full', count: 0, questions: null, remainMin: 0, estimated: !!o.wrongOnly }
+    : full();
+
+  const prevRound = Number(o.prevRound) || 0;
+  const mine = (o.records || []).filter(r => r && Number(r.round) === prevRound);
+  if (mine.length) {
+    const questions = mine
+      .filter(r => !r.is_correct || r.confidence === 'low')
+      .map(r => Number(r.question_no))
+      .filter(n => Number.isFinite(n) && n > 0);
+    const uniq = [...new Set(questions)].sort((a, b) => a - b);
+    return { mode: 'recorded', count: uniq.length, questions: uniq,
+             remainMin: uniq.length * minPerQ, estimated: false };
+  }
+
+  // 記録が無い。正答率から「外した割合」で見積もる。正答率も無ければ全問に倒す
+  const p = Number(o.p);
+  const wrongRate = (o.p === null || o.p === undefined || !Number.isFinite(p)) ? 1 : Math.max(0, Math.min(1, 1 - p));
+  const count = Math.round(total * wrongRate);
+  return { mode: 'estimated', count, questions: null, remainMin: count * minPerQ, estimated: true };
+}
+
+// ---------- 高確信の誤答の再テスト ----------
+// 自信があったのに外した問題は、フィードバック直後には直りやすい一方、
+// 1週間ほどで元の誤答が戻ることがある。そこで翌日と7日後の2点で見る。
+// 日付はその問題を解いた日（recorded_on）が起点。
+//
+// 「やり直したか」は記録していないので、対象日ちょうどの日にだけ出す。
+// 見逃した日のぶんは翌日に持ち越さない（持ち越すと、片づける手段が無いまま
+// 積み上がってしまうため）。
+function highConfidenceRetests(records, todayKey) {
+  const days = PLANNING_CONFIG.scope.highConfidenceRetestDays || [];
+  const today = todayKey || todayPlanKey();
+  const out = [];
+  (records || []).forEach(r => {
+    if (!r || r.is_correct || r.confidence !== 'high') return;
+    const from = String(r.recorded_on || '').slice(0, 10);
+    if (!from) return;
+    days.forEach(d => {
+      if (shiftDateKey(from, d) !== today) return;
+      out.push({ subject_id: r.subject_id, round: Number(r.round) || 0,
+                 question_no: Number(r.question_no) || 0,
+                 error_type: r.error_type || null, recorded_on: from, retestDay: d });
+    });
+  });
+  return out.sort((a, b) =>
+    String(a.subject_id).localeCompare(String(b.subject_id)) || a.question_no - b.question_no);
+}
+
+// ---------- 混同の誤答をまとめて交互に出す ----------
+// 取り違えた問題を本の並び順のまま続けて解くと、直前に見た知識でそのまま
+// 解けてしまい、取り違えを直す練習にならない。同じ科目の「混同」を集めて、
+// 前半と後半を交互に組み直し、似たものが続かないようにする。
+// 並びは決定的（乱数を使わない）ので、開くたびに順番が変わることはない。
+function interleaveConfused(records, round) {
+  const bySubject = {};
+  (records || []).forEach(r => {
+    if (!r || r.is_correct || r.error_type !== 'confuse') return;
+    if (round !== undefined && round !== null && Number(r.round) !== Number(round)) return;
+    const sid = String(r.subject_id || '');
+    const n = Number(r.question_no);
+    if (!sid || !Number.isFinite(n) || n <= 0) return;
+    (bySubject[sid] = bySubject[sid] || []).push(n);
+  });
+  const out = {};
+  Object.entries(bySubject).forEach(([sid, nums]) => {
+    const list = [...new Set(nums)].sort((a, b) => a - b);
+    const half = Math.ceil(list.length / 2);
+    const head = list.slice(0, half), tail = list.slice(half);
+    const mixed = [];
+    for (let i = 0; i < half; i++) {
+      mixed.push(head[i]);
+      if (i < tail.length) mixed.push(tail[i]);
+    }
+    out[sid] = mixed;
+  });
+  return out;
+}
+
 // ==================== 目標と実績（曜日別） ====================
 // 実績はログから直接出す。目標は getGoalForDate（上書き→スナップショット→曜日別
 // テンプレートの順）から引くので、過去日でスナップショットが無いぶんは
@@ -12991,6 +13144,90 @@ function mockExamAccuracy(row) {
   const t = Number(row && row.total_questions) || 0;
   const c = Number(row && row.correct_questions);
   return t > 0 && Number.isFinite(c) ? c / t : null;
+}
+
+// ---------- 問題単位の記録の読み書き ----------
+// テーブルがまだ無い環境では localStorage だけで動く。予定づくりは
+// 記録が無くても推定モードで回るので、ここが空でも困らない。
+const QUESTION_RECORDS_LS_KEY = 'medfocus_question_records';
+let _questionRecordsMissing = false;
+
+function questionRecordKey(r) {
+  return [String(r.subject_id || '').toLowerCase(), Number(r.round) || 0, Number(r.question_no) || 0].join('|');
+}
+
+async function fetchQuestionRecords() {
+  if (!hasDB() || _questionRecordsMissing) return getLocalList(QUESTION_RECORDS_LS_KEY);
+  const cached = getCached('qb_question_records');
+  if (cached) return cached;
+  const { data, error } = await supabase.from('qb_question_records').select('*')
+    .eq('user_id', session.user.id);
+  if (error) {
+    if (error.code === '42P01' || /does not exist/i.test(error.message || '')) {
+      _questionRecordsMissing = true;
+      console.info('qb_question_records テーブルが未作成のため、問題単位の記録はローカルだけで扱います');
+    } else {
+      console.error('fetchQuestionRecords error:', error.message);
+    }
+    return getLocalList(QUESTION_RECORDS_LS_KEY);
+  }
+  setCache('qb_question_records', data || []);
+  return data || [];
+}
+
+// その教材・その周の記録を「入力どおりに」置き換える。
+// 番号欄から消した問題は記録からも消す（消せないと直しようがないため）。
+async function replaceQuestionRecords(subjectId, round, rows) {
+  const sid = String(subjectId || '');
+  const rnd = Number(round) || 0;
+  const fresh = (rows || []).map(r => ({
+    subject_id: sid, round: rnd,
+    question_no: Number(r.question_no) || 0,
+    is_correct: !!r.is_correct,
+    confidence: r.confidence || null,
+    error_type: r.error_type || null,
+    recorded_on: r.recorded_on || toLocalDateKey(getLogicalDate(new Date()))
+  })).filter(r => r.question_no > 0);
+
+  const sameScope = r => String(r.subject_id || '').toLowerCase() === sid.toLowerCase() && Number(r.round) === rnd;
+
+  if (!hasDB() || _questionRecordsMissing) {
+    const kept = getLocalList(QUESTION_RECORDS_LS_KEY).filter(r => !sameScope(r));
+    setLocalList(QUESTION_RECORDS_LS_KEY, kept.concat(fresh.map((r, i) =>
+      Object.assign({ id: 'local-' + questionRecordKey(r) + '-' + i }, r))));
+    return fresh;
+  }
+
+  const { error: delErr } = await supabase.from('qb_question_records').delete()
+    .eq('user_id', session.user.id).eq('subject_id', sid).eq('round', rnd);
+  if (delErr) { console.error('replaceQuestionRecords delete error:', delErr.message); return []; }
+  let saved = [];
+  if (fresh.length) {
+    const { data, error } = await supabase.from('qb_question_records')
+      .insert(fresh.map(r => Object.assign({ user_id: session.user.id }, r))).select();
+    if (error) { console.error('replaceQuestionRecords insert error:', error.message); return []; }
+    saved = data || [];
+  }
+  invalidateCache('qb_question_records');
+  return saved;
+}
+
+// ---------- 誤答のみモードのオンオフ ----------
+// 教材（科目 × 周）ごと。qb_progress の周の枠に持たせる（完了日と同じ扱い）。
+// 未設定なら前の周の正答率から決める。手で切り替えたらその値を覚える。
+function roundWrongOnly(rounds, round, prevAccuracy) {
+  const cur = (rounds || {})[String(round)];
+  if (cur && typeof cur.wrong_only === 'boolean') return cur.wrong_only;
+  return wrongOnlyDefaultFor(prevAccuracy);
+}
+
+function setRoundWrongOnly(qb, subjectId, round, value) {
+  const next = JSON.parse(JSON.stringify(qb || {}));
+  const sid = String(subjectId || '');
+  if (!next[sid]) next[sid] = {};
+  if (!next[sid][String(round)]) next[sid][String(round)] = { done: 0, total: 0, correct: 0 };
+  next[sid][String(round)].wrong_only = !!value;
+  return next;
 }
 
 async function fetchPlanTasks() {
