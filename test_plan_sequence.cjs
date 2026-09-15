@@ -36,6 +36,12 @@ function eq(name, actual, expected) {
 }
 
 const plan = (o) => Object.assign({ id: o.id, title: o.id, status: 'active', auto_redistribute: true }, o);
+// app.js の定数は const なので window に生えず、jsdom の eval も呼ぶたびに別スコープ。
+// ここは値を直に置いて、app.js 側を動かしたらテストも意識して直す形にする。
+const ROUND_GAP_DEFAULT_DAYS = 7;    // app.js ROUND_GAP_DEFAULT_DAYS
+const ROUND_GAP_PIVOT_ACCURACY = 75; // app.js ROUND_GAP_PIVOT_ACCURACY
+const ROUND_GAP_MIN_DAYS = 1;        // app.js ROUND_GAP_MIN_DAYS
+const ROUND_GAP_MAX_DAYS = 21;       // app.js ROUND_GAP_MAX_DAYS
 
 // ---------- 優先順位 ----------
 (function priorityOrder() {
@@ -817,6 +823,183 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
      res && res.byPlan['qb'].items.length === 1, res && res.byPlan['qb'].items);
   ok('動画を持たない科目のQBは枠なりに分割される',
      res && res.byPlan['solo'].items.length > 1, res && res.byPlan['solo'].items);
+})();
+
+// 同じ教材の1周目と2周目が同じ日に並ばないこと。
+// 同じ問題をその日のうちに2度解くことになり、解き直しの間隔も空かないため。
+(function roundsDoNotOverlap() {
+  const entries = [
+    { plan: plan({ id: 'r1', subject_id: '4A2Q', unit: 'q', target_round: 1, due_date: '2026-09-30' }),
+      remaining: 60, minPerUnit: 2, startKey: '2026-09-06' },
+    { plan: plan({ id: 'r2', subject_id: '4A2Q', unit: 'q', target_round: 2, due_date: '2026-10-31' }),
+      remaining: 60, minPerUnit: 2, startKey: '2026-09-06' }
+  ];
+  // 1日の枠は両方まとめて入る広さにしておく。狭いと時間切れで分かれてしまい、
+  // 周回の前後を見ているのか時間切れなのかが区別できない。
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 480 });
+  const d1 = res.byPlan['r1'].items.map(i => i.dateKey);
+  const d2 = res.byPlan['r2'].items.map(i => i.dateKey);
+  ok('1周目と2周目が同じ日に並ばない', !d2.some(k => d1.indexOf(k) >= 0), { r1: d1, r2: d2 });
+  ok('2周目は1周目を終えた翌日から',
+     d2[0] > res.byPlan['r1'].finishKey, { '1周目完了': res.byPlan['r1'].finishKey, '2周目開始': d2[0] });
+  ok('1周目は初日から進む', d1[0] === '2026-09-06', d1);
+})();
+
+// 別の教材どうしは止め合わない。「多肢選択 2Q」と「2Q 産科」は解く問題が別。
+(function otherMaterialsAreNotBlocked() {
+  const entries = [
+    { plan: plan({ id: 'multi1', subject_id: '4A2Q', unit: 'q', target_round: 1, due_date: '2026-09-30' }),
+      remaining: 30, minPerUnit: 2, startKey: '2026-09-06' },
+    { plan: plan({ id: 'base2', subject_id: '2Q', unit: 'q', target_round: 2, due_date: '2026-09-30' }),
+      remaining: 30, minPerUnit: 2, startKey: '2026-09-06' }
+  ];
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 120 });
+  eq('多肢選択の1周目は初日', res.byPlan['multi1'].items[0].dateKey, '2026-09-06');
+  eq('別教材の2周目は初日から進める', res.byPlan['base2'].items[0].dateKey, '2026-09-06');
+})();
+
+// 3周目は2周目まで待つ。1周目が終わっているだけでは始めない。
+(function thirdRoundWaitsForSecond() {
+  const entries = [
+    { plan: plan({ id: 'a1', subject_id: '2Q', unit: 'q', target_round: 1, due_date: '2026-12-31' }),
+      remaining: 30, minPerUnit: 2, startKey: '2026-09-06' },
+    { plan: plan({ id: 'a2', subject_id: '2Q', unit: 'q', target_round: 2, due_date: '2026-12-31' }),
+      remaining: 30, minPerUnit: 2, startKey: '2026-09-06' },
+    { plan: plan({ id: 'a3', subject_id: '2Q', unit: 'q', target_round: 3, due_date: '2026-12-31' }),
+      remaining: 30, minPerUnit: 2, startKey: '2026-09-06' }
+  ];
+  const res = W.buildSequencedPlanSchedules({ entries, todayKey: '2026-09-06', goalMinutesOf: () => 480 });
+  const first = id => res.byPlan[id].items[0].dateKey;
+  ok('2周目は1周目のあと', first('a2') > res.byPlan['a1'].finishKey, { a1: res.byPlan['a1'].items, a2: res.byPlan['a2'].items });
+  ok('3周目は2周目のあと', first('a3') > res.byPlan['a2'].finishKey, { a2: res.byPlan['a2'].items, a3: res.byPlan['a3'].items });
+})();
+
+// 1周目を今日終えた教材の2周目は、今日には降りてこない。
+// 終わったプランは順番詰めの queue に入らないので、完了日を別に拾えているかを見る。
+(function nextRoundWaitsForFinishedRound() {
+  const state = [
+    { plan: plan({ id: 'done1', subject_id: '4A2Q', unit: 'q', target_round: 1, total_volume: 20,
+                   start_date: '2026-09-01', due_date: '2026-09-30' }),
+      mine: [{ id: 'x1', due_date: '2026-09-06', target_amount: 20, done_amount: 20, completed: true }],
+      canAuto: false },
+    { plan: plan({ id: 'next2', subject_id: '4A2Q', unit: 'q', target_round: 2, total_volume: 20,
+                   start_date: '2026-09-01', due_date: '2026-10-31' }),
+      mine: [], canAuto: true }
+  ];
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 120;
+  const res = W.buildPlanSequence(state, '2026-09-06', { q: 2 }, null, 0);
+  W.planGoalMinutesOf = goalWas;
+  // 正答率も実測の間隔も無いので既定の間隔（ROUND_GAP_DEFAULT_DAYS）ぶん空く
+  ok('今日1周目を終えた教材の2周目は復習間隔ぶん空けてから',
+     res && res.byPlan['next2'].items[0].dateKey
+        === W.shiftDateKey('2026-09-06', ROUND_GAP_DEFAULT_DAYS),
+     res && res.byPlan['next2'].items);
+})();
+
+// ---------- 次の周までに空ける日数 ----------
+(function reviewGapPureFunctions() {
+  const D = ROUND_GAP_DEFAULT_DAYS;
+  eq('実測が無ければ既定値', W.roundGapBaseDays(null), D);
+  eq('サンプルが1科目だけのビンは採らない',
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 1, avgGain: 30 }, { days: 11, count: 4, avgGain: 5 }] }), 11);
+  eq('いちばん伸びたビンの代表日数を採る',
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 3, avgGain: 4 }, { days: 6, count: 2, avgGain: 12 }] }), 6);
+  eq('伸び幅が出ていないビンは飛ばす',
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 5, avgGain: null }] }), D);
+
+  eq('基準の正答率なら基準どおり', W.roundReviewGapDays(ROUND_GAP_PIVOT_ACCURACY, 8), 8);
+  eq('正答率が低いほど短い', W.roundReviewGapDays(50, 12), 8);
+  eq('正答率が高いほど長い', W.roundReviewGapDays(100, 12), 16);
+  eq('正答数が未入力なら基準どおり', W.roundReviewGapDays(null, 9), 9);
+  ok('短いほうは1日を下回らない', W.roundReviewGapDays(0, 6) >= ROUND_GAP_MIN_DAYS,
+     W.roundReviewGapDays(0, 6));
+  eq('長いほうは上限で止まる', W.roundReviewGapDays(100, 40), ROUND_GAP_MAX_DAYS);
+})();
+
+// 1周目の出来が悪い教材ほど、2周目が早く回ってくること。
+(function weakMaterialComesBackSooner() {
+  const mk = (id, sid, round, gap) => ({
+    plan: plan({ id, subject_id: sid, unit: 'q', target_round: round, due_date: '2026-12-31' }),
+    remaining: 30, minPerUnit: 2, startKey: '2026-09-06', reviewGapDays: gap
+  });
+  const res = W.buildSequencedPlanSchedules({
+    entries: [mk('weak1', '2Q', 1, 0), mk('weak2', '2Q', 2, 4),
+              mk('ok1', '2J', 1, 0),   mk('ok2', '2J', 2, 14)],
+    todayKey: '2026-09-06', goalMinutesOf: () => 480
+  });
+  const first = id => res.byPlan[id].items[0].dateKey;
+  eq('出来が悪い教材の2周目は1周目の4日後', first('weak2'), '2026-09-10');
+  eq('出来がいい教材の2周目は14日後', first('ok2'), '2026-09-20');
+  ok('出来が悪いほうが先に戻ってくる', first('weak2') < first('ok2'),
+     { weak: first('weak2'), ok: first('ok2') });
+})();
+
+// 教材進捗の正答率と実測の間隔が、順番詰めまで通ること。
+(function gapFlowsFromProgressAndMeasurement() {
+  const mkState = (id, sid, round) => ({
+    plan: plan({ id, subject_id: sid, unit: 'q', target_round: round, total_volume: 20,
+                 start_date: '2026-09-01', due_date: '2026-12-31' }),
+    mine: round === 1
+      ? [{ id: id + '-t', due_date: '2026-09-06', target_amount: 20, done_amount: 20, completed: true }]
+      : [],
+    canAuto: round !== 1
+  });
+  // 1周目: 2Q は正答率50%、2J は100%。実測はいちばん伸びた間隔が 8〜14日（代表11日）。
+  const qb = { '2Q': { '1': { total: 20, done: 20, correct: 10 } },
+               '2J': { '1': { total: 20, done: 20, correct: 20 } } };
+  const roundGain = { bins: [{ days: 6, count: 2, avgGain: 3 }, { days: 11, count: 3, avgGain: 15 }] };
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 480;
+  const res = W.buildPlanSequence(
+    [mkState('q1', '2Q', 1), mkState('q2', '2Q', 2), mkState('j1', '2J', 1), mkState('j2', '2J', 2)],
+    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, roundGain });
+  W.planGoalMinutesOf = goalWas;
+  // 基準11日 × 正答率50/75 = 7日、× 100/75 = 15日
+  eq('正答率50%の2周目は7日後', res.byPlan['q2'].items[0].dateKey, '2026-09-13');
+  eq('正答率100%の2周目は15日後', res.byPlan['j2'].items[0].dateKey, '2026-09-21');
+})();
+
+// ---------- 残り時間を目標周回ぶんまで数える ----------
+// 1周目ぶんだけで数えると、1周目を終えた科目はスコアが 0 になり、
+// 出来が悪かった科目ほど2周目が最後尾に沈む（誤答率が 0 に掛かって消える）。
+(function remainingCountsPlannedRounds() {
+  // 2Q: 1周目を解き終えた。正答率60%（＝誤答率0.4）
+  // 2J: 1周目がまだ半分。正答率90%
+  const qb = { '2Q': { '1': { total: 200, done: 200, correct: 120 } },
+               '2J': { '1': { total: 200, done: 100, correct: 90 } } };
+  const lastTouched = { '2Q': TODAY, '2J': TODAY };
+
+  const only1 = prio({ qb, lastTouched });
+  eq('1周目ぶんで数えると解き終えた科目の残り時間は0', only1.bySubject['2Q'].remainMin, 0);
+  eq('残り時間が0ならスコアも0（誤答率が効かない）', only1.bySubject['2Q'].score, 0);
+
+  const upTo2 = prio({ qb, lastTouched, targetRoundBy: { '2q': 2, '2j': 2 } });
+  ok('2周目ぶんを数えると残り時間が戻る', upTo2.bySubject['2Q'].remainMin > 0,
+     upTo2.bySubject['2Q'].remainMin);
+  ok('1周目の出来が悪い科目が、進みの遅い科目より上に来る',
+     upTo2.bySubject['2Q'].score > upTo2.bySubject['2J'].score,
+     { '2Q': upTo2.bySubject['2Q'].score, '2J': upTo2.bySubject['2J'].score });
+  eq('順位でも先頭', upTo2.ranked[0].id, '2Q');
+
+  // 科目ごとに別の目標周回を持てる（多肢選択だけ2周目、など）
+  const mixed = prio({ qb, lastTouched, targetRoundBy: { '2q': 2 } });
+  ok('目標周回を渡した科目だけ残り時間が伸びる',
+     mixed.bySubject['2Q'].remainMin > 0 && mixed.bySubject['2J'].remainMin === only1.bySubject['2J'].remainMin,
+     { '2Q': mixed.bySubject['2Q'].remainMin, '2J': mixed.bySubject['2J'].remainMin });
+})();
+
+(function targetRoundBySubjectFromPlans() {
+  const map = W.planTargetRoundBySubject([
+    plan({ id: 'a', subject_id: '4A2Q', unit: 'q', target_round: 1 }),
+    plan({ id: 'b', subject_id: '4A2Q', unit: 'q', target_round: 3 }),
+    plan({ id: 'c', subject_id: '2J',   unit: 'q', target_round: 2 }),
+    plan({ id: 'd', subject_id: '2J',   unit: 'q', target_round: 5, status: 'archived' }),
+    plan({ id: 'e', subject_id: '2C',   unit: 'video', target_round: null })
+  ]);
+  eq('同じ科目では最大の周回を採る', map['4a2q'], 3);
+  eq('進行中でないプランは数えない', map['2j'], 2);
+  eq('周回を持たないプランは入らない', map['2c'], undefined);
 })();
 
 console.log();

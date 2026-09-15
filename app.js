@@ -7221,11 +7221,13 @@ function buildSubjectBudget(qbProgress, unit, targetRound) {
 // 1周目と2周目の正答率の差を、その科目の解き直し間隔で切る。
 // 周回の切り替わり日は記録していないので、間隔は「その科目を触った日の
 // 間隔の中央値」で代用する近似。
+// days はそのビンを代表する日数。「いちばん伸びた間隔」を予定に落とすときに使う
+// （15日以上は上限がないので ROUND_GAP_MAX_DAYS 寄りの代表値を置く）。
 const ROUND_GAP_BINS = [
-  { label: '〜3日',    min: 0,  max: 3 },
-  { label: '4〜7日',   min: 4,  max: 7 },
-  { label: '8〜14日',  min: 8,  max: 14 },
-  { label: '15日以上', min: 15, max: Infinity }
+  { label: '〜3日',    min: 0,  max: 3,        days: 2  },
+  { label: '4〜7日',   min: 4,  max: 7,        days: 6  },
+  { label: '8〜14日',  min: 8,  max: 14,       days: 11 },
+  { label: '15日以上', min: 15, max: Infinity, days: 18 }
 ];
 
 function roundAccuracy(rounds, r) {
@@ -7267,6 +7269,44 @@ function buildRoundGainByGap(qbProgress, reviewStats) {
     };
   });
   return { hasData: rows.length >= 2, rows: rows.sort((a, b) => b.gain - a.gain), bins };
+}
+
+// ---------- 2周目までに空ける日数 ----------
+// 1周目を終えた翌日にすぐ2周目へ入ると解き直しの間隔が空かず、空けすぎれば忘れる。
+// 基準は buildRoundGainByGap の実測（自分の記録でいちばん伸びた間隔）。実測が
+// 貯まるまでは既定値で動き、貯まったら自動でそちらに切り替わる。
+// そこから前の周の正答率で前後させる。出来が悪い科目ほど短く＝早めに次の周を迎える。
+// 「間隔を空けてしっかり復習してから」ではなく「早く戻って回数で埋める」側に倒している。
+const ROUND_GAP_DEFAULT_DAYS = 7;
+const ROUND_GAP_MIN_DAYS = 1;
+const ROUND_GAP_MAX_DAYS = 21;
+// この正答率のとき基準どおり。これより低ければ比例して短く、高ければ長くする。
+const ROUND_GAP_PIVOT_ACCURACY = 75;
+// 実測に切り替えるのに要る科目数。1科目だけの「いちばん伸びた間隔」は当てにならない。
+const ROUND_GAP_MIN_SAMPLES = 2;
+
+// 実測でいちばん伸びた間隔。サンプルが足りなければ既定値。
+// measured は実測に切り替わったかどうか（画面でどちらを使っているか出すのに使う）。
+function roundGapBase(roundGain) {
+  let best = null;
+  ((roundGain && roundGain.bins) || []).forEach(b => {
+    if (!b || !(b.count >= ROUND_GAP_MIN_SAMPLES) || b.avgGain === null) return;
+    if (!best || b.avgGain > best.avgGain) best = b;
+  });
+  return best && best.days > 0
+    ? { days: best.days, measured: true }
+    : { days: ROUND_GAP_DEFAULT_DAYS, measured: false };
+}
+function roundGapBaseDays(roundGain) { return roundGapBase(roundGain).days; }
+
+// その周に入る前に空ける日数。prevAccuracy は前の周の正答率（null = 正答数が未入力）。
+// 未入力の科目は基準どおりに置く。0 扱いにすると未入力なだけの科目が最短になってしまう。
+function roundReviewGapDays(prevAccuracy, baseDays) {
+  const base = Number(baseDays) > 0 ? Number(baseDays) : ROUND_GAP_DEFAULT_DAYS;
+  const acc = Number(prevAccuracy);
+  if (prevAccuracy === null || prevAccuracy === undefined || !Number.isFinite(acc)) return base;
+  const d = Math.round(base * acc / ROUND_GAP_PIVOT_ACCURACY);
+  return Math.min(ROUND_GAP_MAX_DAYS, Math.max(ROUND_GAP_MIN_DAYS, d));
 }
 
 // ==================== 徹夜のコスト ====================
@@ -11258,6 +11298,15 @@ function planGroupKey(plan) {
   const sid = plan && plan.subject_id;
   return String(baseSubjectIdOf(sid) || sid || '').toLowerCase() || '(none)';
 }
+// 同じ教材を指す鍵。周回の前後関係（1周目 → 2周目）を見るのに使う。
+// planGroupKey と違い vol.4 を元の科目へ寄せない。「多肢選択 2Q」「4連問 2Q」
+// 「2Q 産科」は解く問題そのものが別なので、周回もそれぞれ独立に数える。
+function planMaterialKey(plan) {
+  if (!plan) return '(none)';
+  return [String(plan.subject_id || '').toLowerCase(),
+          String(plan.unit || 'q').toLowerCase(),
+          String(plan.video_edition || '').toLowerCase()].join('|');
+}
 // 同じ科目の中の順。講義動画が先、問題演習が後。
 function planUnitRank(unit) { return unit === 'video' ? 0 : 1; }
 
@@ -11489,7 +11538,11 @@ function subjectStaleFactor(lastKey, todayKey) {
   return 1 + Math.min(1, days / SUBJECT_STALE_CAP_DAYS) * (SUBJECT_STALE_MAX - 1);
 }
 
-// input: { qb, video, unitCost, lastTouched, todayKey, targetRound }
+// input: { qb, video, unitCost, lastTouched, todayKey, targetRound, targetRoundBy }
+// targetRoundBy は科目ID（小文字）→ その科目の目標周回。残り時間をどこまで数えるかを
+// 科目ごとに変える。渡さなければ全科目 targetRound（既定 1）。
+// 1周目ぶんだけで数えると、1周目を終えた科目は残り時間が 0 になってスコアも 0 になり、
+// 「1周目の出来が悪かった科目ほど2周目が最後尾に沈む」という逆向きの並びになる。
 // 返り値: { bySubject: { [sid]: row }, ranked: [row], totalWeightMin }
 //   row = { id, name, remainMin, materialMin, materialPct,
 //           examQuestions, examPct, examDomain, examWeight, cramFactor,
@@ -11500,6 +11553,11 @@ function buildSubjectPriority(input) {
   const today = o.todayKey || todayPlanKey();
   const lastTouched = o.lastTouched || {};
   const targetRound = Number(o.targetRound) || 1;
+  const targetRoundBy = o.targetRoundBy || null;
+  const roundOf = rawId => {
+    const n = targetRoundBy ? Number(targetRoundBy[String(rawId).toLowerCase()]) : NaN;
+    return Number.isFinite(n) && n > 0 ? n : targetRound;
+  };
   const minPerQ = unitCost.hasQuestion && unitCost.minPerQuestion > 0 ? unitCost.minPerQuestion : null;
 
   // vol.4 は元の科目へ畳んでから数える（4連問の2Cは循環器の一部）
@@ -11508,7 +11566,7 @@ function buildSubjectPriority(input) {
 
   Object.entries(qb).forEach(([rawId, rounds]) => {
     const sid = baseSubjectIdOf(rawId) || rawId;
-    const p = subjectPlan(rounds, targetRound);
+    const p = subjectPlan(rounds, roundOf(rawId));
     if (!p) return;
     const b = bucket(sid);
     if (minPerQ) {
@@ -11622,6 +11680,9 @@ const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 //    収まらない科目（産婦人科47本など）だけ、予算ぶんずつ連続した日に分ける。
 //  - その日に進める講義動画は1科目まで。1日に2科目見終わると翌日のQBが
 //    2科目ぶん重なり、「まとめて全科目のQB」に近づく。
+//  - 同じ教材の2周目は、1周目を終えてから「復習間隔」ぶん空けてから。1周目と2周目が
+//    同じ日に並ぶと、同じ問題をその日のうちに2回解くことになる。間隔は entry の
+//    reviewGapDays（実測でいちばん伸びた間隔 × 前の周の出来）で決める。
 //
 // spentTodayMin は今日すでに勉強した分。今日の枠から引く。引かないと、今日のぶんを
 // 終えるたびに翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
@@ -11636,7 +11697,11 @@ function buildSequencedPlanSchedules(input) {
   const queue = (o.entries || [])
     .map(e => Object.assign({}, e, {
       left: Math.max(0, Math.floor(Number(e.remaining) || 0)),
-      groupKey: planGroupKey(e.plan), items: [], finishKey: null
+      groupKey: planGroupKey(e.plan), materialKey: planMaterialKey(e.plan),
+      round: Number(e.plan.target_round) || 0,
+      // 前の周を終えてから空ける日数。渡されなければ翌日から（最短）。
+      reviewGapDays: Math.max(1, Math.floor(Number(e.reviewGapDays) || 0) || 1),
+      items: [], finishKey: null
     }))
     .filter(e => e.left > 0 && Number.isFinite(e.minPerUnit) && e.minPerUnit > 0);
 
@@ -11655,6 +11720,24 @@ function buildSequencedPlanSchedules(input) {
       && (v.left > 0 || !v.finishKey || v.finishKey >= dayKey))
     || (doneAt[e.groupKey] && doneAt[e.groupKey] >= dayKey));
 
+  // 同じ教材の前の周が終わるまで、次の周は置かない。終えた当日も置かない
+  // （翌日から次の周）。1周目と2周目が同じ日に並ぶと、同じ問題をその日のうちに
+  // 2回解くことになり、解き直しの間隔も空かない。
+  // roundDoneAt は既に終えている周の完了日（教材|周 → 日付）。終わったプランは
+  // queue に入らないので、これが無いと「今日1周目を終えた教材」の2周目が今日へ降りてくる。
+  const roundDoneAt = o.roundDoneAt || {};
+  const waitingForPrevRound = (e, dayKey) => {
+    if (e.round <= 1) return false;
+    // 前の周を終えた日 + 間隔 まで待つ。間隔1日なら従来どおり「翌日から」。
+    const notYet = fin => !!fin && dayKey < shiftDateKey(fin, e.reviewGapDays);
+    if (queue.some(v => v !== e && v.materialKey === e.materialKey && v.round > 0 && v.round < e.round
+      && (v.left > 0 || !v.finishKey || notYet(v.finishKey)))) return true;
+    for (let r = 1; r < e.round; r++) {
+      if (notYet(roundDoneAt[e.materialKey + '|' + r])) return true;
+    }
+    return false;
+  };
+
   const warnings = [];
   let dayKey = todayKey;
   for (let d = 0; d < PLAN_SEQUENCE_MAX_DAYS && queue.some(e => e.left > 0); d++) {
@@ -11672,6 +11755,7 @@ function buildSequencedPlanSchedules(input) {
       if (e.startKey && dayKey < e.startKey) continue;                  // まだ始まっていない
       if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;        // その曜日は休み
       if (waitingForVideo(e, dayKey)) continue;                         // 同じ科目の動画が先
+      if (waitingForPrevRound(e, dayKey)) continue;                    // 同じ教材の前の周が先
       const isVideo = e.plan.unit === 'video';
       if (isVideo) {
         if (videoGroupToday && videoGroupToday !== e.groupKey) continue;  // 動画は1日1科目
@@ -12871,6 +12955,21 @@ async function deletePlan(id) {
   showToast(IC.check + ' プランを削除しました');
 }
 
+// 科目ID（小文字）→ 進行中プランの最大の周回。優先度の「残り時間」を
+// どこまで数えるかに使う。vol.4 は寄せずにプランの科目IDのまま持つ
+// （「多肢選択 2Q」と「2Q 産科」で目標周回が違いうるため）。
+function planTargetRoundBySubject(plans) {
+  const out = {};
+  (plans || []).forEach(p => {
+    if (!p || p.status !== 'active') return;
+    const r = Number(p.target_round) || 0;
+    if (r <= 0) return;
+    const k = String(p.subject_id || '').toLowerCase();
+    if (!out[k] || r > out[k]) out[k] = r;
+  });
+  return out;
+}
+
 // ---------- 優先順位どおりに順番へ詰める ----------
 // 1件だけでも順番詰めを使う。以前は「詰める相手がいない」として期間へ均していたが、
 // 「問題演習は分割しない」と噛み合わず、残り1プランになった途端に
@@ -12931,9 +13030,15 @@ function planTickedMinutesOn(state, dateKey, unitCost) {
 // 順番詰めの入口。state は syncPlans が組んだ { plan, mine, canAuto } の配列。
 // 単価を見積もれないプラン（実測が足りない・版が不明）も仮の単価で並べる。
 // 仮を使ったことは planSequenceNoteHTML が出す。
-function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentTodayMin) {
+function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentTodayMin, opts) {
+  const o = opts || {};
+  // 教材進捗は「前の周の正答率」を引くために使う。鍵は大文字小文字を揃えて持つ。
+  const qbByKey = {};
+  Object.entries(o.qb || {}).forEach(([k, v]) => { qbByKey[String(k).toLowerCase()] = v; });
+  const baseGapDays = roundGapBaseDays(o.roundGain);
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
+  const roundDoneAt = {};   // 教材|周 → その周を終えた日（次の周は翌日から）
   // 「着手して途中の科目」は科目単位で見る。プラン単位だと、動画を見終わった
   // 科目が数えられない（完了したプランは残量0で外れるため）。すると
   // 「動画を見終わる → その科目を触ったので放置係数が 2.0→1.0 に落ちる →
@@ -12956,6 +13061,14 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
       const k = planLastProgressKey(st.mine);
       if (k && (!videoDoneAt[group] || k > videoDoneAt[group])) videoDoneAt[group] = k;
     }
+    // 終えた周の完了日。完了したプランは queue に入らないので、ここで拾わないと
+    // 「今日1周目を終えた教材」の2周目が今日へ降りてくる。
+    const round = Number(st.plan.target_round) || 0;
+    if (round > 0 && remaining <= 0 && done > 0) {
+      const k = planLastProgressKey(st.mine);
+      const mk = planMaterialKey(st.plan) + '|' + round;
+      if (k && (!roundDoneAt[mk] || k > roundDoneAt[mk])) roundDoneAt[mk] = k;
+    }
   });
   const inProgress = new Set([...touched].filter(g => unfinished.has(g)));
 
@@ -12971,8 +13084,16 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     if (!planMinutesPerUnit(st.plan, unitCost)) st.noEstimate = true;
     const minPerUnit = planMinutesPerUnitOrDefault(st.plan, unitCost);
     const start = String(st.plan.start_date || '').slice(0, 10);
+    // 前の周を終えてから空ける日数。実測でいちばん伸びた間隔を基準に、
+    // 前の周の出来が悪い科目ほど短くする（＝早めに次の周を迎える）。
+    const round = Number(st.plan.target_round) || 0;
+    const reviewGapDays = round > 1
+      ? roundReviewGapDays(
+          roundAccuracy(qbByKey[String(st.plan.subject_id || '').toLowerCase()], round - 1),
+          baseGapDays)
+      : 0;
     entries.push({
-      plan: st.plan, remaining, minPerUnit,
+      plan: st.plan, remaining, minPerUnit, reviewGapDays,
       startKey: start && start > todayKey ? start : todayKey,
       dailyCap: planDailyCapacity(st.plan),
       excludeWeekdays: (st.plan.exclude_weekdays || []).map(Number)
@@ -12984,7 +13105,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   return buildSequencedPlanSchedules({
     entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
       .map(p => entries.find(e => e.plan.id === p.id)),
-    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, videoGroups, spentTodayMin
+    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, roundDoneAt, videoGroups, spentTodayMin
   });
 }
 
@@ -13037,14 +13158,23 @@ async function syncPlans(force) {
   const unitCost = buildUnitCost(logs);
   // 締切が並んだときの科目の順は、教材進捗と学習ログから出す
   // （残り時間 × 誤答率 × 放置日数）。プラン一覧で内訳も出す。
+  const qbProgress = getQBProgress();
   const subjectPriority = buildSubjectPriority({
-    qb: getQBProgress(), video: primaryVideoProgress(), unitCost,
-    lastTouched: buildSubjectLastTouched(logs), todayKey: today
+    qb: qbProgress, video: primaryVideoProgress(), unitCost,
+    lastTouched: buildSubjectLastTouched(logs), todayKey: today,
+    // 残り時間はプランの目標周回ぶんまで数える。1周目ぶんで切ると、1周目を
+    // 終えた科目のスコアが 0 になって誤答率が効かなくなる。
+    targetRoundBy: planTargetRoundBySubject(plans)
   });
+  // 「解き直しの間隔 × 1周目→2周目の伸び幅」の実測。次の周までに空ける日数の基準に使う。
+  // インサイトに出しているのと同じ計算で、こちらは予定づくりに回す。
+  const roundGain = buildRoundGainByGap(qbProgress,
+    buildReviewIntervalStats(logs, getLogicalDate(new Date())));
   // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
-    planSpentMinutesOn(logs, today) + planTickedMinutesOn(state, today, unitCost));
+    planSpentMinutesOn(logs, today) + planTickedMinutesOn(state, today, unitCost),
+    { qb: qbProgress, roundGain });
 
   const tasks = [];
   const rebuilt = [];
@@ -13065,7 +13195,9 @@ async function syncPlans(force) {
     tasks.push(...mine);
   }
   const noEstimate = state.filter(s => s.noEstimate).map(s => s.plan.id);
-  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate, subjectPriority };
+  const gapBase = roundGapBase(roundGain);
+  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate,
+                      subjectPriority, roundGapBaseDays: gapBase.days, roundGapMeasured: gapBase.measured };
   _planSyncAt = Date.now();
   return _planSyncResult;
 }
@@ -13636,7 +13768,8 @@ function planSequenceNoteHTML(sync) {
   return `<div class="plan-seq-note">
     <div class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています</div>
     <div class="plan-seq-order">${names.map((n, i) => `<span class="plan-seq-chip">${i + 1}. ${n}</span>`).join('')}</div>
-    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。科目どうしは${
+    <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。同じ教材の次の周は、前の周を終えてから${sync.roundGapBaseDays}日前後（${
+      sync.roundGapMeasured ? 'あなたの記録でいちばん伸びた間隔' : '実測が貯まるまでの既定値'}）空けてから。前の周の正答率が低い科目ほど間隔を詰めて早めに回します。科目どうしは${
       (sync.subjectPriority && sync.subjectPriority.hasData)
         ? '下の「科目の優先度」が高い順'
         : '科目マスタの並び順（教材進捗と学習記録がたまると、残り時間・正答率・放置日数から決まります）'}。
