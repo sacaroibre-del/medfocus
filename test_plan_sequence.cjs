@@ -1172,6 +1172,223 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   eq('欠損でも落ちない', W.mockExamAccuracy(null), null);
 })();
 
+// ==================== Phase 5: 間隔の上限を試験日に連動 ====================
+(function gapCapFollowsExam() {
+  const MAX = 21, MIN = 1;   // PLANNING_CONFIG.round.maxGapDays / minGapDays
+  eq('試験日が無ければ上限そのまま', W.roundGapCap(null, '2026-09-15'), MAX);
+  // floor(0.3 × 60) = 18
+  eq('試験まで60日なら18日', W.roundGapCap('2026-11-14', '2026-09-15'), 18);
+  // floor(0.3 × 20) = 6
+  eq('試験まで20日なら6日', W.roundGapCap('2026-10-05', '2026-09-15'), 6);
+  // floor(0.3 × 200) = 60 → 上限21で頭打ち
+  eq('遠い試験でも上限21', W.roundGapCap('2027-04-03', '2026-09-15'), MAX);
+  // floor(0.3 × 2) = 0 → 下限1
+  eq('試験が目前でも1日は空ける', W.roundGapCap('2026-09-17', '2026-09-15'), MIN);
+  eq('試験日が過去でも下限1', W.roundGapCap('2026-09-01', '2026-09-15'), MIN);
+})();
+
+// ==================== Phase 2: 締切クランプと状態 ====================
+const unlock = (o) => W.roundUnlockPlan(Object.assign({
+  gapDays: 7, prevDoneKey: '2026-09-15', todayKey: '2026-09-15',
+  remainMin: 200, dailyMin: 100, bufferDays: 1
+}, o));
+
+(function deadlineClamp() {
+  // requiredDays = ceil(200/100) = 2
+  // 締切まで余裕たっぷり: room = (2026-10-31 - 2026-09-15) - 2 - 1 = 46 - 3 = 43
+  const roomy = unlock({ dueKey: '2026-10-31' });
+  eq('必要日数', roomy.requiredDays, 2);
+  eq('余裕がある', roomy.room, 43);
+  eq('間隔はそのまま', roomy.effectiveGap, 7);
+  eq('短縮していない', roomy.shortened, false);
+  eq('解禁日 = 前周完了日 + 間隔', roomy.unlockKey, '2026-09-22');
+
+  // 締切が近い: 2026-09-20 まで。room = 5 - 2 - 1 = 2 → gap 7 が 2 に縮む
+  const tightish = unlock({ dueKey: '2026-09-20' });
+  eq('余裕が少ない', tightish.room, 2);
+  eq('締切に合わせて間隔が縮む', tightish.effectiveGap, 2);
+  eq('短縮した印', tightish.shortened, true);
+  eq('元の間隔も残す', tightish.gapDays, 7);
+  eq('解禁日も前倒しになる', tightish.unlockKey, '2026-09-17');
+})();
+
+(function statusIsExclusive() {
+  // ① 間隔1日でも締切に収まらない → 「締切がきつい」。遅れは重ねない
+  //    room = (2026-09-17 - 2026-09-15) - 2 - 1 = 2 - 3 = -1
+  const tight = unlock({ dueKey: '2026-09-17' });
+  ok('room が1未満', tight.room < 1, tight.room);
+  eq('状態は「締切がきつい」', tight.status, 'tight');
+  eq('遅れ判定はしない', tight.isBehind, false);
+
+  // ② 解禁前 → 待機中
+  const waiting = unlock({ dueKey: '2026-10-31', todayKey: '2026-09-18' });
+  eq('状態は待機中', waiting.status, 'waiting');
+  eq('遅れ判定はしない', waiting.isBehind, false);
+  eq('いつ解禁かを持つ', waiting.unlockKey, '2026-09-22');
+
+  // ③ 解禁後、必要日数が締切までの日数を超える → 遅れ
+  //    前周完了(9/15)の時点では入る計画だった（room = 46 - 30 - 1 = 15）。
+  //    そこから時間を空費して今日が 10/20、締切まで11日しかないのに必要日数は30日。
+  const behind = unlock({ dueKey: '2026-10-31', todayKey: '2026-10-20',
+                          remainMin: 3000, prevDoneKey: '2026-09-15' });
+  ok('計画そのものは入っていた（きついではない）', behind.room >= 1, behind.room);
+  eq('状態は遅れ', behind.status, 'behind');
+  eq('遅れ判定をする', behind.isBehind, true);
+
+  // ④ 解禁後で間に合う → ok
+  const fine = unlock({ dueKey: '2026-10-31', todayKey: '2026-09-25' });
+  eq('状態は ok', fine.status, 'ok');
+  eq('遅れ判定はしない', fine.isBehind, false);
+})();
+
+(function tightWinsOverBehind() {
+  // 「締切がきつい」と「遅れ」が同時に成り立つ状況でも、きついが優先で
+  // 遅れは重ねて出さない（計画側の問題と実行の遅れを分けるため）
+  const both = unlock({ dueKey: '2026-09-16', todayKey: '2026-09-30',
+                        remainMin: 5000, dailyMin: 10 });
+  eq('状態はきついのほう', both.status, 'tight');
+  eq('遅れは重ねない', both.isBehind, false);
+})();
+
+(function noDeadlineKeepsOldBehaviour() {
+  const free = unlock({ dueKey: null });
+  eq('締切が無ければ room は null', free.room, null);
+  eq('間隔はそのまま', free.effectiveGap, 7);
+  eq('短縮もしない', free.shortened, false);
+  eq('遅れ判定もしない', free.isBehind, false);
+  eq('解禁日は出る', free.unlockKey, '2026-09-22');
+})();
+
+(function gapCapAppliesOnTopOfDeadline() {
+  // 試験が近いと、締切に余裕があっても上限で頭打ちになる
+  // 試験まで10日 → gapCap = floor(0.3×10) = 3
+  const capped = unlock({ dueKey: '2026-12-31', gapDays: 14, examKey: '2026-09-25' });
+  eq('上限は3日', capped.gapCap, 3);
+  eq('上限で頭打ち', capped.effectiveGap, 3);
+  eq('短縮した印が立つ', capped.shortened, true);
+  // 試験日なしなら21が上限なので14がそのまま通る
+  const uncapped = unlock({ dueKey: '2026-12-31', gapDays: 14 });
+  eq('試験日が無ければ上限21', uncapped.gapCap, 21);
+  eq('14日がそのまま通る', uncapped.effectiveGap, 14);
+})();
+
+(function edgeCases() {
+  eq('1日に進める分が0なら必要日数は出せない', unlock({ dailyMin: 0 }).requiredDays, null);
+  eq('その場合は締切クランプをしない', unlock({ dailyMin: 0, dueKey: '2026-09-20' }).effectiveGap, 7);
+  eq('残りが0なら必要日数も0', unlock({ remainMin: 0 }).requiredDays, 0);
+  eq('前周の完了日が無ければ解禁日も無い', unlock({ prevDoneKey: null }).unlockKey, null);
+  eq('間隔は最低1日', unlock({ gapDays: 0 }).effectiveGap, 1);
+})();
+
+// 締切クランプが順番詰めまで通ること（純関数だけでなく実際の日付に効く）
+(function clampReachesTheSchedule() {
+  const mk = (id, round, due) => ({
+    plan: plan({ id, subject_id: '2Q', unit: 'q', target_round: round,
+                 total_volume: 30, start_date: '2026-09-01', due_date: due }),
+    mine: round === 1
+      ? [{ id: id + '-t', due_date: '2026-09-15', target_amount: 30, done_amount: 30, completed: true }]
+      : [],
+    canAuto: round !== 1
+  });
+  // 1周目の正答率100% → 間隔は基準7日 × 100/75 = 9日ぶん空くのが素の姿
+  const qb = { '2Q': { '1': { total: 30, done: 30, correct: 30 } } };
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 480;
+
+  // 締切が遠ければ9日後（2026-09-24）
+  const roomy = W.buildPlanSequence(
+    [mk('a1', 1, '2026-12-31'), mk('a2', 2, '2026-12-31')],
+    '2026-09-15', { hasQuestion: true, minPerQuestion: 2 }, null, 0,
+    { qb, bufferDays: 1 });
+  eq('締切が遠ければ間隔どおり9日後', roomy.byPlan['a2'].items[0].dateKey, '2026-09-24');
+  eq('短縮していない', roomy.byPlan['a2'].unlock.shortened, false);
+
+  // 締切が近いと詰まる。2周目の締切 9/20、1問2分×30問=60分、1日480分 → 必要1日
+  //   room = (9/20 - 9/15) - 1 - 1 = 3 → 間隔9日が3日に縮む
+  const tight = W.buildPlanSequence(
+    [mk('b1', 1, '2026-12-31'), mk('b2', 2, '2026-09-20')],
+    '2026-09-15', { hasQuestion: true, minPerQuestion: 2 }, null, 0,
+    { qb, bufferDays: 1 });
+  const u = tight.byPlan['b2'].unlock;
+  eq('締切に合わせて間隔が縮む', u.effectiveGap, 3);
+  eq('短縮した印', u.shortened, true);
+  eq('元の間隔も分かる', u.gapDays, 9);
+  eq('解禁日が前倒しになる', tight.byPlan['b2'].items[0].dateKey, '2026-09-18');
+  W.planGoalMinutesOf = goalWas;
+})();
+
+// 試験日が近いと、締切に余裕があっても間隔の上限で頭打ちになる（Phase 5 の通し）
+(function examCapReachesTheSchedule() {
+  const mk = (id, round) => ({
+    plan: plan({ id, subject_id: '2Q', unit: 'q', target_round: round, total_volume: 30,
+                 start_date: '2026-09-01', due_date: '2026-12-31', exam_countdown_id: 'e1' }),
+    mine: round === 1
+      ? [{ id: id + '-t', due_date: '2026-09-15', target_amount: 30, done_amount: 30, completed: true }]
+      : [],
+    canAuto: round !== 1
+  });
+  const qb = { '2Q': { '1': { total: 30, done: 30, correct: 30 } } };   // 間隔9日ぶん
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 480;
+  // 試験まで10日 → gapCap = floor(0.3 × 10) = 3
+  const res = W.buildPlanSequence(
+    [mk('c1', 1), mk('c2', 2)], '2026-09-15', { hasQuestion: true, minPerQuestion: 2 }, null, 0,
+    { qb, bufferDays: 1, countdowns: [{ id: 'e1', exam_date: '2026-09-25' }] });
+  eq('試験日から上限が決まる', res.byPlan['c2'].unlock.gapCap, 3);
+  eq('上限で頭打ち', res.byPlan['c2'].items[0].dateKey, '2026-09-18');
+  W.planGoalMinutesOf = goalWas;
+})();
+
+// ---------- 状態バッジ（きつい／待機中／遅れ を混ぜない） ----------
+(function statusBadges() {
+  const p = plan({ id: 'x', status: 'active' });
+  const prog = { status: 'ok' };
+  const badge = (seq, pr) => W.planStatusBadge(p, pr || prog, seq);
+
+  ok('締切がきついバッジ', badge({ unlock: { status: 'tight' } }).includes('締切がきつい'));
+  ok('きついときは遅れを重ねない',
+     !badge({ unlock: { status: 'tight', isBehind: false }, overdue: true }).includes('遅れ'));
+  ok('きついときは prog.behind も重ねない',
+     !badge({ unlock: { status: 'tight' } }, { status: 'behind' }).includes('遅れ'));
+
+  const waiting = badge({ unlock: { status: 'waiting', unlockKey: '2026-09-22' } });
+  ok('待機中バッジ', waiting.includes('待機中'));
+  ok('いつ解禁かを出す', waiting.includes('9/22'), waiting);
+  ok('待機中は遅れを出さない', !waiting.includes('遅れ'));
+
+  ok('解禁後に間に合わなければ遅れ',
+     badge({ unlock: { status: 'behind', isBehind: true } }).includes('遅れ'));
+  ok('従来の overdue も遅れのまま',
+     badge({ overdue: true, overDays: 3 }).includes('遅れ'));
+  ok('どれでもなければ順調', badge({ unlock: { status: 'ok' } }).includes('順調'));
+
+  ok('完了はすべてに優先',
+     W.planStatusBadge(plan({ id: 'y', status: 'done' }), prog, { unlock: { status: 'tight' } }).includes('完了'));
+})();
+
+// ---------- 短縮の説明 ----------
+(function unlockNote() {
+  eq('短縮していなければ何も出さない',
+     W.planUnlockNoteHTML({ unlock: { status: 'ok', shortened: false } }), '');
+  eq('解禁の情報が無ければ何も出さない', W.planUnlockNoteHTML({}), '');
+
+  const short = W.planUnlockNoteHTML({ unlock: {
+    status: 'ok', shortened: true, gapDays: 9, effectiveGap: 3, gapCap: 21, unlockKey: '2026-09-18' } });
+  ok('何日から何日に縮めたかを出す', short.includes('9日 → 3日'), short);
+  ok('締切に合わせたと言う', short.includes('締切に合わせて'), short);
+  ok('解禁日も出す', short.includes('9/18'), short);
+
+  // 上限に当たって縮んだときは理由を「試験日が近いため」にする
+  const capped = W.planUnlockNoteHTML({ unlock: {
+    status: 'ok', shortened: true, gapDays: 14, effectiveGap: 3, gapCap: 3, unlockKey: '2026-09-18' } });
+  ok('試験が理由だと分かる', capped.includes('試験日が近いため'), capped);
+
+  const tight = W.planUnlockNoteHTML({ unlock: { status: 'tight', requiredDays: 20, shortened: true,
+    gapDays: 9, effectiveGap: 1, gapCap: 21, unlockKey: '2026-09-16' } });
+  ok('きついときは打つ手を書く', tight.includes('締切を延ばす'), tight);
+  ok('必要日数を出す', tight.includes('20日'), tight);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

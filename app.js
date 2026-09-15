@@ -11962,7 +11962,12 @@ function buildSequencedPlanSchedules(input) {
       groupKey: planGroupKey(e.plan), materialKey: planMaterialKey(e.plan),
       round: Number(e.plan.target_round) || 0,
       // 前の周を終えてから空ける日数。渡されなければ翌日から（最短）。
-      reviewGapDays: Math.max(1, Math.floor(Number(e.reviewGapDays) || 0) || 1),
+      gapDays: Math.max(1, Math.floor(Number(e.gapDays != null ? e.gapDays : e.reviewGapDays) || 0) || 1),
+      // 締切クランプの材料。実際に詰めるかは前の周の完了日が決まってから決める
+      dueKey: String(e.plan && e.plan.due_date || '').slice(0, 10) || null,
+      examKey: e.examKey || null,
+      dailyMin: Number(e.dailyMin) || 0,
+      unlock: null,
       items: [], finishKey: null
     }))
     .filter(e => e.left > 0 && Number.isFinite(e.minPerUnit) && e.minPerUnit > 0);
@@ -11988,10 +11993,30 @@ function buildSequencedPlanSchedules(input) {
   // roundDoneAt は既に終えている周の完了日（教材|周 → 日付）。終わったプランは
   // queue に入らないので、これが無いと「今日1周目を終えた教材」の2周目が今日へ降りてくる。
   const roundDoneAt = o.roundDoneAt || {};
+  const bufferDays = o.bufferDays;
+
+  // 解禁日は「前の周を終えた日 + 間隔」。ただし間隔をそのまま空けると締切に
+  // 入らないときは間隔のほうを詰める（roundUnlockPlan）。
+  // 前の周の完了日は日ループの中で初めて決まるので、ここで遅延評価する。
+  // 同じ完了日で何度も呼ばれるため、エントリごとに1件だけ覚えておく。
+  const unlockPlanFor = (e, fin) => {
+    if (e.unlock && e.unlock.prevDoneKey === fin) return e.unlock;
+    const plan = roundUnlockPlan({
+      gapDays: e.gapDays, prevDoneKey: fin, dueKey: e.dueKey, examKey: e.examKey,
+      remainMin: e.left * e.minPerUnit, dailyMin: e.dailyMin,
+      todayKey, bufferDays
+    });
+    e.unlock = Object.assign({ prevDoneKey: fin }, plan);
+    return e.unlock;
+  };
+
   const waitingForPrevRound = (e, dayKey) => {
     if (e.round <= 1) return false;
-    // 前の周を終えた日 + 間隔 まで待つ。間隔1日なら従来どおり「翌日から」。
-    const notYet = fin => !!fin && dayKey < shiftDateKey(fin, e.reviewGapDays);
+    const notYet = fin => {
+      if (!fin) return false;
+      const u = unlockPlanFor(e, fin);
+      return !!u.unlockKey && dayKey < u.unlockKey;
+    };
     if (queue.some(v => v !== e && v.materialKey === e.materialKey && v.round > 0 && v.round < e.round
       && (v.left > 0 || !v.finishKey || notYet(v.finishKey)))) return true;
     for (let r = 1; r < e.round; r++) {
@@ -12062,7 +12087,9 @@ function buildSequencedPlanSchedules(input) {
     byPlan[e.plan.id] = {
       items: e.items, finishKey: e.finishKey, dueKey, overdue, overDays,
       // 期間内に置ききれなかったぶん（暴走よけに当たった場合）
-      unplaced: e.left
+      unplaced: e.left,
+      // 解禁日と状態（前の周がある教材のみ。無ければ null）
+      unlock: e.unlock || null
     };
   });
   return { byPlan, order, warnings };
@@ -13317,6 +13344,84 @@ function planExamDateOf(plan, countdowns) {
   return key || null;
 }
 
+// ---------- 次の周に入る前の間隔の上限（Phase 5） ----------
+// 試験が近いほど間隔を詰める。間隔をそのまま空けていると、試験までに
+// 予定した周が終わらなくなるため。
+//   gapCap = clamp(floor(ratio × (試験日 − 前の周の完了日)), min, max)
+// 試験日が登録されていなければ、既定の上限（21日）をそのまま使う。
+function roundGapCap(examDateKey, prevDoneKey) {
+  const cfg = PLANNING_CONFIG.round;
+  if (!examDateKey || !prevDoneKey) return cfg.maxGapDays;
+  const days = diffDateKeys(examDateKey, prevDoneKey);
+  if (!Number.isFinite(days)) return cfg.maxGapDays;
+  return Math.min(cfg.maxGapDays, Math.max(cfg.minGapDays, Math.floor(cfg.gapCapRatio * days)));
+}
+
+// ---------- 解禁日と状態（Phase 2） ----------
+// 復習間隔をそのまま空けると締切に間に合わないとき、間隔のほうを詰める。
+//
+//   requiredDays = ceil(remainMin / dailyMin)                       残りを片づけるのに要る日数
+//   room         = (締切 − 前周完了日) − requiredDays − bufferDays   間隔に回せる日数
+//   effectiveGap = clamp(min(gap, room), 1, gapCap)
+//   unlockDate   = 前周完了日 + effectiveGap
+//
+// 状態は上から順に排他で決める。「締切がきつい」と「遅れ」を重ねて出さないのは、
+// 前者が計画の立て方の問題（間隔を1日にしても入らない）で、後者が実行の遅れであり、
+// 打つ手が違うため。両方出すと、どちらに手を付ければよいか分からなくなる。
+//
+//   tight    room < 1。間隔を最短にしても締切に入らない → 締切か総量を見直す
+//   waiting  まだ解禁前。次の周は unlockKey から
+//   behind   解禁済みで、残りが締切までの日数に収まらない
+//   ok       上のいずれでもない
+//
+// 締切が無い教材は room を出さず、間隔は gapCap だけで頭打ちにする（従来どおり）。
+//
+// input: { gapDays, prevDoneKey, dueKey, examKey, remainMin, dailyMin, todayKey, bufferDays }
+function roundUnlockPlan(input) {
+  const o = input || {};
+  const cfg = PLANNING_CONFIG.round;
+  const gapDays = Math.max(cfg.minGapDays, Math.floor(Number(o.gapDays) || 0));
+  const prevDoneKey = o.prevDoneKey || null;
+  const dueKey = o.dueKey || null;
+  const todayKey = o.todayKey || todayPlanKey();
+  const bufferDays = Number.isFinite(Number(o.bufferDays))
+    ? Math.max(0, Math.floor(Number(o.bufferDays))) : planningBufferDays();
+
+  // 残りを片づけるのに要る日数。1日に進める分が出せなければ判定しない
+  // （出せないのに「間に合わない」と言うと、実測が無いだけの教材が全部遅れになる）。
+  const remainMin = Math.max(0, Number(o.remainMin) || 0);
+  const dailyMin = Number(o.dailyMin) || 0;
+  const requiredDays = dailyMin > 0 ? Math.ceil(remainMin / dailyMin) : null;
+
+  const gapCap = roundGapCap(o.examKey, prevDoneKey);
+
+  // 間隔に回せる日数。締切・前周完了日・必要日数がそろって初めて出せる
+  let room = null;
+  if (dueKey && prevDoneKey && requiredDays !== null) {
+    const span = diffDateKeys(dueKey, prevDoneKey);
+    if (Number.isFinite(span)) room = span - requiredDays - bufferDays;
+  }
+
+  let effectiveGap = gapDays;
+  if (room !== null) effectiveGap = Math.min(effectiveGap, room);
+  effectiveGap = Math.min(gapCap, Math.max(cfg.minGapDays, effectiveGap));
+
+  const unlockKey = prevDoneKey ? shiftDateKey(prevDoneKey, effectiveGap) : null;
+
+  let status = 'ok', isBehind = false;
+  if (room !== null && room < 1) {
+    status = 'tight';                      // 計画側の問題。遅れは重ねない
+  } else if (unlockKey && todayKey < unlockKey) {
+    status = 'waiting';
+  } else if (dueKey && requiredDays !== null) {
+    const daysLeft = diffDateKeys(dueKey, todayKey);
+    if (Number.isFinite(daysLeft) && requiredDays > daysLeft) { status = 'behind'; isBehind = true; }
+  }
+
+  return { requiredDays, room, gapDays, gapCap, effectiveGap, unlockKey,
+           shortened: effectiveGap < gapDays, status, isBehind, bufferDays };
+}
+
 // ---------- 優先順位どおりに順番へ詰める ----------
 // 1件だけでも順番詰めを使う。以前は「詰める相手がいない」として期間へ均していたが、
 // 「問題演習は分割しない」と噛み合わず、残り1プランになった途端に
@@ -13383,6 +13488,13 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   const qbByKey = {};
   Object.entries(o.qb || {}).forEach(([k, v]) => { qbByKey[String(k).toLowerCase()] = v; });
   const baseGapDays = roundGapBaseDays(o.roundGain);
+  // 締切クランプに要る材料。試験日はプランの参照から、1日に割ける分は
+  // 手入力の量か「その日の目標学習時間 ÷ 進行中の教材数」から出す。
+  const countdowns = o.countdowns || [];
+  const bufferDays = o.bufferDays;
+  const goalMinutesToday = planGoalMinutesOf(todayKey);
+  const activeCount = (state || []).filter(st =>
+    st.canAuto && Math.max(0, (Number(st.plan.total_volume) || 0) - planDoneAmount(st.mine)) > 0).length;
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
   const roundDoneAt = {};   // 教材|周 → その周を終えた日（次の周は翌日から）
@@ -13444,13 +13556,15 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     // 前の周を終えてから空ける日数。実測でいちばん伸びた間隔を基準に、
     // 前の周の出来が悪い科目ほど短くする（＝早めに次の周を迎える）。
     const round = Number(st.plan.target_round) || 0;
-    const reviewGapDays = round > 1
+    const gapDays = round > 1
       ? roundReviewGapDays(
           roundAccuracy(qbByKey[String(st.plan.subject_id || '').toLowerCase()], round - 1),
           baseGapDays)
       : 0;
     entries.push({
-      plan: st.plan, remaining, minPerUnit, reviewGapDays,
+      plan: st.plan, remaining, minPerUnit, gapDays,
+      examKey: planExamDateOf(st.plan, countdowns),
+      dailyMin: planDailyMinutes(st.plan, minPerUnit, activeCount, goalMinutesToday),
       startKey: start && start > todayKey ? start : todayKey,
       dailyCap: planDailyCapacity(st.plan),
       excludeWeekdays: (st.plan.exclude_weekdays || []).map(Number)
@@ -13462,7 +13576,8 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   return buildSequencedPlanSchedules({
     entries: planPriorityOrder(entries.map(e => e.plan), { scoreOf, todayKey, inProgress })
       .map(p => entries.find(e => e.plan.id === p.id)),
-    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, roundDoneAt, videoGroups, spentTodayMin
+    todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, roundDoneAt, videoGroups, spentTodayMin,
+    bufferDays
   });
 }
 
@@ -13531,7 +13646,7 @@ async function syncPlans(force) {
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
     planSpentMinutesOn(logs, today) + planTickedMinutesOn(state, today, unitCost),
-    { qb: qbProgress, roundGain });
+    { qb: qbProgress, roundGain, countdowns: examCountdowns, bufferDays: planningBufferDays() });
 
   const tasks = [];
   const rebuilt = [];
@@ -13563,11 +13678,43 @@ async function syncPlans(force) {
 // 未完了のまま過ぎたタスクは配り直しのときに消すので、prog.behind では遅れを
 // 拾えない（同じ仕事が今日以降に載り直しているため）。順番詰めが出す
 // 「締切までに終わらない見込み」を遅れの判定に使う。
+// 「締切がきつい」と「遅れ」は重ねて出さない。前者は計画の立て方の問題
+// （間隔を最短にしても締切に入らない）、後者は実行の遅れで、打つ手が違うため。
+// 両方出すと、締切を延ばすのか今日の量を増やすのかが読めなくなる。
 function planStatusBadge(plan, prog, seq) {
   if (plan.status === 'archived') return '<span class="plan-badge muted">アーカイブ</span>';
   if (plan.status === 'done' || prog.status === 'done') return '<span class="plan-badge done">完了</span>';
-  if ((seq && seq.overdue) || prog.status === 'behind') return '<span class="plan-badge behind">遅れ</span>';
+  const u = seq && seq.unlock;
+  if (u && u.status === 'tight') return '<span class="plan-badge tight">締切がきつい</span>';
+  if (u && u.status === 'waiting') {
+    return `<span class="plan-badge waiting">待機中（${formatPlanDateShort(u.unlockKey)}解禁）</span>`;
+  }
+  if ((u && u.isBehind) || (seq && seq.overdue) || prog.status === 'behind') {
+    return '<span class="plan-badge behind">遅れ</span>';
+  }
   return '<span class="plan-badge ok">順調</span>';
+}
+
+// バッジに入れる短い日付（"9/22"）。
+function formatPlanDateShort(key) {
+  const d = parseDateKey(key);
+  return d ? `${d.getMonth() + 1}/${d.getDate()}` : '';
+}
+
+// 解禁日の内訳を1行で説明する。締切に合わせて間隔を詰めたときだけ出す。
+// 「なぜ予定より早く2周目が来たのか」が分からないと、ただ設定を無視された
+// ように見えるため。
+function planUnlockNoteHTML(seq) {
+  const u = seq && seq.unlock;
+  if (!u) return '';
+  if (u.status === 'tight') {
+    return `<div class="plan-unlock-note warn">${IC.warn} 間隔を最短の1日にしても締切に入りません（残りに${
+      u.requiredDays}日必要）。締切を延ばすか、総量を見直してください。</div>`;
+  }
+  if (!u.shortened) return '';
+  const why = u.effectiveGap === u.gapCap && u.gapCap < u.gapDays ? '試験日が近いため' : '締切に合わせて';
+  return `<div class="plan-unlock-note">${why} ${u.gapDays}日 → ${u.effectiveGap}日に短縮しました（${
+    formatPlanDateShort(u.unlockKey)}解禁）。</div>`;
 }
 
 // seq は syncPlans が返す順番詰めの結果（そのプランのぶん）。無ければ従来どおり。
@@ -13620,7 +13767,7 @@ function planCardHTML(plan, tasks, todayKey, seq) {
     </div>
     <div class="plan-meta">${planUnitName(plan.unit)}${plan.unit === 'video' && isVideoEdition(plan.video_edition) ? `（${videoEditionLabel(plan.video_edition)}）` : ''}・${esc(subjectNameOf(plan.subject_id))}${plan.target_round ? `・${plan.target_round}周目` : ''}
       ・締切 ${due ? `${due.getMonth() + 1}/${due.getDate()}` : '–'}${excl}${plan.auto_redistribute === false ? '・自動再配分オフ' : ''}</div>
-    ${bar}${stats}${seq && seq.overdue ? `<div class="plan-warn">${IC.warn} 優先順位どおりに詰めると締切に ${seq.overDays}日 間に合いません。順番を変えるか、締切か総量を見直してください。</div>` : ''}
+    ${bar}${stats}${planUnlockNoteHTML(seq)}${seq && seq.overdue && !(seq.unlock && seq.unlock.status === 'tight') ? `<div class="plan-warn">${IC.warn} 優先順位どおりに詰めると締切に ${seq.overDays}日 間に合いません。順番を変えるか、締切か総量を見直してください。</div>` : ''}
     <div class="plan-actions">
       <button class="btn-log-action" data-plan-edit>編集</button>
       ${active && hasVolume ? '<button class="btn-log-action" data-plan-rebuild>再逆算</button>' : ''}

@@ -3473,6 +3473,11 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .plan-badge.behind { background:rgba(239,68,68,0.15); color:var(--color-accent-pink); }
 .plan-badge.done { background:rgba(78,205,196,0.15); color:var(--color-accent-teal); }
 .plan-badge.muted { background:var(--color-bg-elevated); color:var(--color-text-tertiary); }
+/* 締切がきつい＝計画側の問題。遅れ（実行側）とは色を分ける */
+.plan-badge.tight { background:rgba(245,158,11,0.15); color:var(--color-accent-yellow); }
+.plan-badge.waiting { background:var(--color-bg-elevated); color:var(--color-text-secondary); }
+.plan-unlock-note { font-size:0.75rem; color:var(--color-text-tertiary); margin-top:8px; line-height:1.5; }
+.plan-unlock-note.warn { color:var(--color-accent-yellow); }
 .plan-bar { height:8px; border-radius:var(--radius-full); background:var(--color-bg-elevated); overflow:hidden; margin-top:var(--space-md); }
 .plan-bar span { display:block; height:100%; border-radius:var(--radius-full); transition:width var(--transition-base); }
 .plan-bar-label { display:flex; justify-content:space-between; font-size:var(--font-size-xs); color:var(--color-text-secondary); margin-top:6px; }
