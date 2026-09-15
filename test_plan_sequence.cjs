@@ -1436,8 +1436,11 @@ const unlock = (o) => W.roundUnlockPlan(Object.assign({
 })();
 
 // ---------- 次の周にやる範囲と残り時間 ----------
+// prevWrongCount は前の周の「解いた数 − 正答数」。番号が全部入ったかの判定に使う。
+// 既定では記録の誤答数と一致させ、「そろっている」状態にしておく。
 const scope = (o) => W.roundScope(Object.assign({
-  total: 200, minPerQuestion: 2, prevRound: 1, p: 0.9, records: [], wrongOnly: true
+  total: 200, minPerQuestion: 2, prevRound: 1, p: 0.9, records: [], wrongOnly: true,
+  prevWrongCount: 2
 }, o));
 
 (function scopeFromRecords() {
@@ -1482,13 +1485,14 @@ const scope = (o) => W.roundScope(Object.assign({
 (function scopeEdges() {
   eq('総数が無ければ0', scope({ total: 0 }).count, 0);
   // 記録が「全問正解・全部自信あり」なら対象0件。推定に逃げない
-  const allRight = scope({ records: [{ round: 1, question_no: 1, is_correct: true, confidence: 'high' }] });
+  const allRight = scope({ prevWrongCount: 0,
+    records: [{ round: 1, question_no: 1, is_correct: true, confidence: 'high' }] });
   eq('対象0件でも記録は記録', allRight.mode, 'recorded');
   eq('0件', allRight.count, 0);
   eq('確信度が未入力の正答は対象外', scope({
-    records: [{ round: 1, question_no: 5, is_correct: true, confidence: null }] }).count, 0);
+    prevWrongCount: 0, records: [{ round: 1, question_no: 5, is_correct: true, confidence: null }] }).count, 0);
   eq('確信度が未入力の誤答は対象', scope({
-    records: [{ round: 1, question_no: 5, is_correct: false, confidence: null }] }).count, 1);
+    prevWrongCount: 1, records: [{ round: 1, question_no: 5, is_correct: false, confidence: null }] }).count, 1);
 })();
 
 // ---------- 高確信の誤答の再テスト（持ち越しあり） ----------
@@ -1655,15 +1659,18 @@ const RETEST_MAX = 20;   // PLANNING_CONFIG.scope.retestMaxPerDay
   eq('予定に置かれた量も絞られたぶん', placed, sc.count);
 
   // 記録を入れると、その件数そのものになる
+  // 誤答は2問（3番と7番）。1周目の正答数を 198/200 にして、番号が全部
+  // 入っている状態にする。そろって初めて実測に切り替わる。
   const records = [
     { subject_id: '2Q', round: 1, question_no: 3,  is_correct: false, confidence: 'high' },
     { subject_id: '2Q', round: 1, question_no: 7,  is_correct: false, confidence: 'low'  },
     { subject_id: '2Q', round: 1, question_no: 12, is_correct: true,  confidence: 'low'  },
     { subject_id: '2Q', round: 1, question_no: 40, is_correct: true,  confidence: 'high' }
   ];
+  const qbFull = { '2Q': { '1': { total: 200, done: 200, correct: 198 } } };
   const rec = W.buildPlanSequence(
     [mkState('r1', '2Q', 1, 200), mkState('r2', '2Q', 2, 200)],
-    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, records });
+    '2026-09-06', { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb: qbFull, records });
   const rs = rec.byPlan['r2'].scope;
   eq('記録から出した', rs.mode, 'recorded');
   eq('推定ではない', rs.estimated, false);
@@ -2078,7 +2085,8 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
     mine: round === 1 ? [{ id: id + 't', due_date: '2026-09-06', target_amount: 200, done_amount: 200, completed: true }] : [],
     canAuto: round !== 1
   });
-  const qb = { '2C': { '1': { total: 200, done: 200, correct: 190 } } };
+  // 誤答6問ぶんの番号がそろっているので実測に切り替わる（200 − 194 = 6）
+  const qb = { '2C': { '1': { total: 200, done: 200, correct: 194 } } };
   const rec = (no, type) => ({ subject_id: '2C', round: 1, question_no: no, is_correct: false, error_type: type });
   const records = [rec(1,'confuse'), rec(2,'confuse'), rec(3,'confuse'),
                    rec(20,'unknown'), rec(21,'misread'), rec(22,'unknown')];
@@ -2097,6 +2105,92 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
     if (sc.order.order[i] <= 3 && sc.order.order[i-1] <= 3) adj++;
   }
   eq('混同が連続しない', adj, 0);
+})();
+
+// ---------- 番号の部分入力で範囲が縮まないこと ----------
+// 運用上、番号は「自信があったのに外した」ぶんだけ入れる。誤答80問のうち
+// 10問だけ入れた教材の次の周が「10問」になると、入力するほど範囲が縮む。
+(function partialEntryKeepsEstimate() {
+  const wrong = n => ({ round: 1, question_no: n, is_correct: false, confidence: 'high' });
+  // 1周目 200問・正答率60% → 誤答80問。そのうち高確信の10問だけ入れた
+  const partial = W.roundScope({
+    total: 200, minPerQuestion: 2, prevRound: 1, p: 0.6, wrongOnly: true,
+    prevWrongCount: 80,
+    records: [1,2,3,4,5,6,7,8,9,10].map(wrong)
+  });
+  eq('量は見積もりのまま', partial.mode, 'estimated');
+  eq('途中入力の印', partial.partial, true);
+  eq('10問には縮まない', partial.count, 80);          // 200 × (1 − 0.6)
+  eq('入れた件数も持つ', partial.recordedCount, 10);
+  eq('本当の誤答数も持つ', partial.expectedWrong, 80);
+  eq('入れた番号は捨てない', partial.partialQuestions, [1,2,3,4,5,6,7,8,9,10]);
+  eq('範囲としての番号は出さない', partial.questions, null);
+
+  // 全部そろえば実測に切り替わる
+  const nums = []; for (let i = 1; i <= 80; i++) nums.push(i);
+  const complete = W.roundScope({
+    total: 200, minPerQuestion: 2, prevRound: 1, p: 0.6, wrongOnly: true,
+    prevWrongCount: 80, records: nums.map(wrong)
+  });
+  eq('そろえば実測', complete.mode, 'recorded');
+  eq('途中ではない', complete.partial, false);
+  eq('件数は入れたぶん', complete.count, 80);
+
+  // 自信なしの正答を足すと、誤答80問 + その分だけ範囲が広がる
+  const withLow = W.roundScope({
+    total: 200, minPerQuestion: 2, prevRound: 1, p: 0.6, wrongOnly: true,
+    prevWrongCount: 80,
+    records: nums.map(wrong).concat([{ round: 1, question_no: 150, is_correct: true, confidence: 'low' }])
+  });
+  eq('自信なしの正答も対象に入る', withLow.count, 81);
+
+  // 正答数が未入力だと本当の誤答数が出せない → 確かめようがないので途中扱い
+  const unverifiable = W.roundScope({
+    total: 200, minPerQuestion: 2, prevRound: 1, p: 0.6, wrongOnly: true,
+    prevWrongCount: null, records: [1,2,3].map(wrong)
+  });
+  eq('確かめられなければ実測と呼ばない', unverifiable.mode, 'estimated');
+  eq('途中入力の印', unverifiable.partial, true);
+  eq('本当の誤答数は分からない', unverifiable.expectedWrong, null);
+})();
+
+// プラン経由でも、正答数と突き合わせて判定すること
+(function partialEntryThroughPlan() {
+  const mkState = (id, round) => ({
+    plan: plan({ id, subject_id: '2Q', unit: 'q', target_round: round, total_volume: 200,
+                 start_date: '2026-09-01', due_date: '2026-12-31' }),
+    mine: round === 1 ? [{ id: id + 't', due_date: '2026-09-06', target_amount: 200, done_amount: 200, completed: true }] : [],
+    canAuto: round !== 1
+  });
+  // 1周目 190/200 正解 → 誤答10問。番号は3問だけ入れた
+  const qb = { '2Q': { '1': { total: 200, done: 200, correct: 190 } } };
+  const records = [1, 2, 3].map(n => ({ subject_id: '2Q', round: 1, question_no: n, is_correct: false, confidence: 'high' }));
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 600;
+  const res = W.buildPlanSequence([mkState('a', 1), mkState('b', 2)], '2026-09-06',
+    { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, records });
+  W.planGoalMinutesOf = goalWas;
+  const sc = res.byPlan['b'].scope;
+  eq('3問には縮まない', sc.partial, true);
+  ok('見積もりのまま', sc.count > 3, sc.count);
+  eq('入れた番号は残る', sc.partialQuestions, [1, 2, 3]);
+})();
+
+(function partialNoteExplainsWhy() {
+  const p2 = plan({ id: 'z', unit: 'q', target_round: 2, subject_id: '2Q' });
+  const h = W.planScopeNoteHTML(p2, { scope: {
+    mode: 'estimated', count: 80, estimated: true, partial: true,
+    recordedCount: 10, expectedWrong: 80, partialQuestions: [1,2,3] } });
+  ok('推定のままだと書く', h.includes('推定'), h);
+  ok('何問入っているか', h.includes('10問ぶん入っています'), h);
+  ok('本当の誤答数も出す', h.includes('誤答は80問'), h);
+  ok('入れた番号が無駄でないと書く', h.includes('解き直しの出題に使っています'), h);
+
+  // 正答数が未入力なら、誤答数は書かない
+  const noCount = W.planScopeNoteHTML(p2, { scope: {
+    mode: 'estimated', count: 200, estimated: true, partial: true,
+    recordedCount: 3, expectedWrong: null } });
+  ok('分からない数は書かない', !noCount.includes('前の周の誤答は'), noCount);
 })();
 
 console.log();

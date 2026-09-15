@@ -7066,17 +7066,8 @@ function roundScope(input) {
 
   const prevRound = Number(o.prevRound) || 0;
   const mine = (o.records || []).filter(r => r && Number(r.round) === prevRound);
-  if (mine.length) {
-    const questions = mine
-      .filter(r => !r.is_correct || r.confidence === 'low')
-      .map(r => Number(r.question_no))
-      .filter(n => Number.isFinite(n) && n > 0);
-    const uniq = [...new Set(questions)].sort((a, b) => a - b);
-    return { mode: 'recorded', count: uniq.length, questions: uniq,
-             remainMin: uniq.length * minPerQ, estimated: false };
-  }
 
-  // 記録が無い。正答率から「外した割合」で見積もる。正答率も無ければ全問に倒す。
+  // 見積もり。正答率から「外した割合」で出す。正答率も無ければ全問に倒す。
   //
   // 0問には丸めない。p が 1.0 になるのは「全問正解した」ときだが、それは
   // 20問を1周しただけでも起きる。データが薄いだけで完璧とは限らないのに
@@ -7084,8 +7075,43 @@ function roundScope(input) {
   // 最低1問残して、画面に出したうえで本人に判断してもらう。
   const p = Number(o.p);
   const wrongRate = (o.p === null || o.p === undefined || !Number.isFinite(p)) ? 1 : Math.max(0, Math.min(1, 1 - p));
-  const count = Math.max(1, Math.round(total * wrongRate));
-  return { mode: 'estimated', count, questions: null, remainMin: count * minPerQ, estimated: true };
+  const estCount = Math.max(1, Math.round(total * wrongRate));
+  const estimate = extra => Object.assign({ mode: 'estimated', count: estCount, questions: null,
+                                            remainMin: estCount * minPerQ, estimated: true }, extra || {});
+
+  if (!mine.length) return estimate();
+
+  const uniq = [...new Set(mine
+    .filter(r => !r.is_correct || r.confidence === 'low')
+    .map(r => Number(r.question_no))
+    .filter(n => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
+
+  // 番号が「全部入っているか」を確かめてから実測に切り替える。
+  //
+  // 運用上、番号は全部は入れない。入れる価値が高いのは「自信があったのに外した」
+  // 問題だけで、それは誤答のごく一部にすぎない。ところが1件でも記録があれば
+  // 実測に倒すと、誤答80問のうち10問だけ入れた教材の次の周が「10問」になり、
+  // 入力するほど範囲が縮むという逆向きの動きになる。
+  //
+  // 前の周の「解いた数 − 正答数」で本当の誤答数が分かるので、それと突き合わせる。
+  // 届いていなければ入力は途中とみなし、量は見積もりのままにする。
+  // 入れた番号は捨てず、再テストと並べ替えには使う（partialQuestions）。
+  //
+  // 正答数が未入力だと本当の誤答数が出せない。そのときも途中扱いにする
+  // （確かめようがないものを実測と呼ばない）。
+  const recordedWrong = mine.filter(r => !r.is_correct).length;
+  // Number(null) は 0 になるので、未指定は明示的に NaN へ倒す。
+  // でないと「正答数が未入力」が「誤答0問」と読まれ、1件でも記録があれば
+  // そろっている扱いになってしまう。
+  const actualWrong = (o.prevWrongCount === null || o.prevWrongCount === undefined)
+    ? NaN : Number(o.prevWrongCount);
+  const verified = Number.isFinite(actualWrong) && recordedWrong >= actualWrong;
+  if (!verified) {
+    return estimate({ partial: true, recordedCount: uniq.length, partialQuestions: uniq,
+                      expectedWrong: Number.isFinite(actualWrong) ? actualWrong : null });
+  }
+  return { mode: 'recorded', count: uniq.length, questions: uniq,
+           remainMin: uniq.length * minPerQ, estimated: false, partial: false };
 }
 
 // ---------- 高確信の誤答の再テスト ----------
@@ -14234,11 +14260,18 @@ function planRoundScope(plan, ctx) {
   if (!wrongOnly) return null;
   const records = (c.records || []).filter(r =>
     String(r.subject_id || '').toLowerCase() === sid);
+  // 前の周の本当の誤答数（解いた数 − 正答数）。番号が全部入ったかの判定に使う
+  const prev = (rounds || {})[String(round - 1)];
+  const prevDone = Number(prev && prev.done);
+  const prevCorrect = Number(prev && prev.correct);
+  const prevWrongCount = (Number.isFinite(prevDone) && Number.isFinite(prevCorrect))
+    ? Math.max(0, prevDone - prevCorrect) : null;
+
   const sc = roundScope({
     total: Number(plan.total_volume) || 0,
     minPerQuestion: c.minPerUnit,
     prevRound: round - 1,
-    p, records, wrongOnly: true
+    p, records, wrongOnly: true, prevWrongCount
   });
   // 記録から出したときだけ、解く順番も決めておく（混同を散らす）
   if (sc.mode === 'recorded') {
@@ -14573,6 +14606,14 @@ function planScopeNoteHTML(plan, seq) {
       <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>
       ${ord.interleaved ? '<div class="plan-scope-order-note">混同しやすい問題を交互に並べています</div>' : ''}
       <div class="plan-scope-order">${ord.order.map(n => `<span class="plan-scope-q">${n}</span>`).join('')}</div>`;
+  }
+  if (sc.partial) {
+    // 番号を入れ始めたが、まだ誤答ぶんがそろっていない。ここで実測に倒すと
+    // 入力するほど範囲が縮むので、量は見積もりのままにしていることを書く。
+    return `<div class="plan-scope-note">この周は<strong>誤答のみ 約${sc.count}${unit}</strong>（<span class="plan-scope-est">推定</span>）。
+      番号は${sc.recordedCount}問ぶん入っています${sc.expectedWrong !== null ? `（前の周の誤答は${sc.expectedWrong}問）` : ''}。
+      全部入れると実際の対象に切り替わります。入れた番号は解き直しの出題に使っています。
+      <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>`;
   }
   return `<div class="plan-scope-note">この周は<strong>誤答のみ 約${sc.count}${unit}</strong>（<span class="plan-scope-est">推定</span>）。
     教材進捗で誤答の番号を入れると、推定ではなく実際の対象に切り替わります。
