@@ -905,13 +905,19 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
 // ---------- 次の周までに空ける日数 ----------
 (function reviewGapPureFunctions() {
   const D = ROUND_GAP_DEFAULT_DAYS;
+  // 見るのは「後の時点の伸び」の縮小推定値（shrunkGain）。
+  // 2周目の最中の正答率（avgGain）は間隔が短いほど有利に出るので使わない。
   eq('実測が無ければ既定値', W.roundGapBaseDays(null), D);
   eq('サンプルが1科目だけのビンは採らない',
-     W.roundGapBaseDays({ bins: [{ days: 2, count: 1, avgGain: 30 }, { days: 11, count: 4, avgGain: 5 }] }), 11);
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 1, shrunkGain: 30 }, { days: 11, count: 4, shrunkGain: 5 }] }), 11);
   eq('いちばん伸びたビンの代表日数を採る',
-     W.roundGapBaseDays({ bins: [{ days: 2, count: 3, avgGain: 4 }, { days: 6, count: 2, avgGain: 12 }] }), 6);
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 3, shrunkGain: 4 }, { days: 6, count: 2, shrunkGain: 12 }] }), 6);
   eq('伸び幅が出ていないビンは飛ばす',
-     W.roundGapBaseDays({ bins: [{ days: 2, count: 5, avgGain: null }] }), D);
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 5, shrunkGain: null }] }), D);
+  eq('旧指標（直後の正答率）では選ばない',
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 9, avgGain: 40 }] }), D);
+  eq('同値なら既定値に近いビン',
+     W.roundGapBaseDays({ bins: [{ days: 2, count: 3, shrunkGain: 8 }, { days: 6, count: 3, shrunkGain: 8 }] }), 6);
 
   eq('基準の正答率なら基準どおり', W.roundReviewGapDays(ROUND_GAP_PIVOT_ACCURACY, 8), 8);
   eq('正答率が低いほど短い', W.roundReviewGapDays(50, 12), 8);
@@ -953,7 +959,7 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   // 1周目: 2Q は正答率50%、2J は100%。実測はいちばん伸びた間隔が 8〜14日（代表11日）。
   const qb = { '2Q': { '1': { total: 20, done: 20, correct: 10 } },
                '2J': { '1': { total: 20, done: 20, correct: 20 } } };
-  const roundGain = { bins: [{ days: 6, count: 2, avgGain: 3 }, { days: 11, count: 3, avgGain: 15 }] };
+  const roundGain = { bins: [{ days: 6, count: 2, shrunkGain: 3 }, { days: 11, count: 3, shrunkGain: 15 }] };
   const goalWas = W.planGoalMinutesOf;
   W.planGoalMinutesOf = () => 480;
   const res = W.buildPlanSequence(
@@ -1819,6 +1825,118 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
   eq('締切の近い科目が先に置かれる', res.order[0], 'c');
   ok('初日から進む', res.byPlan['c'].items[0].dateKey === '2026-09-15', res.byPlan['c'].items);
   W.planGoalMinutesOf = goalWas;
+})();
+
+// ==================== Phase 4: 後の時点で測った間隔の効き ====================
+(function laterGainUsesRoundKPlus2() {
+  // 2C: 1周目60% → 2周目(9日後) → 3周目85%。伸びは 85 − 60 = +25pt
+  const qb = { '2C': {
+    '1': { total: 100, done: 100, correct: 60, completed_at: '2026-06-01' },
+    '2': { total: 100, done: 100, correct: 80, completed_at: '2026-06-10' },
+    '3': { total: 100, done: 100, correct: 85 }
+  } };
+  const r = W.buildLaterRoundGain(qb, null, []);
+  eq('1件取れる', r.rows.length, 1);
+  const row = r.rows[0];
+  eq('間隔は完了日の差', row.gap, 9);
+  eq('実測の間隔だと分かる', row.gapExact, true);
+  eq('起点は周回 k の正答率', row.accFrom, 60);
+  eq('後の時点は周回 k+2', row.later, 85);
+  eq('伸びは後の時点 − k', row.gain, 25);
+  eq('出どころ', row.source, 'round');
+  eq('重みは k+2 の解答数', row.weight, 100);
+  // 2周目の最中の正答率(80%)ではなく3周目(85%)で測っている
+  ok('直後の正答率では測らない', row.later !== 80);
+})();
+
+(function laterGainFallsBackToMock() {
+  // 3周目が無い場合、2周目を終えたあとの模試を使う
+  const qb = { '2C': {
+    '1': { total: 100, done: 100, correct: 60, completed_at: '2026-06-01' },
+    '2': { total: 100, done: 100, correct: 80, completed_at: '2026-06-10' }
+  } };
+  const mocks = [
+    { subject_id: '2C', taken_on: '2026-05-01', correct_questions: 10, total_questions: 50 },  // 前なので無視
+    { subject_id: '2C', taken_on: '2026-06-20', correct_questions: 36, total_questions: 40 },  // 90%
+    { subject_id: '2C', taken_on: '2026-07-20', correct_questions: 20, total_questions: 40 }   // 後ろすぎ
+  ];
+  const r = W.buildLaterRoundGain(qb, null, mocks);
+  eq('1件', r.rows.length, 1);
+  eq('完了後の最初の模試を使う', r.rows[0].later, 90);
+  eq('出どころは模試', r.rows[0].source, 'mock');
+  eq('重みは模試の問題数', r.rows[0].weight, 40);
+  eq('伸びは 90 − 60', r.rows[0].gain, 30);
+
+  // 模試も3周目も無ければサンプルにしない
+  eq('後の時点が無ければ使わない', W.buildLaterRoundGain(qb, null, []).rows.length, 0);
+  eq('データ無し', W.buildLaterRoundGain(qb, null, []).hasData, false);
+})();
+
+(function laterGainApproximatesGapWithoutDates() {
+  // 完了日が無い古いデータは、触った日の間隔の中央値で代用する
+  const qb = { '2C': {
+    '1': { total: 100, done: 100, correct: 60 },
+    '2': { total: 100, done: 100, correct: 80 },
+    '3': { total: 100, done: 100, correct: 85 }
+  } };
+  const reviewStats = { visits: [
+    { subject: '2C 循環器', gapDays: null }, { subject: '2C 循環器', gapDays: 5 },
+    { subject: '2C 循環器', gapDays: 5 },    { subject: '2C 循環器', gapDays: 11 }
+  ] };
+  const r = W.buildLaterRoundGain(qb, reviewStats, []);
+  eq('中央値で代用', r.rows[0].gap, 5);
+  eq('近似だと分かる', r.rows[0].gapExact, false);
+  eq('実測の件数は0', r.exactCount, 0);
+})();
+
+(function binShrinkage() {
+  // ビンの値 = (n·ビン平均 + k·全ビン平均) / (n + k)、k = 5
+  // 〜3日 に1件 +40pt(重み10)、8〜14日 に3件 +10pt(重み計300)
+  const qb = {
+    'A1': { '1': { total: 10, done: 10, correct: 5, completed_at: '2026-06-01' },
+            '2': { total: 10, done: 10, correct: 5, completed_at: '2026-06-02' },
+            '3': { total: 10, done: 10, correct: 9 } },
+    'A2': { '1': { total: 100, done: 100, correct: 50, completed_at: '2026-06-01' },
+            '2': { total: 100, done: 100, correct: 50, completed_at: '2026-06-11' },
+            '3': { total: 100, done: 100, correct: 60 } },
+    'A3': { '1': { total: 100, done: 100, correct: 50, completed_at: '2026-06-01' },
+            '2': { total: 100, done: 100, correct: 50, completed_at: '2026-06-12' },
+            '3': { total: 100, done: 100, correct: 60 } },
+    'A4': { '1': { total: 100, done: 100, correct: 50, completed_at: '2026-06-01' },
+            '2': { total: 100, done: 100, correct: 50, completed_at: '2026-06-13' },
+            '3': { total: 100, done: 100, correct: 60 } }
+  };
+  const r = W.buildLaterRoundGain(qb, null, []);
+  const short = r.bins.find(b => b.days === 2);
+  const long = r.bins.find(b => b.days === 11);
+  eq('短いビンは1件', short.count, 1);
+  eq('長いビンは3件', long.count, 3);
+  eq('短いビンの素の平均', short.avgGain, 40);
+  eq('長いビンの素の平均', long.avgGain, 10);
+  ok('縮小で短いビンは全体平均へ引き寄せられる', short.shrunkGain < short.avgGain, short.shrunkGain);
+  ok('サンプルの多い長いビンはあまり動かない',
+     Math.abs(long.shrunkGain - long.avgGain) < Math.abs(short.shrunkGain - short.avgGain),
+     { short: short.shrunkGain, long: long.shrunkGain });
+
+  // 1件のビンはそもそも候補にならない（2科目以上）ので、選ばれるのは長いほう
+  eq('サンプルの少ない極端な値で選ばない', W.roundGapBaseDays(r), 11);
+})();
+
+(function laterGainWeightsByQuestionCount() {
+  // 20問の+30pt と 200問の+5pt。問題数で重みづけするので、平均は5pt寄りになる
+  const qb = {
+    'B1': { '1': { total: 20, done: 20, correct: 10, completed_at: '2026-06-01' },
+            '2': { total: 20, done: 20, correct: 10, completed_at: '2026-06-06' },
+            '3': { total: 20, done: 20, correct: 16 } },
+    'B2': { '1': { total: 200, done: 200, correct: 100, completed_at: '2026-06-01' },
+            '2': { total: 200, done: 200, correct: 100, completed_at: '2026-06-06' },
+            '3': { total: 200, done: 200, correct: 110 } }
+  };
+  const r = W.buildLaterRoundGain(qb, null, []);
+  const bin = r.bins.find(b => b.days === 6);
+  eq('2件とも同じビン', bin.count, 2);
+  // 単純平均なら (30+5)/2 = 17.5、重みづけなら (20×30 + 200×5)/220 = 7.27
+  ok('小さいサンプルに引っぱられない', bin.avgGain < 10, bin.avgGain);
 })();
 
 console.log();

@@ -7813,6 +7813,119 @@ const PLANNING_CONFIG = {
   }
 };
 
+// ==================== 後の時点で測った「間隔の効き」 ====================
+// buildRoundGainByGap は「2周目を解いている最中の正答率」で測る。これは間隔が
+// 短いほど有利に出る。直前に見たばかりなら解けて当たり前だからで、この指標で
+// 間隔を選ぶと、いくらでも短い側に寄ってしまう。
+//
+// そこで「後の時点」で測り直す。周回 k と k+1 の間隔 g の効果を
+//   （周回 k+2 の正答率、または k+1 を終えたあとに受けた模試の該当科目の正答率）
+//   −（周回 k の正答率）
+// とする。後の時点のデータがあるサンプルだけを使う。
+//
+// 間隔は、周の完了日が記録されていればその差。無い古いデータは、従来どおり
+// 「その科目を触った日の間隔の中央値」で代用する（近似であることは画面に出す）。
+
+// そのユーザーの模試から、指定日より後の最初の1件を返す。
+function firstMockAfter(mocks, subjectId, afterKey) {
+  const sid = String(subjectId || '').toLowerCase();
+  return (mocks || [])
+    .filter(m => m && String(m.subject_id || '').toLowerCase() === sid
+                 && String(m.taken_on || '').slice(0, 10) > afterKey
+                 && mockExamAccuracy(m) !== null)
+    .sort((a, b) => String(a.taken_on).localeCompare(String(b.taken_on)))[0] || null;
+}
+
+function roundCompletedKey(rounds, r) {
+  const cur = (rounds || {})[String(r)];
+  const k = cur && cur.completed_at ? String(cur.completed_at).slice(0, 10) : null;
+  return k || null;
+}
+
+function buildLaterRoundGain(qbProgress, reviewStats, mockExams) {
+  const idToName = {};
+  subjectCategories.forEach(c => c.subjects.forEach(x => { idToName[x.id] = x.name; }));
+  // 周の完了日が無い古いデータ用の近似（科目名 → 触った日の間隔の中央値）
+  const gapByName = {};
+  const visitsBySubject = {};
+  (reviewStats && reviewStats.visits || []).forEach(v => {
+    if (v.gapDays === null) return;
+    (visitsBySubject[v.subject] = visitsBySubject[v.subject] || []).push(v.gapDays);
+  });
+  Object.entries(visitsBySubject).forEach(([name, gaps]) => { gapByName[name] = median(gaps); });
+
+  const rows = [];
+  Object.entries(qbProgress || {}).forEach(([sid, rounds]) => {
+    const name = idToName[sid] || sid;
+    const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10))
+      .filter(Number.isFinite).sort((a, b) => a - b);
+    keys.forEach(k => {
+      const accK = roundAccuracy(rounds, k);
+      const accNext = roundAccuracy(rounds, k + 1);
+      if (accK === null || accNext === null) return;      // k と k+1 が要る
+
+      // 間隔。完了日があれば実測、無ければ近似
+      const doneK = roundCompletedKey(rounds, k), doneNext = roundCompletedKey(rounds, k + 1);
+      let gap = null, gapExact = false;
+      if (doneK && doneNext) {
+        const d = diffDateKeys(doneNext, doneK);
+        if (Number.isFinite(d) && d >= 0) { gap = d; gapExact = true; }
+      }
+      if (gap === null) gap = gapByName[name];
+      if (gap === undefined || gap === null) return;
+
+      // 後の時点。周回 k+2 があればそれ、無ければ k+1 を終えたあとの模試
+      const accLater = roundAccuracy(rounds, k + 2);
+      let later = null, weight = 0, source = null;
+      if (accLater !== null) {
+        later = accLater;
+        weight = Number((rounds[String(k + 2)] || {}).done) || 0;
+        source = 'round';
+      } else if (doneNext) {
+        const m = firstMockAfter(mockExams, sid, doneNext);
+        if (m) { later = mockExamAccuracy(m) * 100; weight = Number(m.total_questions) || 0; source = 'mock'; }
+      }
+      if (later === null || weight <= 0) return;           // 後の時点が無ければ使わない
+
+      rows.push({ id: sid, name, round: k, gap, gapExact, accFrom: accK, later,
+                  gain: later - accK, weight, source });
+    });
+  });
+
+  // ビンごとに、問題数で重みづけした平均を出す。20問の+10ptと200問の+10ptを
+  // 同じ重さで扱うと、小さい模試がビンを動かしてしまう。
+  const raw = ROUND_GAP_BINS.map(b => {
+    const hit = rows.filter(r => r.gap >= b.min && r.gap <= b.max);
+    const wsum = hit.reduce((s, r) => s + r.weight, 0);
+    return Object.assign({}, b, {
+      count: hit.length,
+      weight: wsum,
+      avgGain: wsum > 0 ? hit.reduce((s, r) => s + r.gain * r.weight, 0) / wsum : null,
+      subjects: hit.map(r => r.name)
+    });
+  });
+
+  // 縮小推定。サンプルの少ないビンが極端な値で勝たないよう、全体平均へ寄せる。
+  //   ビンの値 = (n·ビン平均 + k·全ビン平均) / (n + k)
+  const shrinkK = Number(PLANNING_CONFIG.round.binShrinkK) || 0;
+  const filled = raw.filter(b => b.avgGain !== null);
+  const overall = filled.length
+    ? filled.reduce((s, b) => s + b.avgGain * b.weight, 0) / filled.reduce((s, b) => s + b.weight, 0)
+    : null;
+  const bins = raw.map(b => Object.assign({}, b, {
+    shrunkGain: b.avgGain === null || overall === null
+      ? null
+      : (b.count * b.avgGain + shrinkK * overall) / (b.count + shrinkK)
+  }));
+
+  return {
+    hasData: rows.length > 0,
+    rows: rows.sort((a, b) => b.gain - a.gain),
+    bins, overall,
+    exactCount: rows.filter(r => r.gapExact).length
+  };
+}
+
 // 旧名は参照箇所が多いので別名として残す（値の出どころは PLANNING_CONFIG 一択）。
 const ROUND_GAP_DEFAULT_DAYS = PLANNING_CONFIG.round.defaultGapDays;
 const ROUND_GAP_MIN_DAYS = PLANNING_CONFIG.round.minGapDays;
@@ -7822,13 +7935,24 @@ const ROUND_GAP_MIN_SAMPLES = PLANNING_CONFIG.round.minSamples;
 
 // 実測でいちばん伸びた間隔。サンプルが足りなければ既定値。
 // measured は実測に切り替わったかどうか（画面でどちらを使っているか出すのに使う）。
+//
+// 見るのは buildLaterRoundGain の「後の時点の伸び」の縮小推定値。
+// 「2周目の最中の正答率」（buildRoundGainByGap）は間隔が短いほど有利に出るので、
+// 間隔選びには使わない。後の時点のサンプルが足りないうちは既定値のままにし、
+// 旧指標へはフォールバックしない（偏った指標で選ぶくらいなら既定値のほうがよい）。
+//
+// 同じ値のビンが並んだら、既定値にいちばん近いほうを採る。差が無いのに
+// 極端な間隔へ倒れるのを避けるため。
 function roundGapBase(roundGain) {
   let best = null;
   ((roundGain && roundGain.bins) || []).forEach(b => {
-    if (!b || !(b.count >= ROUND_GAP_MIN_SAMPLES) || b.avgGain === null) return;
-    if (!best || b.avgGain > best.avgGain) best = b;
+    if (!b || !(b.count >= ROUND_GAP_MIN_SAMPLES) || b.shrunkGain === null
+        || b.shrunkGain === undefined || !(b.days > 0)) return;
+    if (!best || b.shrunkGain > best.shrunkGain) { best = b; return; }
+    if (b.shrunkGain === best.shrunkGain
+        && Math.abs(b.days - ROUND_GAP_DEFAULT_DAYS) < Math.abs(best.days - ROUND_GAP_DEFAULT_DAYS)) best = b;
   });
-  return best && best.days > 0
+  return best
     ? { days: best.days, measured: true }
     : { days: ROUND_GAP_DEFAULT_DAYS, measured: false };
 }
@@ -8569,6 +8693,8 @@ async function renderInsights(){
   await loadQBFromSupabase();
   await loadVideoFromSupabase();
   await fetchCountdowns();   // 試験までの逆算に使う
+  // 「後の時点の伸び」を測るのに使う。読めなくてもインサイト全体は落とさない
+  try { await fetchMockExams(); } catch (e) { console.warn('mock exams:', e); }
   const allLogs=await fetchStudyLogs();
   const logs=applyInsightFilters(allLogs);
   const logicalToday=getLogicalDate(new Date());
@@ -9169,6 +9295,8 @@ async function renderInsights(){
   const qbQuality = buildQbQualityStats(logs, breakStats.breakBeforeById);
   const reviewStats = buildReviewIntervalStats(logs, logicalToday);
   const roundGain = buildRoundGainByGap(getQBProgress(), reviewStats);
+  // 間隔選びに実際に使っている指標。旧指標（直後の正答率）とは別物なので別表にする
+  const laterGain = buildLaterRoundGain(getQBProgress(), reviewStats, _mockExams);
   const goalHistory = buildGoalHistory(allLogs, logicalToday);
   // 単価（動画1本◯分・1問◯分）は教材の性質なので期間フィルタでは変えない。
   // 期間で動かすと「今日」を選んだだけでサンプル不足になり基準線ごと消えてしまう。
@@ -9208,7 +9336,7 @@ async function renderInsights(){
     lastWeekAvgStart, lastWeekLag, lastWeekSleepAvg, lateNightAlert, lateNightDiff, logs,
     maxDowMin, maxLocMin, medAcc, medHours, minutesFromBase5AMToTimeStr, morningPct, nightPct,
     oldestBacklog, paceCV, paceColor, paceIconSvg, paceName, performanceHtml, pipeline,
-    presetLabels, qbQuality, reviewMethod, reviewStats, rhythmLabel, rhythmStatus, roundGain,
+    presetLabels, qbQuality, reviewMethod, reviewStats, rhythmLabel, rhythmStatus, roundGain, laterGain,
     roundGains, sameDayMix, scatterPoints, sessionCount, sessionLen, shortCooldownDays,
     sleepAvgHours, sleepDailyData, sleepDebtHours, sleepHoursArr, sleepMaxHours, sleepMinHours,
     sleepSlotCompare, sortedLocations, sortedSubjectFocus, sortedSubjects, startTimeDiff,
@@ -10145,7 +10273,7 @@ function insightsQbProgressHTML(d) {
 
 // 解き方の質：条件別の正答率、解くスピード、解き直しの間隔
 function insightsQbQualityHTML(d) {
-  const { avgFocus, qbQuality, reviewStats, roundGain, sessionCount } = d;
+  const { avgFocus, qbQuality, reviewStats, roundGain, laterGain, sessionCount } = d;
   return `
   <!-- Section K: 演習の質（条件別） -->
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.128s">
@@ -10248,6 +10376,31 @@ function insightsQbQualityHTML(d) {
       <div><div class="section-title">解き直しの間隔</div><div class="section-subtitle">同じ科目に前回触れてから何日空けたか（活動が「復習」でなくても数えます）</div></div>
     </div>
 
+      ${laterGain.hasData ? `
+        <div class="break-subtitle">間隔別の「後の時点の伸び」<span class="break-tag">間隔選択に使用</span></div>
+        <div class="break-table">
+          <div class="break-row break-row-head break-row-run">
+            <div>解き直しの間隔</div><div style="text-align:right">サンプル</div><div style="text-align:right">伸び（縮小後）</div><div style="text-align:right"></div>
+          </div>
+          ${laterGain.bins.map(b => `
+            <div class="break-row break-row-run ${b.count === 0 ? 'is-thin' : ''}">
+              <div class="break-row-label">${b.label}</div>
+              <div class="break-row-num">${b.count}件</div>
+              <div class="break-row-num" style="color:${b.shrunkGain === null ? 'var(--color-text-tertiary)' : b.shrunkGain >= 10 ? '#10b981' : b.shrunkGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${
+                b.shrunkGain === null ? '-' : (b.shrunkGain >= 0 ? '+' : '') + b.shrunkGain.toFixed(1) + 'pt'}${
+                b.avgGain !== null && b.shrunkGain !== null ? `<span class="dim">（素 ${b.avgGain >= 0 ? '+' : ''}${b.avgGain.toFixed(0)}）</span>` : ''}</div>
+              <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
+            </div>
+          `).join('')}
+        </div>
+        <div class="break-note">周回 k と k+1 の間隔が、<strong>後になってどれだけ残ったか</strong>で測っています
+          （周回 k+2 の正答率、または k+1 を終えたあとに受けた模試 − 周回 k の正答率）。
+          2周目を解いている最中の正答率で測ると、間隔が短いほど有利に出てしまうためです。
+          サンプルの少ないビンが極端な値で勝たないよう、全体平均へ寄せた値（縮小後）で選んでいます。
+          ${laterGain.exactCount > 0 ? `${laterGain.exactCount}件は周の完了日から実測した間隔です。` : '間隔は触った日の中央値による近似です。'}
+          ${ROUND_GAP_MIN_SAMPLES}件に満たないうちは既定の${ROUND_GAP_DEFAULT_DAYS}日で動きます。</div>
+      ` : `<div class="break-note">周回 k+2 まで進むか、模試を記録すると「後の時点の伸び」が出ます。それまでは既定の${ROUND_GAP_DEFAULT_DAYS}日間隔で予定を組みます。</div>`}
+
     ${!reviewStats.hasData ? `
       <div class="data-collecting-msg">同じ科目を2回以上やった記録が貯まると、間隔ごとの正答率が出ます。</div>
     ` : `
@@ -10310,8 +10463,9 @@ function insightsQbQualityHTML(d) {
         ${reviewStats.stale.length > 8 ? `<div class="break-note">他 ${reviewStats.stale.length - 8}科目</div>` : ''}
       ` : ''}
 
+
       ${roundGain.hasData ? `
-        <div class="break-subtitle">間隔別の「1周目→2周目」の伸び幅</div>
+        <div class="break-subtitle">間隔別の「1周目→2周目」の伸び幅<span class="break-tag dim">参考・直後の正答率</span></div>
         <div class="break-table">
           <div class="break-row break-row-head break-row-run">
             <div>解き直しの間隔</div><div style="text-align:right">科目</div><div style="text-align:right">平均の伸び</div><div style="text-align:right"></div>
@@ -10325,7 +10479,7 @@ function insightsQbQualityHTML(d) {
             </div>
           `).join('')}
         </div>
-        <div class="break-note">周回の切り替わった日は記録していないため、間隔は「その科目を触った日の間隔の中央値」で代用した近似です。科目数が少ないうちは参考程度に見てください。</div>
+        <div class="break-note">こちらは<strong>2周目を解いている最中</strong>の正答率で測ったものです。間隔が短いほど有利に出るため、間隔の選択には使っていません（上の表を使っています）。参考として残しています。</div>
       ` : ''}
       <div class="break-note">粒度は科目単位（「2C 循環器を3日前にやった」まで）で、問題単位ではありません。厳密な忘却曲線ではなく、解き直しの間隔の傾向として読んでください。</div>
     `}
@@ -13341,12 +13495,16 @@ async function fetchPlans() {
 // テーブルがまだ無い環境では空配列を返す。予定づくりは既定値で動き続ける。
 const MOCK_EXAMS_LS_KEY = 'medfocus_mock_exams';
 let _mockExamsMissing = false;
+// 読み込み済みの模試。インサイトの描画は同期なので、ここに持っておく
+let _mockExams = [];
 
 async function fetchMockExams() {
-  if (!hasDB()) return getLocalList(MOCK_EXAMS_LS_KEY);
-  if (_mockExamsMissing) return getLocalList(MOCK_EXAMS_LS_KEY);
+  if (!hasDB() || _mockExamsMissing) {
+    _mockExams = getLocalList(MOCK_EXAMS_LS_KEY);
+    return _mockExams;
+  }
   const cached = getCached('mock_exams');
-  if (cached) return cached;
+  if (cached) { _mockExams = cached; return cached; }
   const { data, error } = await supabase.from('mock_exams').select('*')
     .eq('user_id', session.user.id).order('taken_on', { ascending: true });
   if (error) {
@@ -13357,10 +13515,12 @@ async function fetchMockExams() {
     } else {
       console.error('fetchMockExams error:', error.message);
     }
-    return getLocalList(MOCK_EXAMS_LS_KEY);
+    _mockExams = getLocalList(MOCK_EXAMS_LS_KEY);
+    return _mockExams;
   }
   setCache('mock_exams', data || []);
-  return data || [];
+  _mockExams = data || [];
+  return _mockExams;
 }
 
 // 模試の正答率（0〜1）。問題数が0なら null。
@@ -14157,10 +14317,12 @@ async function syncPlans(force) {
     // 終えた科目のスコアが 0 になって誤答率が効かなくなる。
     targetRoundBy: planTargetRoundBySubject(plans)
   });
-  // 「解き直しの間隔 × 1周目→2周目の伸び幅」の実測。次の周までに空ける日数の基準に使う。
-  // インサイトに出しているのと同じ計算で、こちらは予定づくりに回す。
-  const roundGain = buildRoundGainByGap(qbProgress,
-    buildReviewIntervalStats(logs, getLogicalDate(new Date())));
+  // 「間隔 × 後の時点の伸び」の実測。次の周までに空ける日数の基準に使う。
+  // 直後の正答率で測ると間隔が短いほど有利に出るので、周回 k+2 か
+  // k+1 完了後の模試で測り直したものを見る。
+  const mocks = await fetchMockExams();
+  const roundGain = buildLaterRoundGain(qbProgress,
+    buildReviewIntervalStats(logs, getLogicalDate(new Date())), mocks);
   // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
   // 翌日ぶんが今日へ降りてきて、やってもやっても今日のタスクが減らない。
   const sequence = buildPlanSequence(state, today, unitCost, subjectPriority,
@@ -15028,6 +15190,7 @@ async function bootstrapProgressTracking() {
     await fetchProgressSnapshots();
     saveProgressSnapshot();
     _qRecords = await fetchQuestionRecords();
+    await fetchMockExams();
   } catch(e) { console.warn('progress bootstrap error:', e); }
 }
 
