@@ -1002,6 +1002,146 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   eq('周回を持たないプランは入らない', map['2c'], undefined);
 })();
 
+// ==================== Phase 1: 追加データの層 ====================
+
+// ---------- 出題重み W の正規化 ----------
+(function examWeightNormalized() {
+  // CBT_SUBJECT_DOMAIN は const なのでソースから科目IDを拾う
+  const src = require('fs').readFileSync(__dirname + '/app.js', 'utf8');
+  const block = src.slice(src.indexOf('const CBT_SUBJECT_DOMAIN'), src.indexOf("'3D': [['AB', 3]]") + 40);
+  const ids = [...new Set([...block.matchAll(/'([123][A-Z])':/g)].map(m => m[1]))];
+  const mean = a => a.reduce((s, x) => s + x, 0) / a.length;
+  const before = mean(ids.map(id => W.cbtExamWeightOf(id)));
+  const after = mean(ids.map(id => W.cbtExamWeightNorm(id)));
+  ok('正規化前の平均は1.0からずれている（クランプの張り付きぶん）',
+     Math.abs(before - 1) > 0.005, before);
+  ok('正規化後の平均は1.0', Math.abs(after - 1) < 1e-9, after);
+  ok('順位は変わらない',
+     ids.slice().sort((a, b) => W.cbtExamWeightOf(b) - W.cbtExamWeightOf(a)).join()
+     === ids.slice().sort((a, b) => W.cbtExamWeightNorm(b) - W.cbtExamWeightNorm(a)).join());
+  eq('対応づけの無い科目は中立のまま', W.cbtExamWeightOf('anki'), 1);
+})();
+
+// ---------- 正答率 p（直近周を累積へ引き寄せる） ----------
+(function blendedAccuracy() {
+  const m = 10;   // PLANNING_CONFIG.accuracy.priorWeight
+  // 1周目だけ: 寄せる先が無いので素通り
+  const only1 = W.blendedRoundAccuracy({ '1': { total: 200, done: 200, correct: 120 } });
+  ok('1周目だけなら直近周の値そのもの', Math.abs(only1.p - 0.6) < 1e-9, only1);
+  eq('直近周の番号', only1.round, 1);
+  eq('直近周の解答数', only1.nRecent, 200);
+
+  // 2周目を10問だけ解いた直後: 累積に強く寄る
+  const early = W.blendedRoundAccuracy({
+    '1': { total: 200, done: 200, correct: 120 },   // 60%
+    '2': { total: 200, done: 10,  correct: 10 }     // 100%（10問だけ）
+  });
+  const pCum = (120 + 10) / (200 + 10);
+  eq('直近周は2周目', early.round, 2);
+  ok('累積は全周から出す', Math.abs(early.pCumulative - pCum) < 1e-9, early.pCumulative);
+  ok('p は (10×1.0 + 10×累積)/20', Math.abs(early.p - (10 * 1 + m * pCum) / (10 + m)) < 1e-9, early.p);
+  ok('10問だけの100%をそのまま信じない', early.p < 0.85, early.p);
+
+  // 2周目が進むほど直近周の値へ寄る
+  const late = W.blendedRoundAccuracy({
+    '1': { total: 200, done: 200, correct: 120 },
+    '2': { total: 200, done: 200, correct: 200 }
+  });
+  ok('解くほど直近周に寄る', late.p > early.p, { early: early.p, late: late.p });
+  ok('それでも累積のぶんだけ1.0より下', late.p < 1, late.p);
+
+  // 正答数が未入力
+  const none = W.blendedRoundAccuracy({ '1': { total: 200, done: 50 } });
+  eq('正答数が無ければ p は null', none.p, null);
+  eq('データ無しの印', none.hasData, false);
+  eq('空でも落ちない', W.blendedRoundAccuracy(null).p, null);
+})();
+
+// ---------- 科目ごとの1問あたりの分 ----------
+(function unitCostBySubject() {
+  const logs = [
+    // 4連問 2Q: 30問を150分 → 5.0分/問（サンプル20問超）
+    { activity: 'qb', subject_name: '4B2Q', questions_solved: 30, duration_minutes: 150 },
+    // 多肢選択 2Q: 10問しか無いのでサンプル不足
+    { activity: 'qb', subject_name: '4A2Q', questions_solved: 10, duration_minutes: 20 },
+    // 動画のログは数えない
+    { activity: 'video', subject_name: '2Q', videos_watched: 3, duration_minutes: 120 }
+  ];
+  const by = W.buildUnitCostBySubject(logs);
+  ok('科目別の実測が出る', Math.abs(by['4b2q'].minPerQuestion - 5) < 1e-9, by['4b2q']);
+  eq('サンプルが足りれば has', by['4b2q'].has, true);
+  eq('足りなければ has は false', by['4a2q'].has, false);
+  eq('動画のログは入らない', by['2q'], undefined);
+
+  const cost = { hasQuestion: true, minPerQuestion: 2 };
+  eq('科目別の実測があればそれを使う', W.minutesPerQuestionFor('4B2Q', cost, by), 5);
+  eq('足りない科目は全体の実測に落ちる', W.minutesPerQuestionFor('4A2Q', cost, by), 2);
+  eq('全体の実測も無ければ仮の単価', W.minutesPerQuestionFor('2C', {}, by), 2);
+})();
+
+// ---------- その教材に1日あたり割ける分 ----------
+(function dailyMinutes() {
+  const withCap = plan({ id: 'a', unit: 'q', daily_capacity: 20 });
+  eq('手入力の量があれば 量 × 1問あたりの分', W.planDailyMinutes(withCap, 3, 4, 240), 60);
+  const noCap = plan({ id: 'b', unit: 'q' });
+  eq('無ければ その日の目標時間 ÷ 教材数', W.planDailyMinutes(noCap, 3, 4, 240), 60);
+  eq('教材数が0でも割らない', W.planDailyMinutes(noCap, 3, 0, 240), 240);
+  eq('目標時間が無ければ0', W.planDailyMinutes(noCap, 3, 4, 0), 0);
+})();
+
+// ---------- プランに紐づく試験日 ----------
+(function planExamDate() {
+  const cds = [{ id: 'e1', exam_date: '2026-11-20' }, { id: 'e2', exam_date: '2027-02-01' }];
+  eq('参照先の試験日を引く', W.planExamDateOf(plan({ id: 'a', exam_countdown_id: 'e2' }), cds), '2027-02-01');
+  eq('参照が無ければ null', W.planExamDateOf(plan({ id: 'b' }), cds), null);
+  eq('参照先が消えていれば null', W.planExamDateOf(plan({ id: 'c', exam_countdown_id: 'zz' }), cds), null);
+})();
+
+// ---------- 周回の完了日 ----------
+(function roundCompletion() {
+  const before = { '2C': { '1': { total: 100, done: 90, correct: 60 } } };
+  const after  = { '2C': { '1': { total: 100, done: 100, correct: 70 } } };
+  const r1 = W.applyRoundCompletions(before, after, '2026-09-15');
+  eq('100%に達した日を打つ', r1['2C']['1'].completed_at, '2026-09-15');
+  eq('推定ではない', r1['2C']['1'].completed_estimated, false);
+
+  // 既に100%だった周に、別の日が打ち直されない
+  const r2 = W.applyRoundCompletions(r1, r1, '2026-09-20');
+  eq('完了済みの周は日付が動かない', r2['2C']['1'].completed_at, '2026-09-15');
+
+  // 100%を割ったら取り消す（問題数を直したときなど）
+  const reopened = { '2C': { '1': Object.assign({}, r1['2C']['1'], { total: 120 }) } };
+  const r3 = W.applyRoundCompletions(r1, reopened, '2026-09-21');
+  eq('100%を割ったら完了日を消す', r3['2C']['1'].completed_at, undefined);
+
+  // 追跡前から100%だった周のバックフィル
+  const legacy = { '2C': { '1': { total: 100, done: 100, correct: 70 } },
+                   '2J': { '1': { total: 50, done: 50, correct: 40 } } };
+  const bf = W.backfillRoundCompletions(legacy, { '2c|1': '2026-08-01' });
+  eq('プランから導出できた周は日付を入れる', bf.qb['2C']['1'].completed_at, '2026-08-01');
+  eq('推定フラグが立つ', bf.qb['2C']['1'].completed_estimated, true);
+  eq('導出できない周に日付は入れない', bf.qb['2J']['1'].completed_at, undefined);
+  eq('代わりに印だけ付ける', bf.qb['2J']['1'].completed_backfilled, true);
+  eq('埋めた件数', bf.filled, 1);
+  eq('印だけ付けた件数', bf.marked, 1);
+
+  // 印の付いた周に、あとから今日が打たれないこと
+  const r4 = W.applyRoundCompletions(bf.qb, bf.qb, '2026-09-15');
+  eq('追跡前から100%の周に今日を打たない', r4['2J']['1'].completed_at, undefined);
+
+  // 順番詰めが使う形に取り出す
+  const map = W.recordedRoundDoneAt(bf.qb);
+  eq('記録のある周だけ出る', map['2c|1'], '2026-08-01');
+  eq('記録の無い周は入らない', map['2j|1'], undefined);
+})();
+
+// ---------- 模試 ----------
+(function mockExam() {
+  ok('正答率は正答数÷問題数', Math.abs(W.mockExamAccuracy({ correct_questions: 45, total_questions: 60 }) - 0.75) < 1e-9);
+  eq('問題数が0なら null', W.mockExamAccuracy({ correct_questions: 0, total_questions: 0 }), null);
+  eq('欠損でも落ちない', W.mockExamAccuracy(null), null);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

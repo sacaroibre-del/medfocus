@@ -139,8 +139,15 @@ ok('vol.4 は元の科目と違う色を持つ',
   }));
   W.applyQbSessionToProgress('4A3D', 5, 5);
   const qb = W.getQBProgress();
-  eq('1周目を埋めきる', qb['4A3D']['1'], { done: 10, total: 10, correct: 8 });
-  eq('あふれた分は2周目へ繰り越す', qb['4A3D']['2'], { done: 3, total: 10, correct: 3 });
+  // 進捗そのものは done/total/correct の3つ。埋めきった周には完了日が付くので、
+  // ここでは進捗のぶんだけ取り出して比べる（完了日は下で別に見る）。
+  const prog = r => ({ done: r.done, total: r.total, correct: r.correct });
+  eq('1周目を埋めきる', prog(qb['4A3D']['1']), { done: 10, total: 10, correct: 8 });
+  eq('あふれた分は2周目へ繰り越す', prog(qb['4A3D']['2']), { done: 3, total: 10, correct: 3 });
+  // 埋めきった周には完了日が入る（次の周をいつ始めるかの起点になる）
+  ok('埋めきった周に完了日が入る', !!qb['4A3D']['1'].completed_at, qb['4A3D']['1']);
+  eq('推定ではなく実際に到達した日', qb['4A3D']['1'].completed_estimated, false);
+  eq('途中の周には完了日は入らない', qb['4A3D']['2'].completed_at, undefined);
 })();
 
 // ---------- 総数が未登録でも解いた数は残す ----------

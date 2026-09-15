@@ -4952,6 +4952,83 @@ function getDailyProgressDeltas() {
 }
 
 function getQBProgress(){try{return JSON.parse(localStorage.getItem('medfocus_qb_progress')||'{}');}catch(e){return {};}}
+
+// ==================== 周回の完了日 ====================
+// 完了日は qb_progress の周ごとの枠にそのまま持たせる。別テーブルを作らないのは、
+// 「100%に達したか」を判定する done / total が同じ場所にあり、保存経路
+// （localStorage ↔ profiles.qb_progress）も既にできあがっているため。
+// 追加する項目はすべて任意で、無ければ従来どおり導出値に落ちる。
+//   completed_at         その周を終えた日（"YYYY-MM-DD"）
+//   completed_estimated  true = 実際の到達日ではなく、あとから推定して埋めた値
+//   completed_backfilled true = 追跡を始める前から100%だった周。日付が分からないので
+//                        今日を打たない（打つと「今日1周目を終えた」ことになってしまう）
+function roundIsComplete(r) {
+  const total = Number(r && r.total) || 0;
+  const done = Number(r && r.done) || 0;
+  return total > 0 && done >= total;
+}
+
+// 保存のたびに呼ぶ。100%に「達した瞬間」だけ日付を打ち、100%を割ったら消す。
+// prev と next を比べるのは、既に100%だった周に今日を打たないため。
+function applyRoundCompletions(prevQb, nextQb, todayKey) {
+  const today = todayKey || toLocalDateKey(getLogicalDate(new Date()));
+  const out = {};
+  Object.entries(nextQb || {}).forEach(([sid, rounds]) => {
+    const prevRounds = (prevQb || {})[sid] || {};
+    const copy = {};
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const cur = Object.assign({}, r);
+      const wasComplete = roundIsComplete(prevRounds[rk]);
+      if (!roundIsComplete(cur)) {
+        // 100%を割ったら完了の記録は取り消す（問題数を直したときなど）
+        delete cur.completed_at; delete cur.completed_estimated; delete cur.completed_backfilled;
+      } else if (!cur.completed_at && !cur.completed_backfilled && !wasComplete) {
+        cur.completed_at = today;
+        cur.completed_estimated = false;
+      }
+      copy[rk] = cur;
+    });
+    out[sid] = copy;
+  });
+  return out;
+}
+
+// 追跡を始める前から100%だった周を一度だけ埋める。
+// 日付の出どころは逆算プランのタスク（そのプランで最後に進捗があった日）だけ。
+// 進捗スナップショットは周を合算して持っているので、周ごとの到達日は復元できない。
+// プランが無い周は日付が分からないので、日付は入れず backfilled の印だけ付ける。
+// doneAtByMaterial: { "<subjectId 小文字>|<round>": "YYYY-MM-DD" }
+function backfillRoundCompletions(qb, doneAtByMaterial) {
+  const src = doneAtByMaterial || {};
+  const out = {};
+  let filled = 0, marked = 0;
+  Object.entries(qb || {}).forEach(([sid, rounds]) => {
+    const copy = {};
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const cur = Object.assign({}, r);
+      if (roundIsComplete(cur) && !cur.completed_at && !cur.completed_backfilled) {
+        const key = String(sid).toLowerCase() + '|' + rk;
+        if (src[key]) { cur.completed_at = src[key]; cur.completed_estimated = true; filled++; }
+        else { cur.completed_backfilled = true; marked++; }
+      }
+      copy[rk] = cur;
+    });
+    out[sid] = copy;
+  });
+  return { qb: out, filled, marked };
+}
+
+// 記録された完了日を順番詰めが使う形（教材|周 → 日付）で取り出す。
+// 記録が無い周は入らないので、呼び出し側は従来どおり導出値で補える。
+function recordedRoundDoneAt(qb) {
+  const out = {};
+  Object.entries(qb || {}).forEach(([sid, rounds]) => {
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      if (r && r.completed_at) out[String(sid).toLowerCase() + '|' + rk] = String(r.completed_at).slice(0, 10);
+    });
+  });
+  return out;
+}
 async function loadQBFromSupabase(){
   if(!supabase||!session||qbProgressLoaded)return;
   try{
@@ -4979,6 +5056,10 @@ async function loadQBFromSupabase(){
   }catch(e){console.warn('qb load error:',e);}
 }
 function saveQBProgress(data){
+  // 100%に達した瞬間だけ完了日を打つ。保存前の状態と比べるので、
+  // 既に100%だった周に今日が打ち直されることはない。
+  const stamped = applyRoundCompletions(getQBProgress(), data, toLocalDateKey(getLogicalDate(new Date())));
+  data = stamped;
   localStorage.setItem('medfocus_qb_progress',JSON.stringify(data));
   saveProgressSnapshot();
   if(hasDB()){
@@ -6724,6 +6805,46 @@ function buildReviewIntervalStats(logs, logicalToday) {
   };
 }
 
+// 1問あたりの分を科目ごとに実測する。buildUnitCost は全科目を混ぜた1つの値しか
+// 出さないが、4連問と多肢選択では1問の重さがまるで違う。サンプルが足りない科目は
+// null を返し、呼び出し側が全体の実測へ落ちる。
+// 学習ログの subject_name は科目IDでも表示名でも入るので、両方から科目IDへ戻す。
+// vol.4 は元の科目へ寄せない（解く問題そのものが別なので、1問の重さも別）。
+const UNIT_SUBJECT_MIN_QUESTIONS = 20;   // この問数を超えたら科目別の実測を使う
+
+function buildUnitCostBySubject(logs) {
+  const acc = {};
+  (logs || []).forEach(l => {
+    if (!l || l.activity !== 'qb') return;
+    const qs = Number(l.questions_solved), min = Number(l.duration_minutes) || 0;
+    if (!Number.isFinite(qs) || qs <= 0 || min <= 0) return;
+    const sid = subjectIdOfName(l.subject_name) || String(l.subject_name || '').toUpperCase();
+    if (!sid) return;
+    const k = String(sid).toLowerCase();
+    const b = (acc[k] = acc[k] || { min: 0, count: 0, sessions: 0 });
+    b.min += min; b.count += qs; b.sessions++;
+  });
+  const out = {};
+  Object.entries(acc).forEach(([k, b]) => {
+    out[k] = {
+      minPerQuestion: b.count > 0 ? b.min / b.count : null,
+      samples: b.count, sessions: b.sessions,
+      has: b.count >= UNIT_SUBJECT_MIN_QUESTIONS
+    };
+  });
+  return out;
+}
+
+// その教材の1問あたりの分。科目別の実測 → 全体の実測 → 仮の単価、の順に落ちる。
+function minutesPerQuestionFor(subjectId, unitCost, bySubject) {
+  const k = String(subjectId || '').toLowerCase();
+  const own = bySubject && bySubject[k];
+  if (own && own.has && own.minPerQuestion > 0) return own.minPerQuestion;
+  const u = unitCost || {};
+  if (u.hasQuestion && u.minPerQuestion > 0) return u.minPerQuestion;
+  return PLAN_FALLBACK_MIN_PER_QUESTION;
+}
+
 // ==================== 目標と実績（曜日別） ====================
 // 実績はログから直接出す。目標は getGoalForDate（上書き→スナップショット→曜日別
 // テンプレートの順）から引くので、過去日でスナップショットが無いぶんは
@@ -7237,6 +7358,37 @@ function roundAccuracy(rounds, r) {
   return Number.isFinite(c) ? c / cur.done * 100 : null;
 }
 
+// ---------- スコアで使う正答率 p ----------
+// 直近周の正答率を、その周の解答数に応じて累積へ引き寄せる（縮小推定）。
+//   p = (n直近·p直近 + m·p累積) / (n直近 + m)     m = PLANNING_CONFIG.accuracy.priorWeight
+// 2周目を10問解いただけの正答率は当てにならないので、序盤は累積に寄せ、
+// 解くほど直近周の値へ寄っていく。
+//
+// p累積は「登録済みの全周」から取る。直近周もそこに含まれるので、周が1つしか
+// 無い科目では p累積 = p直近 となり、この式は素通りになる。それで正しい
+// ——寄せる先が無いのだから、1周目だけの科目は1周目の値そのものでよい。
+//
+// 返り値は 0〜1。正答数がどこにも入っていなければ p: null（呼び出し側で中立値に倒す）。
+function blendedRoundAccuracy(rounds) {
+  const keys = Object.keys(rounds || {}).map(k => parseInt(k, 10))
+    .filter(Number.isFinite).sort((a, b) => a - b);
+  let solved = 0, correct = 0, recent = null;
+  keys.forEach(k => {
+    const cur = rounds[String(k)];
+    const c = Number(cur && cur.correct);
+    if (!cur || !(cur.done > 0) || !Number.isFinite(c)) return;
+    solved += cur.done; correct += c;
+    recent = { round: k, n: cur.done, p: c / cur.done };   // 昇順なので最後に残るのが直近
+  });
+  if (!recent || solved <= 0) {
+    return { p: null, round: null, nRecent: 0, pRecent: null, pCumulative: null, hasData: false };
+  }
+  const pCum = correct / solved;
+  const m = Number(PLANNING_CONFIG.accuracy.priorWeight) || 0;
+  const p = (recent.n * recent.p + m * pCum) / (recent.n + m);
+  return { p, round: recent.round, nRecent: recent.n, pRecent: recent.p, pCumulative: pCum, hasData: true };
+}
+
 function buildRoundGainByGap(qbProgress, reviewStats) {
   const idToName = {};
   subjectCategories.forEach(c => c.subjects.forEach(x => { idToName[x.id] = x.name; }));
@@ -7271,19 +7423,82 @@ function buildRoundGainByGap(qbProgress, reviewStats) {
   return { hasData: rows.length >= 2, rows: rows.sort((a, b) => b.gain - a.gain), bins };
 }
 
-// ---------- 2周目までに空ける日数 ----------
-// 1周目を終えた翌日にすぐ2周目へ入ると解き直しの間隔が空かず、空けすぎれば忘れる。
-// 基準は buildRoundGainByGap の実測（自分の記録でいちばん伸びた間隔）。実測が
-// 貯まるまでは既定値で動き、貯まったら自動でそちらに切り替わる。
-// そこから前の周の正答率で前後させる。出来が悪い科目ほど短く＝早めに次の周を迎える。
-// 「間隔を空けてしっかり復習してから」ではなく「早く戻って回数で埋める」側に倒している。
-const ROUND_GAP_DEFAULT_DAYS = 7;
-const ROUND_GAP_MIN_DAYS = 1;
-const ROUND_GAP_MAX_DAYS = 21;
-// この正答率のとき基準どおり。これより低ければ比例して短く、高ければ長くする。
-const ROUND_GAP_PIVOT_ACCURACY = 75;
-// 実測に切り替えるのに要る科目数。1科目だけの「いちばん伸びた間隔」は当てにならない。
-const ROUND_GAP_MIN_SAMPLES = 2;
+// ==================== 逆算プランの調整用パラメータ ====================
+// 予定づくりに効く数字はここに集める。散らすと「なぜこの日付になったのか」を
+// 追うのに複数箇所を読む羽目になるため。根拠は各項目のコメントに残す。
+//
+// 値はすべて既定値で、ユーザー設定（設定画面 / localStorage）があればそちらが勝つ。
+// 設定が無い環境でも既定値だけで完結して動く。
+const PLANNING_CONFIG = {
+  // ---------- 周回の間隔 ----------
+  round: {
+    // 1周目を終えた翌日にすぐ2周目へ入ると解き直しの間隔が空かず、空けすぎれば忘れる。
+    // 基準は buildRoundGainByGap の実測（自分の記録でいちばん伸びた間隔）。実測が
+    // 貯まるまではこの既定値で動き、貯まったら自動でそちらへ切り替わる。
+    defaultGapDays: 7,
+    minGapDays: 1,
+    maxGapDays: 21,
+    // この正答率のとき基準どおり。低ければ比例して短く＝早めに次の周を迎える。
+    // 「間隔を空けてしっかり復習してから」ではなく「早く戻って回数で埋める」側に倒している。
+    pivotAccuracy: 75,
+    // 実測に切り替えるのに要る科目数。1科目だけの「いちばん伸びた間隔」は当てにならない。
+    minSamples: 2,
+    // 間隔の上限を試験日に連動させる比率。gapCap = floor(ratio × 試験までの日数)。
+    // 試験が近いほど間隔を詰める。試験日が無ければ maxGapDays をそのまま使う。
+    gapCapRatio: 0.3,
+    // ビンの縮小推定の強さ。ビン値 = (n·ビン平均 + k·全体平均) / (n + k)。
+    // サンプルの少ないビンが極端な値で勝たないように全体平均へ引き寄せる。
+    binShrinkK: 5
+  },
+
+  // ---------- 正答率の見積もり ----------
+  accuracy: {
+    // 直近周の正答率を累積へ引き寄せる強さ（事前標本数）。
+    // p = (n直近·p直近 + m·p累積) / (n直近 + m)
+    // 直近周の解答数が少ないうちは累積に寄り、増えるほど直近周の値になる。
+    priorWeight: 10,
+    // 正答数がどこにも入っていないときの中立値（0〜1）。
+    neutral: 0.5
+  },
+
+  // ---------- スコア ----------
+  score: {
+    // 目標想起率 R*。試験日時点でこの水準に届いていない分を「伸びしろ」とみなす。
+    recallTarget: 0.90,
+    // 記憶の安定度 S（日）。decay(t) = (1 + t / (9·S))^-1 に使う。
+    stabilityDays: 10,
+    // 学習可能性 L = 4·p·(1−p) + ε。中間帯（難しすぎず簡単すぎず）を優先する。
+    // ε は「端の項目も拾う」下駄で、残り日数が多いほど大きく取る。
+    // ε = clamp(試験までの日数 / epsilonDaysDivisor, epsilonMin, epsilonMax)
+    epsilonDaysDivisor: 60,
+    epsilonMin: 0.1,
+    epsilonMax: 0.5,
+    // 試験日が登録されていないときの ε。
+    epsilonNoExam: 0.3
+  },
+
+  // ---------- 締切 ----------
+  deadline: {
+    // 締切の手前に残しておく日数。ここを食いつぶす前に間隔を詰める。
+    bufferDays: 1
+  },
+
+  // ---------- 2周目以降の範囲 ----------
+  scope: {
+    // 前の周の正答率がこれ以上なら「誤答のみモード」を既定でオンにする。
+    wrongOnlyThreshold: 0.80,
+    // 高確信の誤答を再テストする間隔（日）。自信のある誤答はフィードバック直後には
+    // 直りやすいが、1週間ほどで元の誤答が戻ることがあるため2点で見る。
+    highConfidenceRetestDays: [1, 7]
+  }
+};
+
+// 旧名は参照箇所が多いので別名として残す（値の出どころは PLANNING_CONFIG 一択）。
+const ROUND_GAP_DEFAULT_DAYS = PLANNING_CONFIG.round.defaultGapDays;
+const ROUND_GAP_MIN_DAYS = PLANNING_CONFIG.round.minGapDays;
+const ROUND_GAP_MAX_DAYS = PLANNING_CONFIG.round.maxGapDays;
+const ROUND_GAP_PIVOT_ACCURACY = PLANNING_CONFIG.round.pivotAccuracy;
+const ROUND_GAP_MIN_SAMPLES = PLANNING_CONFIG.round.minSamples;
 
 // 実測でいちばん伸びた間隔。サンプルが足りなければ既定値。
 // measured は実測に切り替わったかどうか（画面でどちらを使っているか出すのに使う）。
@@ -11495,6 +11710,23 @@ function cbtExamWeightOf(sid) {
   return Math.min(CBT_WEIGHT_MAX, Math.max(CBT_WEIGHT_MIN, info.pct / avgPct));
 }
 
+// クランプ前の平均は定義上ちょうど 1.0 だが、0.5〜2.0 で切った結果わずかに上振れする
+// （実測 1.0145。下限に5件・上限に1件が張り付くため）。平均を 1.0 に戻す係数を
+// 起動時に実測から出しておく。CBT_SUBJECT_DOMAIN やクランプ幅を変えても追従する。
+//
+// 正規化しても科目どうしの順位は変わらない（一律のスケールなので）。効くのは、
+// CBT の対応づけが無い科目が固定値 1.0 で混ざる場面。正規化しないと、
+// 対応科目の平均 1.0145 に対して未対応の 1.0 がわずかに不利になる。
+const CBT_EXAM_WEIGHT_NORMALIZER = (function buildExamWeightNormalizer() {
+  const ids = Object.keys(CBT_EXAM_WEIGHT);
+  if (!ids.length) return 1;
+  const mean = ids.reduce((sum, id) => sum + cbtExamWeightOf(id), 0) / ids.length;
+  return mean > 0 ? 1 / mean : 1;
+})();
+
+// スコアで使う出題重み W。平均が 1.0 になるよう正規化した cbtExamWeightOf。
+function cbtExamWeightNorm(sid) { return cbtExamWeightOf(sid) * CBT_EXAM_WEIGHT_NORMALIZER; }
+
 // ---------- 科目の優先度を学習状況から出す ----------
 // 締切だけでは、同じ試験日に向けたプランどうしの順番が決まらない。
 // 「いま手をつけて効く順」を実績から出して、締切が並んだときの順番に使う。
@@ -12669,6 +12901,41 @@ async function fetchPlans() {
   return data || [];
 }
 
+// ---------- 模試の記録 ----------
+// 周回 k+1 を終えたあとの「後の時点」の出来を測るのに使う（間隔の評価）。
+// 正答率ではなく正答数と問題数で持つ。問題数を縮小推定の重みに使うため。
+// テーブルがまだ無い環境では空配列を返す。予定づくりは既定値で動き続ける。
+const MOCK_EXAMS_LS_KEY = 'medfocus_mock_exams';
+let _mockExamsMissing = false;
+
+async function fetchMockExams() {
+  if (!hasDB()) return getLocalList(MOCK_EXAMS_LS_KEY);
+  if (_mockExamsMissing) return getLocalList(MOCK_EXAMS_LS_KEY);
+  const cached = getCached('mock_exams');
+  if (cached) return cached;
+  const { data, error } = await supabase.from('mock_exams').select('*')
+    .eq('user_id', session.user.id).order('taken_on', { ascending: true });
+  if (error) {
+    // 42P01 = テーブルが無い。マイグレーション前はここに来るので、以後は問い合わせない
+    if (error.code === '42P01' || /does not exist/i.test(error.message || '')) {
+      _mockExamsMissing = true;
+      console.info('mock_exams テーブルが未作成のため、模試は既定値で扱います');
+    } else {
+      console.error('fetchMockExams error:', error.message);
+    }
+    return getLocalList(MOCK_EXAMS_LS_KEY);
+  }
+  setCache('mock_exams', data || []);
+  return data || [];
+}
+
+// 模試の正答率（0〜1）。問題数が0なら null。
+function mockExamAccuracy(row) {
+  const t = Number(row && row.total_questions) || 0;
+  const c = Number(row && row.correct_questions);
+  return t > 0 && Number.isFinite(c) ? c / t : null;
+}
+
 async function fetchPlanTasks() {
   if (!hasDB()) return getLocalList(PLAN_TASKS_LS_KEY);
   const cached = getCached('plan_tasks');
@@ -12970,6 +13237,56 @@ function planTargetRoundBySubject(plans) {
   return out;
 }
 
+// ---------- 全体設定（目標想起率・余裕日数） ----------
+// 既定値は PLANNING_CONFIG。ユーザーが設定していればそちらが勝つ。
+// 設定が空の環境でも既定値だけで完結して動く。
+const PLANNING_SETTINGS_KEY = 'medfocus_planning_settings';
+function getPlanningSettings() {
+  try { return JSON.parse(localStorage.getItem(PLANNING_SETTINGS_KEY) || '{}') || {}; }
+  catch (e) { return {}; }
+}
+function savePlanningSettings(patch) {
+  const next = Object.assign(getPlanningSettings(), patch || {});
+  try { localStorage.setItem(PLANNING_SETTINGS_KEY, JSON.stringify(next)); } catch (e) {}
+  return next;
+}
+// 目標想起率 R*（0〜1）。試験日時点でここに届いていない分が「伸びしろ」。
+function planningRecallTarget() {
+  const n = Number(getPlanningSettings().recallTarget);
+  return Number.isFinite(n) && n > 0 && n < 1 ? n : PLANNING_CONFIG.score.recallTarget;
+}
+// 締切の手前に残す日数。
+function planningBufferDays() {
+  const n = Number(getPlanningSettings().bufferDays);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : PLANNING_CONFIG.deadline.bufferDays;
+}
+
+// ---------- その教材に1日あたり割ける分 ----------
+// Phase 0 の調査どおり、教材ごとの「1日あたりの時間」は元々どこにも無いので合成する。
+//   ① プランに手入力の「1日に進める量」があれば 量 × 1単位あたりの分
+//   ② 無ければ その日の目標学習時間 ÷ 進行中の教材数（均等割り）
+// ②は目安でしかない。実際の配分は順番詰めが優先順位どおりに埋めるので、
+// ここは「締切までに何日かかるか」を見積もるためだけに使う。
+function planDailyMinutes(plan, minPerUnit, activeCount, goalMinutes) {
+  const cap = planDailyCapacity(plan);
+  const per = Number(minPerUnit) > 0 ? Number(minPerUnit) : 0;
+  if (cap && per > 0) return cap * per;
+  const n = Math.max(1, Math.floor(Number(activeCount) || 1));
+  const g = Math.max(0, Number(goalMinutes) || 0);
+  return g > 0 ? g / n : 0;
+}
+
+// ---------- プランに紐づく試験日 ----------
+// 試験日の実体は exam_countdowns 1か所だけ。プランは nullable な参照を持つ。
+// 参照が無い（列がまだ無い環境を含む）プランは、試験日なしとして扱う。
+function planExamDateOf(plan, countdowns) {
+  const id = plan && plan.exam_countdown_id;
+  if (!id) return null;
+  const hit = (countdowns || []).find(e => e && String(e.id) === String(id));
+  const key = hit && String(hit.exam_date || '').slice(0, 10);
+  return key || null;
+}
+
 // ---------- 優先順位どおりに順番へ詰める ----------
 // 1件だけでも順番詰めを使う。以前は「詰める相手がいない」として期間へ均していたが、
 // 「問題演習は分割しない」と噛み合わず、残り1プランになった途端に
@@ -13063,6 +13380,8 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     }
     // 終えた周の完了日。完了したプランは queue に入らないので、ここで拾わないと
     // 「今日1周目を終えた教材」の2周目が今日へ降りてくる。
+    // 教材進捗に記録された完了日があればそちらが優先（下で上書きする）。配り直しで
+    // タスクの日付が動いても、記録済みの完了日は動かないため。
     const round = Number(st.plan.target_round) || 0;
     if (round > 0 && remaining <= 0 && done > 0) {
       const k = planLastProgressKey(st.mine);
@@ -13071,6 +13390,14 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     }
   });
   const inProgress = new Set([...touched].filter(g => unfinished.has(g)));
+  // 教材進捗に記録された完了日で上書きする。タスクからの導出はプランを配り直すと
+  // 動きうるが、記録された日は動かない。鍵は planMaterialKey と同じ形に揃える。
+  Object.entries(recordedRoundDoneAt(o.qb)).forEach(([k, v]) => {
+    const [sid, rk] = k.split('|');
+    // 鍵は planMaterialKey（科目|単位|版）+ '|' + 周 に揃える。
+    // 教材進捗が持つのは QB だけなので、単位は 'q'、版は空で固定。
+    roundDoneAt[`${sid}|q||${rk}`] = v;
+  });
 
   (state || []).forEach(st => {
     if (!st.canAuto) return;
