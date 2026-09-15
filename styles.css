@@ -2300,7 +2300,14 @@ i.io-other { background: #64748b; }
   padding: 12px 14px;
   margin-bottom: 12px;
 }
-.plan-seq-head { font-size: 0.85rem; font-weight: 700; margin-bottom: 8px; }
+.plan-seq-head { font-size: 0.85rem; font-weight: 700; cursor: pointer; list-style: none;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.plan-seq-head::-webkit-details-marker { display: none; }
+.plan-seq-head::before { content: '▸ '; }
+.plan-seq-note[open] > .plan-seq-head { margin-bottom: 8px; }
+.plan-seq-note[open] > .plan-seq-head::before { content: '▾ '; }
+.plan-seq-count { font-size: 0.72rem; font-weight: 600; color: var(--color-text-tertiary); }
+.plan-seq-count.warn { color: var(--color-accent-yellow); }
 .plan-seq-order { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
 .plan-seq-chip {
   font-size: 0.72rem;

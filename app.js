@@ -14984,8 +14984,12 @@ function planSequenceNoteHTML(sync) {
     return p ? esc(p.title) : '';
   }).filter(Boolean);
   const noEst = (sync.noEstimate || []).map(id => sync.plansById[id]).filter(Boolean);
-  return `<div class="plan-seq-note">
-    <div class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています</div>
+  // プランが増えると順番のチップだけで画面が埋まるので、既定は畳んでおく。
+  // 中身を見なくても「何件を、どの順で埋めているか」が分かるよう、件数と
+  // 仮置きの注意だけは見出しに出す。
+  return `<details class="plan-seq-note">
+    <summary class="plan-seq-head">${IC.target} 優先順位どおりに、上から順に埋めています<span class="plan-seq-count">${names.length}件</span>${
+      noEst.length ? `<span class="plan-seq-count warn">${IC.warn} 仮置き ${noEst.length}件</span>` : ''}</summary>
     <div class="plan-seq-order">${names.map((n, i) => `<span class="plan-seq-chip">${i + 1}. ${n}</span>`).join('')}</div>
     <div class="plan-seq-hint">同じ科目では講義動画が先、そのあと問題演習。同じ教材の次の周は、前の周を終えてから${sync.roundGapBaseDays}日前後（${
       sync.roundGapMeasured ? 'あなたの記録でいちばん伸びた間隔' : '実測が貯まるまでの既定値'}）空けてから。前の周の正答率が低い科目ほど間隔を詰めて早めに回します。科目どうしは${
@@ -14995,7 +14999,7 @@ function planSequenceNoteHTML(sync) {
       締切に余裕が無くなった科目（残りに要る日数 + ${planningBufferDays()}日が締切を超える科目）だけ、順位に関係なく先に割り込みます。
       その日の目標学習時間を上から順に使い、余った時間だけ次のプランに回します。</div>
     ${noEst.length ? `<div class="plan-seq-hint warn">${IC.warn} ${noEst.map(p => esc(p.title)).join('、')} は1問・1本あたりの実測が足りないので、講義動画1本${PLAN_FALLBACK_MIN_PER_VIDEO}分・1問${PLAN_FALLBACK_MIN_PER_QUESTION}分と仮定して並べています。学習記録に「解いた問題数」「見た本数」を入れると実測に切り替わります。</div>` : ''}
-  </div>`;
+  </details>`;
 }
 
 // 終わったプランは既定で隠す。進行中だけを見せないと、周回を重ねるほど
