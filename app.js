@@ -2865,6 +2865,10 @@ async function renderDashboard(){
   const logs = await fetchStudyLogs();
   const checks = await fetchChecklists();
   await fetchSleepLogs(); // Supabaseから睡眠ログを取得・キャッシュ更新
+  // 解き直す問題をここで出すので、記録を読んでおく。ブートストラップは
+  // 初回描画を待たせないよう await していないため、ここで確実に読む。
+  // 読めなくてもダッシュボード全体は落とさない。
+  try { _qRecords = await fetchQuestionRecords(); } catch(e) { console.warn('question records:', e); }
 
   const logicalToday = getLogicalDate(new Date());
 
@@ -3487,6 +3491,12 @@ async function renderDashboard(){
 
   // --- Event Listeners ---
   // Period tabs
+  // 再テストの○✕
+  document.querySelectorAll('[data-retest-ok]').forEach(b =>
+    b.addEventListener('click', () => markRetest(b.dataset.retestOk, true)));
+  document.querySelectorAll('[data-retest-ng]').forEach(b =>
+    b.addEventListener('click', () => markRetest(b.dataset.retestNg, false)));
+
   document.getElementById('pacer-exam')?.addEventListener('change', e => { setPacerExamId(e.target.value); renderDashboard(); });
   document.getElementById('pacer-round')?.addEventListener('change', e => { setPacerTargetRound(parseInt(e.target.value, 10)); renderDashboard(); });
 
@@ -7081,28 +7091,71 @@ function roundScope(input) {
 // ---------- 高確信の誤答の再テスト ----------
 // 自信があったのに外した問題は、フィードバック直後には直りやすい一方、
 // 1週間ほどで元の誤答が戻ることがある。そこで翌日と7日後の2点で見る。
-// 日付はその問題を解いた日（recorded_on）が起点。
 //
-// 「やり直したか」は記録していないので、対象日ちょうどの日にだけ出す。
-// 見逃した日のぶんは翌日に持ち越さない（持ち越すと、片づける手段が無いまま
-// 積み上がってしまうため）。
-function highConfidenceRetests(records, todayKey) {
-  const days = PLANNING_CONFIG.scope.highConfidenceRetestDays || [];
+// 進み具合は記録に持つ（retest_stage / retest_due_on / retest_log）。
+//   stage 0  翌日の再テスト待ち
+//   stage 1  7日後の再テスト待ち
+//   stage 2  完了
+// 期日を過ぎても、完了するまでTODOに出し続ける。見逃したぶんが黙って消えると
+// 「直したつもり」のまま残ってしまうため。
+
+// 記録から再テストの状態を読む。列がまだ無い環境や、追跡を始める前の記録は
+// 「自信があったのに外した問題＝翌日の再テスト待ち」とみなして補う。
+function retestStateOf(rec) {
+  if (!rec) return null;
+  const raw = Number(rec.retest_stage);
+  if (Number.isFinite(raw)) {
+    return { stage: raw,
+             dueKey: rec.retest_due_on ? String(rec.retest_due_on).slice(0, 10) : null,
+             log: Array.isArray(rec.retest_log) ? rec.retest_log : [] };
+  }
+  if (rec.is_correct || rec.confidence !== 'high') return null;
+  const from = String(rec.recorded_on || '').slice(0, 10);
+  if (!from) return null;
+  const first = (PLANNING_CONFIG.scope.highConfidenceRetestDays || [1])[0] || 1;
+  return { stage: 0, dueKey: shiftDateKey(from, first), log: [] };
+}
+
+// 今日出す再テスト。期日が来ていて未完了のものを、期日の古い順に上限まで。
+// 上限を超えたぶんは翌日以降に回るだけで、消えはしない。
+function dueRetests(records, todayKey) {
   const today = todayKey || todayPlanKey();
+  const max = Number(PLANNING_CONFIG.scope.retestMaxPerDay) || 20;
   const out = [];
   (records || []).forEach(r => {
-    if (!r || r.is_correct || r.confidence !== 'high') return;
-    const from = String(r.recorded_on || '').slice(0, 10);
-    if (!from) return;
-    days.forEach(d => {
-      if (shiftDateKey(from, d) !== today) return;
-      out.push({ subject_id: r.subject_id, round: Number(r.round) || 0,
-                 question_no: Number(r.question_no) || 0,
-                 error_type: r.error_type || null, recorded_on: from, retestDay: d });
+    const st = retestStateOf(r);
+    if (!st || st.stage >= 2 || !st.dueKey || st.dueKey > today) return;
+    out.push({
+      subject_id: r.subject_id, round: Number(r.round) || 0,
+      question_no: Number(r.question_no) || 0,
+      error_type: r.error_type || null,
+      stage: st.stage, dueKey: st.dueKey, log: st.log,
+      overdueDays: Math.max(0, diffDateKeys(today, st.dueKey) || 0)
     });
   });
-  return out.sort((a, b) =>
-    String(a.subject_id).localeCompare(String(b.subject_id)) || a.question_no - b.question_no);
+  return out
+    .sort((a, b) => String(a.dueKey).localeCompare(String(b.dueKey))
+                 || String(a.subject_id).localeCompare(String(b.subject_id))
+                 || a.question_no - b.question_no)
+    .slice(0, max);
+}
+
+// 再テストの結果を反映した、記録に書き戻す値を返す。
+//   翌日ぶん（stage 0）は正誤にかかわらず次へ進める。1回で直ったかは、
+//     1週間後にまだ残っているかで判断したいため。
+//   7日後ぶん（stage 1）は正解なら完了。誤答ならもう一度7日後に置く。
+// 期日は「実施日」からの7日後。遅れて実施したぶんは、そこから数え直す。
+function applyRetestResult(rec, correct, dateKey) {
+  const st = retestStateOf(rec) || { stage: 0, dueKey: null, log: [] };
+  const on = dateKey || todayPlanKey();
+  const days = PLANNING_CONFIG.scope.highConfidenceRetestDays || [1, 7];
+  const later = days[1] || 7;
+  const log = (st.log || []).concat([{ date: on, correct: !!correct }]);
+  if (st.stage === 0) {
+    return { retest_stage: 1, retest_due_on: shiftDateKey(on, later), retest_log: log };
+  }
+  if (correct) return { retest_stage: 2, retest_due_on: null, retest_log: log };
+  return { retest_stage: 1, retest_due_on: shiftDateKey(on, later), retest_log: log };
 }
 
 // ---------- 混同の誤答をまとめて交互に出す ----------
@@ -7133,6 +7186,62 @@ function interleaveConfused(records, round) {
     out[sid] = mixed;
   });
   return out;
+}
+
+// ---------- 2周目の対象番号をどの順で解くか ----------
+// 混同タグの付いた問題は、本の並び順のまま続けて解くと直前に見た知識で
+// そのまま解けてしまい、取り違えを直す練習にならない。そこで
+//   ① 混同どうしは、番号の近いもの（＝取り違えやすいもの）が続かないよう
+//      前半と後半を交互に組み直す
+//   ② その並びを、混同でない問題の間に散らす（混同が2つ続かないようにする）
+// とする。混同でない問題は番号順のまま。
+//
+// 並べ替えるのは混同が3問以上あるときだけ。1〜2問では散らす意味が無く、
+// 番号順でないほうが探しにくい。
+//
+// 日付をシードにして回すので、同じ日のうちは何度開いても同じ並び。
+// 日が変わると先頭が変わり、いつも同じ問題から始めることにならない。
+const SCOPE_INTERLEAVE_MIN = 3;
+
+function dateSeed(dateKey) {
+  const str = String(dateKey || '');
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+function orderScopeQuestions(questions, records, round, dateKey) {
+  const nums = [...new Set((questions || []).map(Number).filter(n => Number.isFinite(n) && n > 0))]
+    .sort((a, b) => a - b);
+  const confusedSet = new Set((records || [])
+    .filter(r => r && r.error_type === 'confuse'
+                 && (round === undefined || round === null || Number(r.round) === Number(round)))
+    .map(r => Number(r.question_no)));
+  const conf = nums.filter(n => confusedSet.has(n));
+  const rest = nums.filter(n => !confusedSet.has(n));
+  if (conf.length < SCOPE_INTERLEAVE_MIN) return { order: nums, interleaved: false, confusedCount: conf.length };
+
+  // ① 混同どうしを前半・後半で交互にする
+  const half = Math.ceil(conf.length / 2);
+  const head = conf.slice(0, half), tail = conf.slice(half);
+  const mixed = [];
+  for (let i = 0; i < half; i++) {
+    mixed.push(head[i]);
+    if (i < tail.length) mixed.push(tail[i]);
+  }
+  // 日付で先頭をずらす
+  const shift = dateSeed(dateKey) % mixed.length;
+  const rotated = mixed.slice(shift).concat(mixed.slice(0, shift));
+
+  // ② 混同でない問題の間に散らす
+  const gap = Math.max(1, Math.floor(rest.length / rotated.length));
+  const order = [];
+  let ri = 0, ci = 0;
+  while (ri < rest.length || ci < rotated.length) {
+    if (ci < rotated.length) order.push(rotated[ci++]);
+    for (let k = 0; k < gap && ri < rest.length; k++) order.push(rest[ri++]);
+  }
+  return { order, interleaved: true, confusedCount: conf.length };
 }
 
 // ==================== 目標と実績（曜日別） ====================
@@ -7809,7 +7918,10 @@ const PLANNING_CONFIG = {
     wrongOnlyThreshold: 0.80,
     // 高確信の誤答を再テストする間隔（日）。自信のある誤答はフィードバック直後には
     // 直りやすいが、1週間ほどで元の誤答が戻ることがあるため2点で見る。
-    highConfidenceRetestDays: [1, 7]
+    highConfidenceRetestDays: [1, 7],
+    // その日のTODOに出す再テストの上限。溜まっても画面が埋まらないよう、
+    // 期日の古い順にここまで。残りは翌日以降に回る（消えはしない）。
+    retestMaxPerDay: 20
   }
 };
 
@@ -10376,6 +10488,13 @@ function insightsQbQualityHTML(d) {
       <div><div class="section-title">解き直しの間隔</div><div class="section-subtitle">同じ科目に前回触れてから何日空けたか（活動が「復習」でなくても数えます）</div></div>
     </div>
 
+      <div class="mock-bar">
+        <div class="mock-bar-text">後の時点のサンプル: <strong>${laterGain.rows.length}件</strong>
+          <span class="dim">（間隔の判定には各ビン${ROUND_GAP_MIN_SAMPLES}件必要）</span></div>
+        <span class="cal-spacer"></span>
+        <button class="btn-log-action" id="btn-add-mock">+ 模試を記録</button>
+      </div>
+
       ${laterGain.hasData ? `
         <div class="break-subtitle">間隔別の「後の時点の伸び」<span class="break-tag">間隔選択に使用</span></div>
         <div class="break-table">
@@ -11338,6 +11457,11 @@ function wireInsightFilters(ct, d) {
   document.getElementById('io-video-skip-reset')?.addEventListener('click', () => {
     clearIOVideoSkip();
     renderInsights();
+  });
+  // --- Event: 模試を記録 ---
+  // 保存すると「後の時点の伸び」のビンが変わるので、そのまま描き直す
+  document.getElementById('btn-add-mock')?.addEventListener('click', () => {
+    openMockExamWizard(() => renderInsights());
   });
   // --- Event: セクションの折りたたみ ---
   ct.querySelectorAll('[data-group-toggle]').forEach(btn => {
@@ -13523,6 +13647,33 @@ async function fetchMockExams() {
   return _mockExams;
 }
 
+// 模試を保存する。1回の模試で複数科目ぶんを同じ日付で入れる。
+async function createMockExams(rows) {
+  const clean = (rows || []).map(r => ({
+    taken_on: String(r.taken_on || '').slice(0, 10),
+    subject_id: String(r.subject_id || ''),
+    correct_questions: Math.max(0, Math.floor(Number(r.correct_questions) || 0)),
+    total_questions: Math.max(0, Math.floor(Number(r.total_questions) || 0)),
+    title: r.title || null
+  })).filter(r => r.taken_on && r.subject_id && r.total_questions > 0
+                  && r.correct_questions <= r.total_questions);
+  if (!clean.length) return [];
+
+  if (!hasDB() || _mockExamsMissing) {
+    const list = getLocalList(MOCK_EXAMS_LS_KEY)
+      .concat(clean.map((r, i) => Object.assign({ id: 'local-' + Date.now() + '-' + i }, r)));
+    setLocalList(MOCK_EXAMS_LS_KEY, list);
+    _mockExams = list;
+    return clean;
+  }
+  const { data, error } = await supabase.from('mock_exams')
+    .insert(clean.map(r => Object.assign({ user_id: session.user.id }, r))).select();
+  if (error) { console.error('createMockExams error:', error.message); showToast(IC.x + ' 保存に失敗しました'); return []; }
+  invalidateCache('mock_exams');
+  _mockExams = _mockExams.concat(data || []);
+  return data || [];
+}
+
 // 模試の正答率（0〜1）。問題数が0なら null。
 function mockExamAccuracy(row) {
   const t = Number(row && row.total_questions) || 0;
@@ -13535,6 +13686,9 @@ function mockExamAccuracy(row) {
 // 記録が無くても推定モードで回るので、ここが空でも困らない。
 const QUESTION_RECORDS_LS_KEY = 'medfocus_question_records';
 let _questionRecordsMissing = false;
+// 再テストの3列（retest_stage / retest_due_on / retest_log）がまだ無い環境。
+// 1度でも列エラーが出たら、以後はその3列を送らずに保存する。
+let _retestColumnsMissing = false;
 
 function questionRecordKey(r) {
   return [String(r.subject_id || '').toLowerCase(), Number(r.round) || 0, Number(r.question_no) || 0].join('|');
@@ -13564,14 +13718,25 @@ async function fetchQuestionRecords() {
 async function replaceQuestionRecords(subjectId, round, rows) {
   const sid = String(subjectId || '');
   const rnd = Number(round) || 0;
-  const fresh = (rows || []).map(r => ({
-    subject_id: sid, round: rnd,
-    question_no: Number(r.question_no) || 0,
-    is_correct: !!r.is_correct,
-    confidence: r.confidence || null,
-    error_type: r.error_type || null,
-    recorded_on: r.recorded_on || toLocalDateKey(getLogicalDate(new Date()))
-  })).filter(r => r.question_no > 0);
+  const fresh = (rows || []).map(r => {
+    const base = {
+      subject_id: sid, round: rnd,
+      question_no: Number(r.question_no) || 0,
+      is_correct: !!r.is_correct,
+      confidence: r.confidence || null,
+      error_type: r.error_type || null,
+      recorded_on: r.recorded_on || toLocalDateKey(getLogicalDate(new Date()))
+    };
+    if (r.retest_stage !== undefined) base.retest_stage = r.retest_stage;
+    if (r.retest_due_on !== undefined) base.retest_due_on = r.retest_due_on;
+    if (r.retest_log !== undefined) base.retest_log = r.retest_log;
+    return base;
+  }).filter(r => r.question_no > 0);
+  const withoutRetest = r => {
+    const c = Object.assign({}, r);
+    delete c.retest_stage; delete c.retest_due_on; delete c.retest_log;
+    return c;
+  };
 
   const sameScope = r => String(r.subject_id || '').toLowerCase() === sid.toLowerCase() && Number(r.round) === rnd;
 
@@ -13587,8 +13752,16 @@ async function replaceQuestionRecords(subjectId, round, rows) {
   if (delErr) { console.error('replaceQuestionRecords delete error:', delErr.message); return []; }
   let saved = [];
   if (fresh.length) {
-    const { data, error } = await supabase.from('qb_question_records')
-      .insert(fresh.map(r => Object.assign({ user_id: session.user.id }, r))).select();
+    const payload = (_retestColumnsMissing ? fresh.map(withoutRetest) : fresh)
+      .map(r => Object.assign({ user_id: session.user.id }, r));
+    let { data, error } = await supabase.from('qb_question_records').insert(payload).select();
+    // 再テストの列がまだ無い環境では、その3列を落として入れ直す
+    if (error && !_retestColumnsMissing && /retest_/i.test(error.message || '')) {
+      _retestColumnsMissing = true;
+      console.info('再テストの列が未作成のため、進み具合はローカルだけで扱います');
+      ({ data, error } = await supabase.from('qb_question_records')
+        .insert(fresh.map(r => Object.assign({ user_id: session.user.id }, withoutRetest(r)))).select());
+    }
     if (error) { console.error('replaceQuestionRecords insert error:', error.message); return []; }
     saved = data || [];
   }
@@ -14061,12 +14234,17 @@ function planRoundScope(plan, ctx) {
   if (!wrongOnly) return null;
   const records = (c.records || []).filter(r =>
     String(r.subject_id || '').toLowerCase() === sid);
-  return roundScope({
+  const sc = roundScope({
     total: Number(plan.total_volume) || 0,
     minPerQuestion: c.minPerUnit,
     prevRound: round - 1,
     p, records, wrongOnly: true
   });
+  // 記録から出したときだけ、解く順番も決めておく（混同を散らす）
+  if (sc.mode === 'recorded') {
+    sc.order = orderScopeQuestions(sc.questions, records, round - 1, c.todayKey);
+  }
+  return sc;
 }
 
 // ---------- 優先順位どおりに順番へ詰める ----------
@@ -14196,7 +14374,7 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     const done = planDoneAmount(st.mine);
     // 2周目以降で「誤答のみ」の教材は、全問ではなく落としたところだけを数える。
     // 記録があればその件数、無ければ 全体 × (1 − p) の推定。
-    const scope = planRoundScope(st.plan, { qbByKey, records: o.records, p0 });
+    const scope = planRoundScope(st.plan, { qbByKey, records: o.records, p0, todayKey });
     const scopedTotal = scope && scope.mode !== 'full' ? scope.count : total;
     const remaining = Math.max(0, scopedTotal - done);
     const group = planGroupKey(st.plan);
@@ -14390,8 +14568,11 @@ function planScopeNoteHTML(plan, seq) {
   if (!sc || sc.mode === 'full') return '';
   const unit = planUnitLabel(plan.unit);
   if (sc.mode === 'recorded') {
+    const ord = sc.order || { order: sc.questions || [], interleaved: false };
     return `<div class="plan-scope-note">この周は<strong>誤答のみ ${sc.count}${unit}</strong>（前の周で外した問題と、自信がなかった問題）。
-      <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>`;
+      <button class="btn-log-action" data-scope-off="${esc(plan.id)}">全問に戻す</button></div>
+      ${ord.interleaved ? '<div class="plan-scope-order-note">混同しやすい問題を交互に並べています</div>' : ''}
+      <div class="plan-scope-order">${ord.order.map(n => `<span class="plan-scope-q">${n}</span>`).join('')}</div>`;
   }
   return `<div class="plan-scope-note">この周は<strong>誤答のみ 約${sc.count}${unit}</strong>（<span class="plan-scope-est">推定</span>）。
     教材進捗で誤答の番号を入れると、推定ではなく実際の対象に切り替わります。
@@ -14711,6 +14892,89 @@ function openPlanWizard(onDone, existing) {
 // 科目ごとにウィザードを開き直すのは現実的でないので、締切・曜日・周回は共通、
 // 科目ごとには「入れるかどうか」と「総量」だけ選ばせる。締切を揃えても、
 // どれから手を付けるかは優先順位の順番詰めが決めるので困らない。
+
+// ---------- 模試の記録 ----------
+// 1回の模試で複数科目を解くので、日付は1回だけ入れて、その下に
+// 「科目・正答数・問題数」の行を足していく形にする。
+// 正答率ではなく正答数と問題数で持つ（問題数を縮小推定の重みに使うため）。
+function mockSubjectOptionsHTML() {
+  return subjectCategories.filter(c => c.id !== 'cat-other').map(cat =>
+    `<optgroup label="${esc(cat.name)}">${cat.subjects.map(sub =>
+      `<option value="${esc(sub.id)}">${esc(sub.name)}</option>`).join('')}</optgroup>`).join('');
+}
+
+function openMockExamWizard(onDone) {
+  const todayKey = todayPlanKey();
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in';
+  modal.style.zIndex = '2000';
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up" style="max-width:560px;">
+      <div class="modal-header">
+        <div class="modal-title">模試を記録</div>
+        <button class="modal-close" data-mk-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <div style="display:flex; gap:12px; margin-bottom:12px;">
+          <div class="settings-field" style="flex:1;"><label>受けた日</label>
+            <input type="date" id="mk-date" value="${todayKey}" style="margin-bottom:0" /></div>
+          <div class="settings-field" style="flex:2;"><label>名前（任意）</label>
+            <input type="text" id="mk-title" placeholder="第2回 CBT模試" style="margin-bottom:0" /></div>
+        </div>
+        <div class="plan-hint" style="margin:-6px 0 12px;">同じ日に解いた科目は、下に行を足してまとめて入れられます。
+          正答率ではなく<strong>正答数と問題数</strong>で入れてください（問題数が多い模試ほど、間隔の判定で重く扱います）。</div>
+        <div class="plan-bulk-head"><strong>科目ごとの結果</strong><span class="cal-spacer"></span>
+          <button class="btn-log-action" data-mk-add>+ 行を追加</button></div>
+        <div id="mk-rows"></div>
+        <button class="btn btn-primary" id="mk-save" style="width:100%; justify-content:center; margin-top:12px;">保存</button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const $ = sel => modal.querySelector(sel);
+  const close = () => modal.remove();
+  $('[data-mk-close]').onclick = close;
+  modal.onclick = e => { if (e.target === modal) close(); };
+
+  const addRow = () => {
+    const row = document.createElement('div');
+    row.className = 'mk-row';
+    row.innerHTML = `
+      <select class="mk-sub">${mockSubjectOptionsHTML()}</select>
+      <input type="number" class="mk-correct" min="0" step="1" placeholder="正答" />
+      <span class="mk-slash">/</span>
+      <input type="number" class="mk-total" min="1" step="1" placeholder="問題数" />
+      <button class="btn-log-action delete" data-mk-del>✕</button>`;
+    row.querySelector('[data-mk-del]').onclick = () => {
+      if (modal.querySelectorAll('.mk-row').length > 1) row.remove();
+    };
+    $('#mk-rows').appendChild(row);
+  };
+  addRow();
+  $('[data-mk-add]').onclick = addRow;
+
+  $('#mk-save').onclick = async function () {
+    const taken = $('#mk-date').value;
+    if (!taken) { showToast(IC.warn + ' 受けた日を入れてください'); return; }
+    const title = $('#mk-title').value.trim() || null;
+    const rows = [...modal.querySelectorAll('.mk-row')].map(r => ({
+      taken_on: taken, title,
+      subject_id: r.querySelector('.mk-sub').value,
+      correct_questions: r.querySelector('.mk-correct').value,
+      total_questions: r.querySelector('.mk-total').value
+    })).filter(r => Number(r.total_questions) > 0);
+    if (!rows.length) { showToast(IC.warn + ' 問題数を入れてください'); return; }
+    const bad = rows.find(r => Number(r.correct_questions) > Number(r.total_questions));
+    if (bad) { showToast(IC.warn + ' 正答数が問題数を超えています'); return; }
+    this.disabled = true; this.textContent = '保存中…';
+    const saved = await createMockExams(rows);
+    this.disabled = false; this.textContent = '保存';
+    if (!saved.length) return;
+    _planSyncAt = 0;            // 間隔の基準が変わるので予定を組み直す
+    close();
+    showToast(IC.check + ` 模試を${saved.length}件記録しました`);
+    if (onDone) onDone(saved);
+  };
+}
 
 function openBulkPlanWizard(onDone, existingPlans) {
   const todayKey = todayPlanKey();
@@ -15087,25 +15351,41 @@ async function renderPlans() {
 // 自信があったのに外した問題は直したつもりになりやすく、何も言われなければ
 // 二度と開かない。日付が来たときだけ、番号を添えて思い出させる。
 function retestBlockHTML(todayKey) {
-  const due = highConfidenceRetests(_qRecords, todayKey);
+  const due = dueRetests(_qRecords, todayKey);
   if (!due.length) return '';
-  const bySubject = {};
-  due.forEach(r => {
-    const k = String(r.subject_id || '');
-    (bySubject[k] = bySubject[k] || { day1: [], day7: [] });
-    (r.retestDay === 1 ? bySubject[k].day1 : bySubject[k].day7).push(r.question_no);
-  });
-  const lines = Object.entries(bySubject).map(([sid, g]) => {
-    const parts = [];
-    if (g.day1.length) parts.push(`翌日 ${formatQuestionNumbers(g.day1)}`);
-    if (g.day7.length) parts.push(`7日後 ${formatQuestionNumbers(g.day7)}`);
-    return `<div class="tp-retest-item">${esc(subjectNameOf(sid))}　${parts.join(' / ')}</div>`;
-  }).join('');
+  const total = (_qRecords || []).filter(r => {
+    const st = retestStateOf(r);
+    return st && st.stage < 2 && st.dueKey && st.dueKey <= (todayKey || todayPlanKey());
+  }).length;
+  const rows = due.map(r => `<div class="tp-retest-item" data-retest="${esc(r.subject_id + '|' + r.round + '|' + r.question_no)}">
+    <span class="tp-retest-sub">${esc(subjectNameOf(r.subject_id))}</span>
+    <span class="tp-retest-no">${r.question_no}</span>
+    <span class="tp-retest-stage">${r.stage === 0 ? '翌日' : '7日後'}</span>
+    ${r.overdueDays > 0 ? `<span class="tp-retest-late">${r.overdueDays}日遅れ</span>` : ''}
+    <span class="cal-spacer"></span>
+    <button class="tp-retest-btn ok" data-retest-ok="${esc(r.subject_id + '|' + r.round + '|' + r.question_no)}">○</button>
+    <button class="tp-retest-btn ng" data-retest-ng="${esc(r.subject_id + '|' + r.round + '|' + r.question_no)}">✕</button>
+  </div>`).join('');
   return `<div class="tp-retest">
-    <div class="tp-retest-head">${IC.warn} 解き直す問題（${due.length}問）</div>
-    ${lines}
-    <div class="tp-retest-note">自信があったのに外した問題です。直後は解けても1週間ほどで元の誤答が戻ることがあるので、翌日と7日後の2回だけ出しています。</div>
+    <div class="tp-retest-head">${IC.warn} 解き直す問題（${due.length}問${
+      total > due.length ? ` / 期日が来ているのは ${total}問` : ''}）</div>
+    ${rows}
+    <div class="tp-retest-note">自信があったのに外した問題です。直後は解けても1週間ほどで元の誤答が戻ることがあるので、翌日と7日後の2回見ます。7日後に正解できたら完了です。${
+      total > due.length ? `1日に出すのは${PLANNING_CONFIG.scope.retestMaxPerDay}問までで、残りは翌日以降に回ります（消えません）。` : ''}</div>
   </div>`;
+}
+
+// 再テストの○✕を押したときの保存。記録を1件だけ書き換える。
+async function markRetest(key, correct) {
+  const [sid, roundStr, noStr] = String(key || '').split('|');
+  const round = Number(roundStr) || 0, no = Number(noStr) || 0;
+  const rows = questionRecordsFor(sid, round).map(r => Object.assign({}, r));
+  const hit = rows.find(r => Number(r.question_no) === no);
+  if (!hit) return;
+  Object.assign(hit, applyRetestResult(hit, correct, todayPlanKey()));
+  await persistMarks(sid, round, rows);
+  showToast(correct ? IC.check + ' 正解にしました' : IC.warn + ' もう一度7日後に出します');
+  renderDashboard();
 }
 
 // ダッシュボード用「今日のノルマ」。進行中プランの今日ぶんを1枚にまとめる。

@@ -3517,7 +3517,17 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .tp-retest { border-top:1px dashed var(--color-border); margin-top:8px; padding-top:8px; }
 .tp-retest-head { font-size:0.75rem; font-weight:700; color:var(--color-accent-yellow); margin-bottom:4px; }
 .tp-retest-note { font-size:0.68rem; color:var(--color-text-tertiary); line-height:1.5; }
-.tp-retest-item { font-size:0.75rem; color:var(--color-text-secondary); margin-top:2px; }
+.tp-retest-item { font-size:0.75rem; color:var(--color-text-secondary); margin-top:4px;
+  display:flex; align-items:center; gap:6px; }
+.tp-retest-sub { font-weight:600; }
+.tp-retest-no { font-weight:800; padding:0 5px; border-radius:4px; background:var(--color-bg-base); }
+.tp-retest-stage { font-size:0.68rem; color:var(--color-text-tertiary); }
+.tp-retest-late { font-size:0.68rem; font-weight:700; padding:0 5px; border-radius:var(--radius-full);
+  background:rgba(239,68,68,0.15); color:var(--color-accent-pink); }
+.tp-retest-btn { font-size:0.72rem; font-weight:700; padding:1px 8px; border-radius:4px; cursor:pointer;
+  background:var(--color-bg-elevated); border:1px solid var(--color-border); }
+.tp-retest-btn.ok { color:var(--color-accent-green); }
+.tp-retest-btn.ng { color:var(--color-accent-pink); }
 
 /* この周でやる範囲（誤答のみ／推定） */
 .plan-scope-note { font-size:0.75rem; color:var(--color-text-secondary); margin-top:8px;
@@ -3529,6 +3539,22 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .break-tag { font-size:0.62rem; font-weight:700; padding:1px 6px; border-radius:var(--radius-full);
   margin-left:6px; background:rgba(78,205,196,0.15); color:var(--color-accent-teal); vertical-align:middle; }
 .break-tag.dim { background:var(--color-bg-elevated); color:var(--color-text-tertiary); }
+
+/* 2周目の対象番号（混同を散らした並び） */
+.plan-scope-order-note { font-size:0.68rem; color:var(--color-accent-teal); margin-top:6px; }
+.plan-scope-order { display:flex; flex-wrap:wrap; gap:4px; margin-top:4px; }
+.plan-scope-q { font-size:0.68rem; font-weight:600; padding:1px 6px; border-radius:4px;
+  background:var(--color-bg-base); border:1px solid var(--color-border); color:var(--color-text-secondary); }
+
+/* 模試の記録 */
+.mock-bar { display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  padding:8px 10px; margin:10px 0; border-radius:var(--radius-md);
+  background:var(--color-bg-elevated); border:1px solid var(--color-border); }
+.mock-bar-text { font-size:0.75rem; color:var(--color-text-secondary); }
+.mk-row { display:flex; align-items:center; gap:6px; margin-bottom:6px; }
+.mk-row .mk-sub { flex:2; min-width:0; }
+.mk-row .mk-correct, .mk-row .mk-total { width:70px; text-align:center; }
+.mk-slash { color:var(--color-text-tertiary); }
 .plan-bar { height:8px; border-radius:var(--radius-full); background:var(--color-bg-elevated); overflow:hidden; margin-top:var(--space-md); }
 .plan-bar span { display:block; height:100%; border-radius:var(--radius-full); transition:width var(--transition-base); }
 .plan-bar-label { display:flex; justify-content:space-between; font-size:var(--font-size-xs); color:var(--color-text-secondary); margin-top:6px; }

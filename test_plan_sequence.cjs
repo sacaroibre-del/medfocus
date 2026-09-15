@@ -1491,33 +1491,94 @@ const scope = (o) => W.roundScope(Object.assign({
     records: [{ round: 1, question_no: 5, is_correct: false, confidence: null }] }).count, 1);
 })();
 
-// ---------- 高確信の誤答の再テスト（翌日と7日後） ----------
+// ---------- 高確信の誤答の再テスト（持ち越しあり） ----------
+const RETEST_MAX = 20;   // PLANNING_CONFIG.scope.retestMaxPerDay
+
 (function retestSchedule() {
   const recs = [
-    // 自信があったのに外した → 翌日(9/16)と7日後(9/22)に出る
+    // 自信があったのに外した → 翌日(9/16)から期日
     { subject_id: '2C', round: 1, question_no: 5, is_correct: false, confidence: 'high', recorded_on: '2026-09-15' },
-    // 自信なしの誤答は対象外（再テストではなく2周目の範囲で拾う）
+    // 自信なしの誤答は対象外（2周目の範囲で拾う）
     { subject_id: '2C', round: 1, question_no: 6, is_correct: false, confidence: 'low',  recorded_on: '2026-09-15' },
     // 正解は対象外
     { subject_id: '2C', round: 1, question_no: 7, is_correct: true,  confidence: 'high', recorded_on: '2026-09-15' },
-    // 解いた日が無ければ出しようがない
+    // 解いた日が無ければ期日を置けない
     { subject_id: '2C', round: 1, question_no: 8, is_correct: false, confidence: 'high', recorded_on: null }
   ];
-  eq('解いた当日には出ない', W.highConfidenceRetests(recs, '2026-09-15').length, 0);
-
-  const d1 = W.highConfidenceRetests(recs, '2026-09-16');
-  eq('翌日に1件', d1.length, 1);
+  eq('解いた当日には出ない', W.dueRetests(recs, '2026-09-15').length, 0);
+  const d1 = W.dueRetests(recs, '2026-09-16');
+  eq('翌日から出る', d1.length, 1);
   eq('その問題', d1[0].question_no, 5);
-  eq('何日後の回か', d1[0].retestDay, 1);
+  eq('翌日の回', d1[0].stage, 0);
+  eq('まだ遅れていない', d1[0].overdueDays, 0);
+})();
 
-  eq('あいだの日には出ない', W.highConfidenceRetests(recs, '2026-09-18').length, 0);
+// ご指定①: 期日を過ぎても消えない
+(function retestSurvivesMissedDays() {
+  const recs = [{ subject_id: '2C', round: 1, question_no: 5, is_correct: false,
+                  confidence: 'high', recorded_on: '2026-09-15' }];
+  // 期日は 9/16。放置して 9/25 に開いても残っている
+  const late = W.dueRetests(recs, '2026-09-25');
+  eq('消えずに残る', late.length, 1);
+  eq('何日遅れか分かる', late[0].overdueDays, 9);
+  eq('期日そのものは動かない', late[0].dueKey, '2026-09-16');
+  // stage を持った記録でも同じ
+  const staged = [{ subject_id: '2C', round: 1, question_no: 9, is_correct: false, confidence: 'high',
+                    recorded_on: '2026-09-01', retest_stage: 1, retest_due_on: '2026-09-10', retest_log: [] }];
+  eq('7日後ぶんも消えない', W.dueRetests(staged, '2026-10-01').length, 1);
+  eq('遅れ日数', W.dueRetests(staged, '2026-10-01')[0].overdueDays, 21);
+  // 完了したものは出ない
+  const done = [{ subject_id: '2C', round: 1, question_no: 9, is_correct: false, confidence: 'high',
+                  recorded_on: '2026-09-01', retest_stage: 2, retest_due_on: null, retest_log: [] }];
+  eq('完了したものは出ない', W.dueRetests(done, '2026-10-01').length, 0);
+})();
 
-  const d7 = W.highConfidenceRetests(recs, '2026-09-22');
-  eq('7日後にもう一度', d7.length, 1);
-  eq('7日後の回', d7[0].retestDay, 7);
+// ご指定②: 7日後ぶんの誤答で、もう一度7日後に期日が入る
+(function retestWrongRepeatsSevenDays() {
+  const rec = { subject_id: '2C', round: 1, question_no: 5, is_correct: false, confidence: 'high',
+                recorded_on: '2026-09-15' };
+  // 翌日ぶん（stage 0）: 正誤にかかわらず stage 1 へ。実施日の7日後が期日
+  const afterD1Wrong = W.applyRetestResult(rec, false, '2026-09-16');
+  eq('翌日ぶんは誤答でも次へ進む', afterD1Wrong.retest_stage, 1);
+  eq('実施日の7日後', afterD1Wrong.retest_due_on, '2026-09-23');
+  const afterD1Right = W.applyRetestResult(rec, true, '2026-09-16');
+  eq('正解でも完了にはしない', afterD1Right.retest_stage, 1);
+  eq('同じく7日後', afterD1Right.retest_due_on, '2026-09-23');
 
-  eq('それ以降は出ない', W.highConfidenceRetests(recs, '2026-09-23').length, 0);
-  eq('空でも落ちない', W.highConfidenceRetests(null, '2026-09-16'), []);
+  // 7日後ぶん（stage 1）: 誤答ならもう一度7日後
+  const atStage1 = Object.assign({}, rec, afterD1Wrong);
+  const again = W.applyRetestResult(atStage1, false, '2026-09-23');
+  eq('誤答なら stage 1 のまま', again.retest_stage, 1);
+  eq('さらに7日後に置き直す', again.retest_due_on, '2026-09-30');
+  eq('やり直した記録が積まれる', again.retest_log.length, 2);
+  eq('最後は誤答', again.retest_log[1].correct, false);
+
+  // 7日後ぶんが正解なら完了
+  const cleared = W.applyRetestResult(atStage1, true, '2026-09-23');
+  eq('正解で完了', cleared.retest_stage, 2);
+  eq('期日は外れる', cleared.retest_due_on, null);
+
+  // 遅れて実施したら、そこから数え直す
+  const lateDone = W.applyRetestResult(atStage1, false, '2026-10-05');
+  eq('実施日から7日後', lateDone.retest_due_on, '2026-10-12');
+})();
+
+// ご指定③: 1日に出す上限が守られる
+(function retestRespectsDailyCap() {
+  const many = [];
+  for (let i = 1; i <= 35; i++) {
+    many.push({ subject_id: '2C', round: 1, question_no: i, is_correct: false, confidence: 'high',
+                recorded_on: '2026-09-01', retest_stage: 0,
+                // 期日をばらけさせる。古いものから出るはず
+                retest_due_on: W.shiftDateKey('2026-09-02', i), retest_log: [] });
+  }
+  const due = W.dueRetests(many, '2026-12-31');
+  eq('上限で切る', due.length, RETEST_MAX);
+  eq('期日の古い順', due[0].question_no, 1);
+  eq('上限ぶんまで', due[RETEST_MAX - 1].question_no, RETEST_MAX);
+  ok('溢れたぶんは消えていない（記録は35件のまま）', many.length, 35);
+  // 上限以下ならそのまま
+  eq('上限以下はそのまま', W.dueRetests(many.slice(0, 5), '2026-12-31').length, 5);
 })();
 
 // ---------- 混同の誤答をまとめて交互に ----------
@@ -1937,6 +1998,105 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
   eq('2件とも同じビン', bin.count, 2);
   // 単純平均なら (30+5)/2 = 17.5、重みづけなら (20×30 + 200×5)/220 = 7.27
   ok('小さいサンプルに引っぱられない', bin.avgGain < 10, bin.avgGain);
+})();
+
+// ---------- 2周目の対象番号の並び ----------
+(function scopeOrderInterleavesConfused() {
+  const rec = (no, type) => ({ subject_id: '2C', round: 1, question_no: no, is_correct: false, error_type: type });
+  // 混同4問 + それ以外4問
+  const records = [rec(1,'confuse'), rec(2,'confuse'), rec(3,'confuse'), rec(4,'confuse'),
+                   rec(10,'unknown'), rec(11,'unknown'), rec(12,'misread'), rec(13,null)];
+  const nums = [1,2,3,4,10,11,12,13];
+  const r = W.orderScopeQuestions(nums, records, 1, '2026-09-15');
+  eq('並べ替えた印', r.interleaved, true);
+  eq('混同の件数', r.confusedCount, 4);
+  eq('問題は落ちも増えもしない', r.order.slice().sort((a,b)=>a-b), nums);
+
+  // 混同どうしが隣り合わない
+  const isConf = n => n <= 4;
+  let adjacent = 0;
+  for (let i = 1; i < r.order.length; i++) if (isConf(r.order[i]) && isConf(r.order[i-1])) adjacent++;
+  eq('混同が連続しない', adjacent, 0);
+
+  // 混同でない問題は番号順のまま
+  eq('混同以外は番号順', r.order.filter(n => !isConf(n)), [10, 11, 12, 13]);
+
+  // 同じ日なら何度呼んでも同じ
+  eq('同じ日は同じ並び',
+     JSON.stringify(W.orderScopeQuestions(nums, records, 1, '2026-09-15').order), JSON.stringify(r.order));
+  // 日が変わると先頭が変わる
+  const other = W.orderScopeQuestions(nums, records, 1, '2026-09-16');
+  ok('日が変わると並びが変わる', JSON.stringify(other.order) !== JSON.stringify(r.order),
+     { '9/15': r.order, '9/16': other.order });
+})();
+
+(function scopeOrderKeepsNumberOrderWhenFew() {
+  const rec = (no, type) => ({ subject_id: '2C', round: 1, question_no: no, is_correct: false, error_type: type });
+  // 混同が2問しかない → 並べ替えない
+  const records = [rec(5,'confuse'), rec(9,'confuse'), rec(1,'unknown'), rec(3,'misread')];
+  const r = W.orderScopeQuestions([9,5,3,1], records, 1, '2026-09-15');
+  eq('並べ替えない', r.interleaved, false);
+  eq('番号順のまま', r.order, [1, 3, 5, 9]);
+  eq('混同の件数は数える', r.confusedCount, 2);
+
+  // 混同が無い場合も番号順
+  eq('混同なしも番号順',
+     W.orderScopeQuestions([7,2,5], [rec(7,'unknown')], 1, '2026-09-15').order, [2, 5, 7]);
+  // 別の周の混同は数えない
+  const otherRound = [{ subject_id:'2C', round: 2, question_no: 1, is_correct:false, error_type:'confuse' },
+                      { subject_id:'2C', round: 2, question_no: 2, is_correct:false, error_type:'confuse' },
+                      { subject_id:'2C', round: 2, question_no: 3, is_correct:false, error_type:'confuse' }];
+  eq('別の周の混同は効かない', W.orderScopeQuestions([1,2,3], otherRound, 1, '2026-09-15').interleaved, false);
+  eq('空でも落ちない', W.orderScopeQuestions(null, null, 1, '2026-09-15').order, []);
+})();
+
+// 並び順がプランの表示まで通ること
+(function scopeOrderReachesTheCard() {
+  const p2 = plan({ id: 'z', unit: 'q', target_round: 2, subject_id: '2C' });
+  const withOrder = W.planScopeNoteHTML(p2, { scope: {
+    mode: 'recorded', count: 8, estimated: false, questions: [1,2,3,4,10,11,12,13],
+    order: { order: [1,3,10,2,4,11,12,13], interleaved: true, confusedCount: 4 } } });
+  ok('並べ替えの断り書きを出す', withOrder.includes('混同しやすい問題を交互に並べています'), withOrder);
+  ok('番号を出す', withOrder.includes('>1<') && withOrder.includes('>13<'), withOrder);
+
+  const plain = W.planScopeNoteHTML(p2, { scope: {
+    mode: 'recorded', count: 3, estimated: false, questions: [3,7,12],
+    order: { order: [3,7,12], interleaved: false, confusedCount: 1 } } });
+  ok('並べ替えていなければ断り書きは出さない', !plain.includes('交互に並べています'), plain);
+  ok('番号は出す', plain.includes('>3<'), plain);
+
+  // 推定モードには番号が無い
+  const est = W.planScopeNoteHTML(p2, { scope: { mode: 'estimated', count: 20, estimated: true } });
+  ok('推定に番号リストは出さない', !est.includes('plan-scope-order"'), est);
+})();
+
+// buildPlanSequence から並び順まで通ること
+(function scopeOrderFlowsFromSequence() {
+  const mkState = (id, round) => ({
+    plan: plan({ id, subject_id: '2C', unit: 'q', target_round: round, total_volume: 200,
+                 start_date: '2026-09-01', due_date: '2026-12-31' }),
+    mine: round === 1 ? [{ id: id + 't', due_date: '2026-09-06', target_amount: 200, done_amount: 200, completed: true }] : [],
+    canAuto: round !== 1
+  });
+  const qb = { '2C': { '1': { total: 200, done: 200, correct: 190 } } };
+  const rec = (no, type) => ({ subject_id: '2C', round: 1, question_no: no, is_correct: false, error_type: type });
+  const records = [rec(1,'confuse'), rec(2,'confuse'), rec(3,'confuse'),
+                   rec(20,'unknown'), rec(21,'misread'), rec(22,'unknown')];
+  const goalWas = W.planGoalMinutesOf;
+  W.planGoalMinutesOf = () => 600;
+  const res = W.buildPlanSequence([mkState('a', 1), mkState('b', 2)], '2026-09-06',
+    { hasQuestion: true, minPerQuestion: 2 }, null, 0, { qb, records });
+  W.planGoalMinutesOf = goalWas;
+  const sc = res.byPlan['b'].scope;
+  eq('記録から出した', sc.mode, 'recorded');
+  eq('並び順も持つ', !!sc.order, true);
+  eq('混同3問なので並べ替える', sc.order.interleaved, true);
+  eq('対象は6問', sc.order.order.slice().sort((a,b)=>a-b), [1,2,3,20,21,22]);
+  let adj = 0;
+  for (let i = 1; i < sc.order.order.length; i++) {
+    if (sc.order.order[i] <= 3 && sc.order.order[i-1] <= 3) adj++;
+  }
+  eq('混同が連続しない', adj, 0);
 })();
 
 console.log();
