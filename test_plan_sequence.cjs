@@ -2193,6 +2193,45 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
   ok('分からない数は書かない', !noCount.includes('前の周の誤答は'), noCount);
 })();
 
+// ---------- 学習終了画面で打った番号の振り分け ----------
+// 2つの欄だけで3種類を拾う:
+//   間違えた ∩ 自信なし → 自信のない誤答
+//   間違えた − 自信なし → 自信があったのに外した（解き直しの対象）
+//   自信なし − 間違えた → 正解したが自信がなかった
+(function sessionMarkRows() {
+  const rows = W.buildSessionMarkRows({ wrong: [3, 7, 12], unsure: [7, 20] }, '2026-09-15');
+  const by = {}; rows.forEach(r => { by[r.question_no] = r; });
+
+  eq('自信があったのに外した（3番）', [by[3].is_correct, by[3].confidence], [false, 'high']);
+  eq('自信があったのに外した（12番）', [by[12].is_correct, by[12].confidence], [false, 'high']);
+  eq('自信のない誤答（7番）', [by[7].is_correct, by[7].confidence], [false, 'low']);
+  eq('正解したが自信なし（20番）', [by[20].is_correct, by[20].confidence], [true, 'low']);
+  eq('4問ぶん', rows.length, 4);
+  eq('番号順に並ぶ', rows.map(r => r.question_no), [3, 7, 12, 20]);
+  eq('解いた日が入る', by[3].recorded_on, '2026-09-15');
+
+  // 解き直しに出るのは「自信があったのに外した」ぶんだけ
+  const retest = rows.filter(r => !r.is_correct && r.confidence === 'high').map(r => r.question_no);
+  eq('解き直しの対象', retest, [3, 12]);
+
+  // 空でも落ちない
+  eq('空なら0件', W.buildSessionMarkRows({ wrong: [], unsure: [] }, '2026-09-15').length, 0);
+  eq('null でも落ちない', W.buildSessionMarkRows(null, '2026-09-15').length, 0);
+  // 範囲や全角も読める（parseQuestionNumbers 経由の想定）
+  eq('重複は畳む', W.buildSessionMarkRows({ wrong: [5, 5], unsure: [5] }, '2026-09-15').length, 1);
+})();
+
+// 打った番号が、そのまま解き直しの対象になること
+(function sessionMarksFeedRetest() {
+  const rows = W.buildSessionMarkRows({ wrong: [3, 7, 12], unsure: [7] }, '2026-09-15')
+    .map(r => Object.assign({ subject_id: '2C', round: 1 }, r));
+  // 翌日に出る
+  const d1 = W.dueRetests(rows, '2026-09-16');
+  eq('自信があったのに外した2問だけ', d1.map(r => r.question_no), [3, 12]);
+  eq('自信なしの誤答は解き直しに出ない', d1.some(r => r.question_no === 7), false);
+  eq('当日は出ない', W.dueRetests(rows, '2026-09-15').length, 0);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

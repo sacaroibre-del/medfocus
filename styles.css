@@ -3555,6 +3555,13 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .mk-row .mk-sub { flex:2; min-width:0; }
 .mk-row .mk-correct, .mk-row .mk-total { width:70px; text-align:center; }
 .mk-slash { color:var(--color-text-tertiary); }
+
+/* 学習終了画面の問題番号 */
+.qb-mark-row { display:flex; align-items:center; gap:8px; margin-top:8px; }
+.qb-mark-label { flex:0 0 auto; min-width:8.5em; font-size:0.75rem; color:var(--color-text-secondary); margin:0; }
+.qb-mark-row input { flex:1; min-width:0; }
+.qb-mark-hint { font-size:0.68rem; color:var(--color-text-tertiary); margin-top:6px; line-height:1.5; }
+.qb-mark-hint.is-live { color:var(--color-accent-teal); font-weight:600; }
 .plan-bar { height:8px; border-radius:var(--radius-full); background:var(--color-bg-elevated); overflow:hidden; margin-top:var(--space-md); }
 .plan-bar span { display:block; height:100%; border-radius:var(--radius-full); transition:width var(--transition-base); }
 .plan-bar-label { display:flex; justify-content:space-between; font-size:var(--font-size-xs); color:var(--color-text-secondary); margin-top:6px; }

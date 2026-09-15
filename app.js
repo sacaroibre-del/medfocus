@@ -939,6 +939,11 @@ function applyVideoCountToProgress(subjectId, done, edition){
 
 function qbCountFieldsHtml(suffix){
   const show = selectedActivity === 'qb';
+  // 番号は解いた直後がいちばん正確に書ける（あとからでは自信の有無を思い出せない）。
+  // 2つの欄だけで3種類を拾う:
+  //   間違えた ∩ 自信なし → 自信のない誤答
+  //   間違えた − 自信なし → 自信があったのに外した（＝翌日と7日後に解き直す）
+  //   自信なし − 間違えた → 正解したが自信がなかった
   return `<div class="field qb-count-field" id="qb-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
     <label>解いた問題（任意）</label>
     <div class="qb-count-row">
@@ -948,7 +953,45 @@ function qbCountFieldsHtml(suffix){
       <span class="qb-count-sep">問正解</span>
       <span class="qb-count-acc" id="qb-acc${suffix}">—</span>
     </div>
+    <div class="qb-mark-row">
+      <label class="qb-mark-label">間違えた番号</label>
+      <input type="text" id="qb-wrong${suffix}" placeholder="3,7,12-14" />
+    </div>
+    <div class="qb-mark-row">
+      <label class="qb-mark-label">自信がなかった番号</label>
+      <input type="text" id="qb-unsure${suffix}" placeholder="7,20" />
+    </div>
+    <div class="qb-mark-hint" id="qb-mark-hint${suffix}">どちらも任意です。間違えたのに自信があった問題は、翌日と7日後に「解き直す問題」として出ます。</div>
   </div>`;
+}
+
+// 入力から3種類に振り分ける。番号は解いた直後に書くものなので、
+// 書き方の揺れ（全角・読点・範囲）は parseQuestionNumbers が吸収する。
+function readQbMarks(suffix){
+  if (selectedActivity !== 'qb') return { wrong: [], unsure: [], any: false };
+  const wEl = document.getElementById('qb-wrong' + suffix);
+  const uEl = document.getElementById('qb-unsure' + suffix);
+  const wrong = parseQuestionNumbers(wEl && wEl.value);
+  const unsure = parseQuestionNumbers(uEl && uEl.value);
+  return { wrong, unsure, any: wrong.length > 0 || unsure.length > 0 };
+}
+
+// 3種類に振り分けた記録を作る。
+function buildSessionMarkRows(marks, dateKey){
+  const wrong = new Set(marks && marks.wrong || []);
+  const unsure = new Set(marks && marks.unsure || []);
+  const rows = [];
+  wrong.forEach(no => rows.push({
+    question_no: no, is_correct: false,
+    // 「間違えた」に入っていて「自信がなかった」に入っていない ＝ 自信があったのに外した
+    confidence: unsure.has(no) ? 'low' : 'high',
+    recorded_on: dateKey
+  }));
+  unsure.forEach(no => {
+    if (wrong.has(no)) return;
+    rows.push({ question_no: no, is_correct: true, confidence: 'low', recorded_on: dateKey });
+  });
+  return rows.sort((a, b) => a.question_no - b.question_no);
 }
 
 // 入力欄の表示切替と正答率の即時表示。activity ボタンからも呼ぶ。
@@ -975,7 +1018,35 @@ function wireQbCountFields(root, suffix){
     const el = (root || document).querySelector('#' + base + suffix);
     if (el) el.addEventListener('input', () => syncQbCountFields(suffix));
   });
+  // 番号を打つそばから「解き直しに出るのは何問か」を見せる。
+  // 入力の意味がその場で分かるようにしておく。
+  ['qb-wrong', 'qb-unsure'].forEach(base => {
+    const el = (root || document).querySelector('#' + base + suffix);
+    if (el) el.addEventListener('input', () => syncQbMarkHint(suffix));
+  });
   syncQbCountFields(suffix);
+  syncQbMarkHint(suffix);
+}
+
+function syncQbMarkHint(suffix){
+  const el = document.getElementById('qb-mark-hint' + suffix);
+  if (!el) return;
+  const m = readQbMarks(suffix);
+  if (!m.any) {
+    el.textContent = 'どちらも任意です。間違えたのに自信があった問題は、翌日と7日後に「解き直す問題」として出ます。';
+    el.classList.remove('is-live');
+    return;
+  }
+  const rows = buildSessionMarkRows(m, todayPlanKey());
+  const retest = rows.filter(r => !r.is_correct && r.confidence === 'high').length;
+  const lowWrong = rows.filter(r => !r.is_correct && r.confidence === 'low').length;
+  const lowRight = rows.filter(r => r.is_correct).length;
+  const parts = [];
+  if (retest) parts.push(`解き直し ${retest}問`);
+  if (lowWrong) parts.push(`自信なしの誤答 ${lowWrong}問`);
+  if (lowRight) parts.push(`正解したが自信なし ${lowRight}問`);
+  el.textContent = parts.join(' / ');
+  el.classList.add('is-live');
 }
 
 // 保存前に取り出す。未入力なら null（＝記録しない）。
@@ -1394,12 +1465,41 @@ function stripVideoEdition(payload) {
   return out;
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null) {
+// 学習終了時に打った番号を、そのセッションが入った周に足す。
+// セッションは同じ周に何度も積むので、置き換えではなく足し込みにする
+// （置き換えると前のセッションで入れた番号が消える）。
+// 同じ番号を入れ直したときは、あとの入力で上書きする。
+async function addSessionMarks(applied, marks) {
+  const rows = buildSessionMarkRows(marks, toLocalDateKey(getLogicalDate(new Date())));
+  if (!rows.length) return;
+  const sid = applied && applied.subjectId;
+  // 複数の周にまたがったセッションは、始めた周に寄せる（番号の出どころは本1冊なので
+  // どちらの周かを機械的には決められない。繰り越しは端数なので実害が小さいほう）。
+  const round = applied && applied.changes && applied.changes[0]
+    ? Number(applied.changes[0].round) : null;
+  if (!sid || !round) return;
+  try {
+    const all = await fetchQuestionRecords();
+    _qRecords = all;
+    const byNo = {};
+    questionRecordsFor(sid, round).forEach(r => { byNo[r.question_no] = Object.assign({}, r); });
+    rows.forEach(r => { byNo[r.question_no] = Object.assign({}, byNo[r.question_no] || {}, r); });
+    await persistMarks(sid, round, Object.values(byNo));
+  } catch (e) {
+    console.warn('session marks save error:', e);
+  }
+}
+
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
-  const applyQb = () => (activity === 'qb')
-    ? applyQbSessionToProgress(subjectId, questionsSolved, questionsCorrect)
-    : null;
+  const applyQb = () => {
+    if (activity !== 'qb') return null;
+    const res = applyQbSessionToProgress(subjectId, questionsSolved, questionsCorrect);
+    // 番号の保存はログの保存を待たせない（失敗しても学習記録は残す）
+    if (res && qbMarks && qbMarks.any) addSessionMarks(res, qbMarks);
+    return res;
+  };
 
   if (!hasDB()) {
     // オフライン／デモモード: 学習ログは保存しないが、教材進捗はローカルで更新する
@@ -2166,6 +2266,7 @@ function finishSession(manualStop = false) {
       const loc = overlay.querySelector('#confirm-location').value;
       const foc = parseFloat(overlay.querySelector('#confirm-focus').value);
       const qb = readQbCounts('-sync');
+      const qbMarks = readQbMarks('-sync');
       const vid = readVideoCount('-sync');
 
       if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
@@ -2187,7 +2288,7 @@ function finishSession(manualStop = false) {
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
         const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks);
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -4446,7 +4547,7 @@ async function renderStudy(){
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
       const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''));
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
