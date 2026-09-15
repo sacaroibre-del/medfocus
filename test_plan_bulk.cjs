@@ -156,6 +156,25 @@ async function main() {
   ok('作成したらモーダルが閉じる', !document.body.contains(modal));
 }
 
+// ---------- 件数の上限は無い ----------
+{
+  const modal = open([]);
+  modal.querySelector('#bw-due').value = shift(4);   // 今日を含めて5日
+  modal.querySelector('[data-bw-none]').click();
+  const boxes = [...modal.querySelectorAll('[data-bw-sub]:not(:disabled)')].slice(0, 45);
+  ok('科目は45件以上ある（vol.4 を含む）', boxes.length === 45);
+  boxes.forEach(b => {
+    b.checked = true;
+    modal.querySelector(`[data-bw-vol="${b.dataset.bwSub}"]`).value = '10';
+  });
+  modal.querySelector('#bw-next').click();
+  ok('40件を超えても進める', modal.querySelector('#bw-step2').style.display !== 'none');
+  const pv = modal.querySelector('#bw-preview').textContent;
+  ok('プレビューに件数が出る', pv.includes('45件'), pv.slice(0, 120));
+  ok('作るノルマの行数が出る', pv.includes('ノルマ 225行'), pv.slice(0, 160));
+  closeAll();
+}
+
 // ---------- 休みの曜日 ----------
 {
   store.setItem('medfocus_study_plans', '[]');

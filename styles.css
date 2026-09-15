@@ -3498,7 +3498,6 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 /* まとめて追加: 科目の一覧 */
 .plan-bulk-head { display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:var(--font-size-sm); font-weight:700; }
 .plan-bulk-count { font-size:var(--font-size-xs); font-weight:400; color:var(--color-text-tertiary); }
-.plan-bulk-count.warn { color:var(--color-accent-pink); }
 .plan-bulk-list { max-height:min(42vh,300px); overflow-y:auto; border:1px solid var(--color-border); border-radius:var(--radius-md); margin-bottom:10px; }
 .plan-bulk-group { position:sticky; top:0; z-index:1; padding:6px 12px; background:var(--color-bg-elevated);
   font-size:0.6875rem; font-weight:800; letter-spacing:0.04em; color:var(--color-text-tertiary); }

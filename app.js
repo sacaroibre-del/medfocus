@@ -13366,7 +13366,6 @@ function openPlanWizard(onDone, existing) {
 // 科目ごとにウィザードを開き直すのは現実的でないので、締切・曜日・周回は共通、
 // 科目ごとには「入れるかどうか」と「総量」だけ選ばせる。締切を揃えても、
 // どれから手を付けるかは優先順位の順番詰めが決めるので困らない。
-const BULK_PLAN_LIMIT = 40;   // 一度に作る上限（ノルマ行が増えすぎるのを防ぐ）
 
 function openBulkPlanWizard(onDone, existingPlans) {
   const todayKey = todayPlanKey();
@@ -13470,7 +13469,6 @@ function openBulkPlanWizard(onDone, existingPlans) {
   const updateCount = () => {
     const n = [...modal.querySelectorAll('[data-bw-sub]')].filter(c => c.checked).length;
     $('#bw-count').textContent = `選択 ${n}件`;
-    $('#bw-count').classList.toggle('warn', n > BULK_PLAN_LIMIT);
   };
 
   const renderList = () => {
@@ -13545,7 +13543,6 @@ function openBulkPlanWizard(onDone, existingPlans) {
     const { picked, missing } = readSelection();
     if (missing.length) { showToast(IC.warn + ` 総量が空です: ${missing.slice(0, 3).join('、')}${missing.length > 3 ? ' ほか' : ''}`); return; }
     if (!picked.length) { showToast(IC.warn + ' 科目を選んでください'); return; }
-    if (picked.length > BULK_PLAN_LIMIT) { showToast(IC.warn + ` 一度に作れるのは${BULK_PLAN_LIMIT}件までです`); return; }
     lastItems = picked.map(inp => ({ input: inp, schedule: buildPlanSchedule({
       title: inp.title, startDate: inp.startDate, dueDate: inp.dueDate, totalVolume: inp.totalVolume,
       unit: inp.unit, excludeWeekdays: inp.excludeWeekdays, todayKey }) }));
@@ -13557,9 +13554,10 @@ function openBulkPlanWizard(onDone, existingPlans) {
   $('#bw-back').onclick = () => { $('#bw-step2').style.display = 'none'; $('#bw-step1').style.display = ''; };
   $('#bw-create').onclick = async function () {
     if (!lastItems || !lastItems.length || !lastItems.every(it => it.schedule.ok)) return;
-    this.disabled = true;
+    const label = this.textContent;
+    this.disabled = true; this.textContent = '作成中…';
     const plans = await createPlansBulk(lastItems);
-    this.disabled = false;
+    this.disabled = false; this.textContent = label;
     if (!plans.length) return;
     _planSyncAt = 0;
     close();
@@ -13572,12 +13570,14 @@ function bulkPreviewHTML(items, unit) {
   const first = items[0].schedule;
   const due = parseDateKey(first.dueKey);
   const total = items.reduce((s, it) => s + it.schedule.totalVolume, 0);
+  // 件数は止めないが、作るノルマの行数は見せる（締切が遠いと数千行になる）
+  const taskCount = items.reduce((s, it) => s + it.schedule.items.length, 0);
   const rows = items.map(it => {
     const sc = it.schedule;
     return `<div class="plan-preview-row"><span>${esc(it.input.title)}</span><span>${sc.totalVolume}${u}
       <span class="dim">→ 1日 ${Math.round(sc.perDay * 10) / 10}${u}</span></span></div>`;
   }).join('');
-  return `<div class="plan-preview-summary"><strong>${items.length}件</strong>のプランを作ります・締切 ${due.getMonth() + 1}/${due.getDate()}・稼働 ${first.workingDayCount}日・合計 <strong>${total}${u}</strong>
+  return `<div class="plan-preview-summary"><strong>${items.length}件</strong>のプランを作ります・締切 ${due.getMonth() + 1}/${due.getDate()}・稼働 ${first.workingDayCount}日・合計 <strong>${total}${u}</strong>・ノルマ ${taskCount}行
       <span>1日あたりはプランを単体で均した場合の値です。実際は優先順位の高いものからその日の目標学習時間を埋めるので、早く終わる科目と後ろにずれる科目が出ます。</span>
     </div><div class="plan-preview-list">${rows}</div>`;
 }
