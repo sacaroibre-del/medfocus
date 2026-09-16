@@ -474,5 +474,94 @@ const TODAY = '2026-09-14';
     [{ due_date: '2026-09-14', kind: 'quota', target_amount: 0, extra: true }], { items: [] }, '2026-09-14'), false);
 })();
 
+
+// ---------- 日別の目標学習時間 ----------
+// カレンダーで1日ぶんだけ目標を差し替える。曜日別テンプレートより優先し、
+// 0分（休み）も指定として通る。消すとテンプレートに戻る。
+(() => {
+  const ls = window.localStorage;   // jsdom の実装。app.js が読み書きするのと同じもの
+  const clean = () => {
+    Object.keys(ls).filter(k => /^medfocus_daily_/.test(k)).forEach(k => ls.removeItem(k));
+  };
+  const goalOf = key => W.getGoalForDate(W.parseDateKey(key));
+
+  clean();
+  const dow = W.getWeeklyGoalsForDate(W.parseDateKey('2026-09-16'))[3];   // 水曜
+  eq('日別目標: 指定が無ければ曜日別テンプレート', goalOf('2026-09-16'), dow);
+  eq('日別目標: 指定が無ければ null', W.getGoalOverride('2026-09-16'), null);
+
+  W.setGoalOverrideForDate('2026-09-16', 240);
+  eq('日別目標: 指定した分が返る', goalOf('2026-09-16'), 240);
+  eq('日別目標: 指定として読める', W.getGoalOverride('2026-09-16'), 240);
+  eq('日別目標: 同期用のマップにも入る',
+     JSON.parse(ls.getItem('medfocus_daily_overrides_map'))['2026-09-16'], 240);
+  eq('日別目標: ほかの日には移らない', goalOf('2026-09-17'),
+     W.getWeeklyGoalsForDate(W.parseDateKey('2026-09-17'))[4]);
+
+  // 0分＝「この日は勉強しない」。真偽値で判定すると未指定に潰れるので、ここは要確認
+  W.setGoalOverrideForDate('2026-09-16', 0);
+  eq('日別目標: 0分（休み）も指定として通る', goalOf('2026-09-16'), 0);
+  eq('日別目標: 0分でも指定は指定', W.getGoalOverride('2026-09-16'), 0);
+
+  W.setGoalOverrideForDate('2026-09-16', null);
+  eq('日別目標: 消すと曜日別に戻る', goalOf('2026-09-16'), dow);
+  eq('日別目標: 消したら指定は無い', W.getGoalOverride('2026-09-16'), null);
+
+  // 日付ごとのキーが無く、同期で降ってきたマップにしか無い日も読めること
+  clean();
+  ls.setItem('medfocus_daily_overrides_map', JSON.stringify({ '2026-09-18': 90 }));
+  eq('日別目標: 同期マップだけでも読める', goalOf('2026-09-18'), 90);
+
+  // その日のスナップショット（達成率の控え）も目標に合わせて直す
+  clean();
+  ls.setItem('medfocus_daily_snapshot_2026-09-10',
+    JSON.stringify({ goal_minutes: 180, actual_minutes: 90, achievement_rate: 50 }));
+  W.setGoalOverrideForDate('2026-09-10', 90);
+  const snap = JSON.parse(ls.getItem('medfocus_daily_snapshot_2026-09-10'));
+  eq('日別目標: スナップショットの達成率も直る', [snap.goal_minutes, snap.achievement_rate], [90, 100]);
+
+  // 過去ぶんだけ間引く。未来は逆算プランの入力なので残す
+  const map = {};
+  for (let i = 1; i <= 80; i++) map[W.shiftDateKey(TODAY, -i)] = 60;
+  for (let i = 1; i <= 40; i++) map[W.shiftDateKey(TODAY, i)] = 60;
+  W.pruneGoalOverrides(map);
+  const keys = Object.keys(map);
+  eq('日別目標: 未来の指定は間引かない', keys.filter(k => k > TODAY).length, 40);
+  ok('日別目標: 過去は上限まで間引く', keys.filter(k => k < TODAY).length <= 60,
+     keys.filter(k => k < TODAY).length);
+  ok('日別目標: 残るのは新しい過去のほう', !keys.includes(W.shiftDateKey(TODAY, -80)));
+  clean();
+})();
+
+// ---------- buildCalendarModel: 日別の目標 ----------
+(() => {
+  const goals = { '2026-09-15': 240, '2026-09-16': 0 };
+  const model = W.buildCalendarModel(TODAY, 'week', {
+    todayKey: TODAY,
+    goalFor: key => (key in goals ? goals[key] : 180),
+    goalOverrideFor: key => (key in goals ? goals[key] : null),
+    logs: [{ subject_name: '2C 循環器', duration_minutes: 240,
+             started_at: '2026-09-15T09:00:00+09:00' }]
+  });
+  const cells = {};
+  model.weeks.flat().forEach(c => { cells[c.dateKey] = c; });
+  eq('カレンダー: 指定した日の目標がセルに乗る', cells['2026-09-15'].goalMinutes, 240);
+  eq('カレンダー: 指定した日は goalCustom', cells['2026-09-15'].goalCustom, true);
+  eq('カレンダー: 休み（0分）も指定として扱う',
+     [cells['2026-09-16'].goalMinutes, cells['2026-09-16'].goalCustom], [0, true]);
+  eq('カレンダー: 指定していない日はテンプレートのまま',
+     [cells['2026-09-17'].goalMinutes, cells['2026-09-17'].goalCustom], [180, false]);
+
+  // 積載バーは目標が満杯の目盛り。達成した日は is-met、はみ出さない（合計100%以内）
+  const met = W.calendarLoadHTML(cells['2026-09-15']);
+  ok('カレンダー: 目標に届いた日の積載バーは is-met', /class="cal-load is-met"/.test(met), met);
+  const widths = [...met.matchAll(/width:([\d.]+)%/g)].map(m => Number(m[1]));
+  ok('カレンダー: 積載バーは100%を超えない', widths.reduce((a, b) => a + b, 0) <= 100, widths);
+  ok('カレンダー: 目標を指定した日はマスに印が出る',
+     /cal-goal/.test(W.calendarGoalHTML(cells['2026-09-15'])));
+  eq('カレンダー: 指定していない日に印は出さない', W.calendarGoalHTML(cells['2026-09-17']), '');
+  ok('カレンダー: 休みの日は「休」', /休<\/div>/.test(W.calendarGoalHTML(cells['2026-09-16'])));
+})();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) { console.log('\n--- failures ---\n' + failures.join('\n')); process.exit(1); }

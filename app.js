@@ -271,11 +271,10 @@ function saveWeeklyGoals(goals, options) {
 
 function getTodayGoalMinutes() {
   const today = getLogicalDate(new Date());
-  const dateKey = toLocalDateKey(today);
-  // Check for ad-hoc override first
-  const override = localStorage.getItem('medfocus_daily_override_' + dateKey);
-  if (override) return parseInt(override);
-  // Fall back to weekly template
+  // その日だけの上書きが最優先。無ければ曜日別テンプレート
+  // （今日ぶんはスナップショットを見ない。今日の目標は今の設定そのものなので）
+  const override = getGoalOverride(toLocalDateKey(today));
+  if (override !== null) return override;
   const goals = getWeeklyGoals();
   return goals[today.getDay()];
 }
@@ -474,44 +473,116 @@ function getTimeSlotLabel(slot) {
   return '深夜';
 }
 
-function setTodayGoalOverride(minutes) {
-  const today = getLogicalDate(new Date());
-  const dateKey = toLocalDateKey(today);
-  localStorage.setItem('medfocus_daily_override_' + dateKey, minutes.toString());
-  // Also update existing snapshot if any
+// ==================== 日別の目標学習時間 ====================
+// 曜日別テンプレートの上に、日付ごとの上書きを重ねる。旅行・実習・試験前など、
+// 「その週の何曜日か」では決まらない日のための逃げ道。カレンダーの日別パネルと、
+// ダッシュボードの目標リング（今日ぶん）から書き換える。
+//
+// 保存先は2つある。日付ごとのキーは古くからの形で、まとめたマップは端末間の同期用。
+// 読むときは両方見る（別の端末で決めた日はマップにしか無い）。
+const DAY_GOAL_KEY_PREFIX = 'medfocus_daily_override_';
+const DAY_GOAL_MAP_KEY = 'medfocus_daily_overrides_map';
+// 過去ぶんを何日残すか。未来は逆算プランが1日の枠として読むので消さない。
+const DAY_GOAL_PAST_KEEP = 60;
+const DAY_GOAL_MAX = 24 * 60;
+
+function getGoalOverridesMap() {
+  try {
+    const m = JSON.parse(localStorage.getItem(DAY_GOAL_MAP_KEY) || '{}');
+    return (m && typeof m === 'object') ? m : {};
+  } catch (e) { return {}; }
+}
+
+function setGoalOverridesMap(map) {
+  try { localStorage.setItem(DAY_GOAL_MAP_KEY, JSON.stringify(map)); } catch (e) {}
+}
+
+// その日に上書きがあれば分を返し、無ければ null。
+// 0分（＝この日は勉強しない）も指定として有効なので、真偽値では判定しない。
+function getGoalOverride(dateKey) {
+  const toMinutes = v => {
+    if (v === null || v === undefined || v === '') return null;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= 0 ? Math.min(DAY_GOAL_MAX, n) : null;
+  };
+  const direct = toMinutes(localStorage.getItem(DAY_GOAL_KEY_PREFIX + dateKey));
+  if (direct !== null) return direct;
+  return toMinutes(getGoalOverridesMap()[dateKey]);
+}
+
+// 過去ぶんだけ古い順に間引く。未来の指定は逆算プランの入力なので残す。
+function pruneGoalOverrides(map) {
+  const todayKey = toLocalDateKey(getLogicalDate(new Date()));
+  const past = Object.keys(map).filter(k => k < todayKey).sort();
+  while (past.length > DAY_GOAL_PAST_KEEP) delete map[past.shift()];
+  return map;
+}
+
+// minutes に null を渡すと上書きを消して曜日別テンプレートに戻す。
+function setGoalOverrideForDate(dateKey, minutes) {
+  const d = parseDateKey(dateKey);
+  if (!d) return null;
+  const clear = minutes === null || minutes === undefined || minutes === '';
+  const val = clear ? null
+    : Math.max(0, Math.min(DAY_GOAL_MAX, Math.round(Number(minutes) || 0)));
+
+  if (clear) localStorage.removeItem(DAY_GOAL_KEY_PREFIX + dateKey);
+  else localStorage.setItem(DAY_GOAL_KEY_PREFIX + dateKey, String(val));
+
+  const map = getGoalOverridesMap();
+  if (clear) delete map[dateKey]; else map[dateKey] = val;
+  pruneGoalOverrides(map);
+  setGoalOverridesMap(map);
+
+  // その日のスナップショットは「その日に何を目標にしていたか」の控え。
+  // 目標を直したらここも合わせないと、達成率だけ古い目標のまま残る。
+  const effective = clear ? getWeeklyGoalsForDate(d)[d.getDay()] : val;
   const snapshotKey = 'medfocus_daily_snapshot_' + dateKey;
   const existingSnapshot = localStorage.getItem(snapshotKey);
   if (existingSnapshot) {
     try {
       const snap = JSON.parse(existingSnapshot);
-      snap.goal_minutes = minutes;
-      snap.achievement_rate = minutes > 0 ? Math.round((snap.actual_minutes / minutes) * 100) : 0;
+      snap.goal_minutes = effective;
+      snap.achievement_rate = effective > 0 ? Math.round((snap.actual_minutes / effective) * 100) : 0;
       localStorage.setItem(snapshotKey, JSON.stringify(snap));
-    } catch(e) {}
+    } catch (e) {}
   }
-  // Sync override to Supabase
+
   if (hasDB()) {
-    const overrides = JSON.parse(localStorage.getItem('medfocus_daily_overrides_map') || '{}');
-    overrides[dateKey] = minutes;
-    // Keep only last 30 days
-    const keys = Object.keys(overrides).sort();
-    while (keys.length > 30) { delete overrides[keys.shift()]; }
-    localStorage.setItem('medfocus_daily_overrides_map', JSON.stringify(overrides));
-    supabase.from('profiles').update({ daily_overrides: JSON.stringify(overrides) }).eq('id', session.user.id)
+    supabase.from('profiles').update({ daily_overrides: JSON.stringify(map) }).eq('id', session.user.id)
       .then(({ error }) => { if (error) console.warn('daily_overrides sync error:', error.message); });
   }
+  return effective;
+}
+
+// ログイン時に取り込む。取り込みでは DB 側を正とするので、こちらにしか残って
+// いない日付ごとのキーは消す（別の端末で「曜日別に戻した」日が、この端末では
+// 古いキーのまま生き残ってしまうため）。
+function applyGoalOverridesFromDB(dbOverrides) {
+  const map = {};
+  Object.entries(dbOverrides || {}).forEach(([dk, val]) => {
+    const n = parseInt(val, 10);
+    if (parseDateKey(dk) && Number.isFinite(n) && n >= 0) map[dk] = Math.min(DAY_GOAL_MAX, n);
+  });
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k && k.startsWith(DAY_GOAL_KEY_PREFIX) && !(k.slice(DAY_GOAL_KEY_PREFIX.length) in map)) {
+      localStorage.removeItem(k);
+    }
+  }
+  Object.entries(map).forEach(([dk, n]) => localStorage.setItem(DAY_GOAL_KEY_PREFIX + dk, String(n)));
+  setGoalOverridesMap(map);
+}
+
+function setTodayGoalOverride(minutes) {
+  return setGoalOverrideForDate(toLocalDateKey(getLogicalDate(new Date())), minutes);
 }
 
 function getGoalForDate(date) {
   const dateKey = toLocalDateKey(date);
-  // Check override first (user's explicit change takes priority)
-  const override = localStorage.getItem('medfocus_daily_override_' + dateKey);
-  if (override) return parseInt(override);
-  // Check override from synced map
-  try {
-    const map = JSON.parse(localStorage.getItem('medfocus_daily_overrides_map') || '{}');
-    if (map[dateKey]) return parseInt(map[dateKey]);
-  } catch(e) {}
+  // 手で決めた日はそれが最優先
+  const override = getGoalOverride(dateKey);
+  if (override !== null) return override;
   // Check snapshot (historical data)
   const snapshot = localStorage.getItem('medfocus_daily_snapshot_' + dateKey);
   if (snapshot) {
@@ -13089,6 +13160,10 @@ function buildCalendarModel(cursorKey, view, sources) {
   const s = sources || {};
   const todayKey = s.todayKey || todayPlanKey();
   const plansById = s.plansById || {};
+  // その日の目標学習時間と、それが手で決めたものか。テストから差し替えられるよう
+  // 引数で受け取れるようにしておくが、既定は設定（上書き→曜日別）から引く。
+  const goalFor = typeof s.goalFor === 'function' ? s.goalFor : planGoalMinutesOf;
+  const goalOverrideFor = typeof s.goalOverrideFor === 'function' ? s.goalOverrideFor : getGoalOverride;
   const byDay = {};
   const push = (dateKey, chip) => {
     if (!dateKey || dateKey < range.startKey || dateKey > range.endKey) return;
@@ -13221,6 +13296,8 @@ function buildCalendarModel(cursorKey, view, sources) {
       doneCount: tasks.filter(c => c.state === 'done').length,
       hasOverdue: tasks.some(c => c.state === 'overdue'),
       studyMinutes: study ? study.total : 0,
+      goalMinutes: Math.max(0, Number(goalFor(dateKey)) || 0),
+      goalCustom: goalOverrideFor(dateKey) !== null,
       studyBySubject: study
         ? Object.entries(study.bySubject)
             .map(([subjectId, minutes]) => ({ subjectId, minutes }))
@@ -13374,14 +13451,39 @@ function calendarChipHTML(chip) {
 
 // その日の積載量を科目色の横棒で見せる。重い日がひと目で分かるようにするため。
 // 実績のまとまりの中に置く。マスの上に浮かせると、何の棒なのか読み取れない。
+//
+// 満杯の目盛りはその日の目標学習時間。目標を決めた日は「棒が端まで伸びたら達成」と
+// 読めるようになる。目標が0（休み）の日は比べる相手がいないので5時間目盛りに戻す。
 function calendarLoadHTML(cell) {
   if (!cell.studyBySubject.length) return '';
-  const max = 300;   // 5時間で満杯として幅を割る
+  const max = cell.goalMinutes > 0 ? cell.goalMinutes : 300;
+  const met = cell.goalMinutes > 0 && cell.studyMinutes >= cell.goalMinutes;
+  // 合計が100%を超えると隣のマスへはみ出すので、残り幅を配りながら詰める。
+  // 短い科目も見えるように最低4%は取る（1問だけの科目が消えると誤解のもとになる）。
+  let left = 100;
   const bars = cell.studyBySubject.slice(0, 4).map(s => {
-    const w = Math.max(4, Math.min(100, (s.minutes / max) * 100));
+    const w = Math.min(left, Math.max(4, (s.minutes / max) * 100));
+    if (w <= 0) return '';
+    left -= w;
     return `<span style="width:${w.toFixed(1)}%;background:${esc(subjectColorOf(s.subjectId))}"></span>`;
   }).join('');
-  return `<div class="cal-load" title="${formatMinutes(cell.studyMinutes)}">${bars}</div>`;
+  const title = formatMinutes(cell.studyMinutes) +
+    (cell.goalMinutes > 0 ? ` / 目標 ${formatMinutes(cell.goalMinutes)}` : '');
+  return `<div class="cal-load${met ? ' is-met' : ''}" title="${esc(title)}">${bars}</div>`;
+}
+
+// 手で決めた日の目標だけをマスに出す。曜日別テンプレートのままの日まで出すと、
+// 同じ数字が全部のマスに並ぶだけで、どこを手で動かしたのか分からなくなる。
+function calendarGoalHTML(cell) {
+  if (!cell.goalCustom) return '';
+  const rest = cell.goalMinutes <= 0;
+  const met = !rest && cell.studyMinutes >= cell.goalMinutes;
+  const cls = ['cal-goal'];
+  if (rest) cls.push('is-rest');
+  if (met) cls.push('is-met');
+  const title = rest ? 'この日の目標: 休み' : `この日の目標 ${formatMinutes(cell.goalMinutes)}`;
+  // 「目標」の字は狭いマスでは落とす（数字だけでも印の形で目標だと分かる）
+  return `<div class="${cls.join(' ')}" title="${esc(title)}">${rest ? '休' : '<i>目標</i>' + esc(calHoursText(cell.goalMinutes))}</div>`;
 }
 
 function calendarCellHTML(cell, selectedKey) {
@@ -13413,7 +13515,7 @@ function calendarCellHTML(cell, selectedKey) {
     <div class="cal-cell-head">
       <span class="cal-daynum${dowCls}">${cell.day}</span>${todayBadge}${examBadge}${count}
     </div>
-    ${shown}${more}${done}
+    ${calendarGoalHTML(cell)}${shown}${more}${done}
   </div>`;
 }
 
@@ -13452,6 +13554,43 @@ function calendarPanelItemHTML(chip) {
   </div>`;
 }
 
+const CAL_GOAL_STEP = 30;
+
+// 日別パネルの目標エディタ。ここで決めた目標は逆算プランの「その日に使える時間」
+// でもあるので、実習や旅行で減らした日のノルマは、自動でほかの日へ寄っていく。
+function calendarGoalEditHTML(cell) {
+  const d = parseDateKey(cell.dateKey);
+  const template = getWeeklyGoalsForDate(d)[d.getDay()];
+  const goal = cell.goalMinutes;
+  let meta;
+  if (goal <= 0) {
+    meta = cell.goalCustom ? 'この日は休み。ノルマを置きません' : '曜日別テンプレートが0分です';
+  } else if (cell.studyMinutes > 0) {
+    meta = `実績 ${formatMinutes(cell.studyMinutes)}（${Math.round((cell.studyMinutes / goal) * 100)}%）`;
+  } else {
+    meta = cell.goalCustom ? 'この日だけの目標です'
+      : `${CAL_DOW_LABELS[cell.weekday]}曜の目標をそのまま使っています`;
+  }
+  const tag = cell.goalCustom ? '<span class="cal-goal-tag">指定</span>' : '';
+  const reset = cell.goalCustom
+    ? `<button class="cal-goal-reset" data-cal-goal-reset title="曜日別の目標（${esc(formatMinutes(template))}）に戻す">曜日別に戻す</button>`
+    : '';
+  return `<div class="cal-goal-edit">
+    <div class="cal-goal-edit-head">
+      <span class="cal-goal-edit-label">この日の目標</span>${tag}<div class="cal-spacer"></div>${reset}
+    </div>
+    <div class="cal-goal-edit-row">
+      <button data-cal-goal-step="-${CAL_GOAL_STEP}" title="${CAL_GOAL_STEP}分減らす" ${goal <= 0 ? 'disabled' : ''}>−</button>
+      <div class="cal-goal-input-wrap">
+        <input type="number" id="cal-goal-input" min="0" max="1440" step="10" value="${goal}" aria-label="この日の目標学習時間（分）" />
+        <span>分</span>
+      </div>
+      <button data-cal-goal-step="${CAL_GOAL_STEP}" title="${CAL_GOAL_STEP}分増やす">＋</button>
+    </div>
+    <div class="cal-goal-edit-meta">${esc(meta)}</div>
+  </div>`;
+}
+
 function calendarPanelHTML(cell) {
   if (!cell) return '<div class="cal-panel"><div class="cal-panel-empty">日付を選んでください</div></div>';
   const d = parseDateKey(cell.dateKey);
@@ -13484,6 +13623,7 @@ function calendarPanelHTML(cell) {
         </div>
       </div>
     </div>
+    ${calendarGoalEditHTML(cell)}
     <div class="cal-panel-list">${list}</div>
     <div class="cal-panel-foot">
       <button class="btn btn-secondary" data-cal-add style="width:100%;justify-content:center;font-size:var(--font-size-xs)">＋ この日に予定を追加</button>
@@ -13774,6 +13914,16 @@ async function renderCalendar() {
     if (currentRoute === '/calendar') draw();
   }
 
+  // 日別の目標を書き換える。数字はその場で返し、ノルマの配り直しは
+  // ＋/− の連打が止まってから1回だけ走らせる（配り直しは全プランを触るので重い）。
+  let goalSyncTimer = null;
+  function applyDayGoal(minutes) {
+    setGoalOverrideForDate(calendarState.selectedKey, minutes);
+    draw();
+    clearTimeout(goalSyncTimer);
+    goalSyncTimer = setTimeout(() => { if (currentRoute === '/calendar') reload(); }, 400);
+  }
+
   function draw() {
     const model = buildCalendarModel(calendarState.cursorKey, calendarState.view, filterCalendarSources(sources, filters));
     if (!model) return;
@@ -13859,6 +14009,22 @@ async function renderCalendar() {
     root.querySelector('[data-cal-cat-clear]')?.addEventListener('click', () => {
       filters.categories = []; setCalendarFilters(filters); draw();
     });
+
+    // この日の目標学習時間
+    const goalInput = root.querySelector('#cal-goal-input');
+    root.querySelectorAll('[data-cal-goal-step]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cur = goalInput ? Math.max(0, Math.round(Number(goalInput.value) || 0)) : 0;
+        applyDayGoal(Math.max(0, cur + Number(btn.dataset.calGoalStep)));
+      });
+    });
+    goalInput?.addEventListener('change', () => {
+      // 空にしたら「指定なし」＝曜日別の目標に戻す
+      const raw = goalInput.value.trim();
+      applyDayGoal(raw === '' ? null : Math.max(0, Math.round(Number(raw) || 0)));
+    });
+    goalInput?.addEventListener('keydown', e => { if (e.key === 'Enter') goalInput.blur(); });
+    root.querySelector('[data-cal-goal-reset]')?.addEventListener('click', () => applyDayGoal(null));
 
     // 予定の追加・編集
     root.querySelectorAll('[data-cal-add]').forEach(btn => {
@@ -15940,12 +16106,7 @@ async function initApp(){
             if (profile.daily_overrides) {
               try {
                 const dbOverrides = JSON.parse(profile.daily_overrides);
-                if (typeof dbOverrides === 'object') {
-                  localStorage.setItem('medfocus_daily_overrides_map', JSON.stringify(dbOverrides));
-                  Object.entries(dbOverrides).forEach(([dk, val]) => {
-                    localStorage.setItem('medfocus_daily_override_' + dk, val.toString());
-                  });
-                }
+                if (typeof dbOverrides === 'object') applyGoalOverridesFromDB(dbOverrides);
               } catch(e) {}
             }
           }
