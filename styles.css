@@ -3606,6 +3606,17 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, rgba(78,205,196,0.6)
 .mk-row .mk-sub { flex:2; min-width:0; }
 .mk-row .mk-correct, .mk-row .mk-total { width:70px; text-align:center; }
 .mk-slash { color:var(--color-text-tertiary); }
+/* 成績表の1科目がQBの複数科目に割れた行。配分を手で入れる必要がある */
+.mk-row-split .mk-sub { border-color: var(--color-accent-yellow); }
+
+/* 教材進捗ページの模試の入口。実績を入れる導線なので少し目立たせる */
+.mock-entry-bar { border-color: var(--color-accent-teal); }
+.mock-entry-bar .baseline-btn { color: var(--color-accent-teal); border-color: var(--color-accent-teal); }
+
+/* 成績表の貼り付け取り込み */
+.mk-paste { margin: 0 0 12px; border:1px solid var(--color-border); border-radius:8px; padding:8px 10px; }
+.mk-paste > summary { cursor:pointer; font-size:0.78rem; font-weight:600; color:var(--color-text-secondary); }
+.mk-paste textarea { resize:vertical; }
 
 /* 学習終了画面の問題番号 */
 .qb-mark-row { display:flex; align-items:center; gap:8px; margin-top:8px; }

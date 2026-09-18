@@ -6219,7 +6219,9 @@ async function renderQBProgress(){
     loadQBFromSupabase(),
     loadVideoFromSupabase(),
     fetchQuestionRecords().then(r => { _qRecords = r; })
-                          .catch(e => console.warn('question records:', e))
+                          .catch(e => console.warn('question records:', e)),
+    // 模試の入口をこのページに置くので、記録済みの件数を出すために読んでおく
+    fetchMockExams().catch(e => console.warn('mock exams:', e))
   ]);
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
@@ -6256,6 +6258,29 @@ async function renderQBProgress(){
           <span class="fixtotal-sample">${sample}${off.length > 4 ? ` 他${off.length - 4}件` : ''}</span>
         </div>
         <button class="fixtotal-btn" id="btn-sync-cbt-totals">マスタで揃える</button>
+      </div>`;
+    })()}
+    ${(() => {
+      // 模試の入口。以前はインサイトの「解き直しの間隔」の中だけにあったが、
+      // 模試は周回間隔の較正だけでなく、科目の優先順位そのものを動かす入力に
+      // なったので、実績を入れる場所であるここに出す。
+      const byDate = {};
+      (_mockExams || []).forEach(m => {
+        const k = String(m.taken_on || '').slice(0, 10);
+        if (!k) return;
+        (byDate[k] = byDate[k] || []).push(m);
+      });
+      const dates = Object.keys(byDate).sort();
+      const last = dates[dates.length - 1] || null;
+      return `<div class="baseline-bar mock-entry-bar">
+        <div class="baseline-text">
+          <strong>${IC.book} 模試の結果を入れる</strong>
+          <span>${last
+            ? `記録済み ${dates.length}回・直近 ${esc(last)}（${byDate[last].length}科目）。`
+            : 'まだ記録がありません。'
+            }本番形式で測った出来なので、QBの正答率より優先して科目の並び順に反映します。成績表を貼り付けて一括で取り込めます。</span>
+        </div>
+        <button class="baseline-btn" id="btn-add-mock-qb">${last ? '模試を追加する' : '模試を記録する'}</button>
       </div>`;
     })()}
     <div class="baseline-bar">
@@ -6394,6 +6419,11 @@ async function renderQBProgress(){
     if(!confirm('今日より前の進捗スナップショットを削除し、現在の値を新しい初期値にします。\n\n学習記録・QB進捗・動画進捗そのものは削除されません。よろしいですか？')) return;
     const n = await resetProgressBaseline();
     showToast(IC.check + ` 初期値を更新しました（${n}件の古い断面を削除）`);
+  });
+  // 模試を記録したら、このページの件数表示と予定の両方を作り直す
+  // （_planSyncAt はウィザード側で落としてあるので、再描画で組み直しが走る）
+  document.getElementById('btn-add-mock-qb')?.addEventListener('click', () => {
+    openMockExamWizard(() => renderQBProgress());
   });
   ct.querySelectorAll('details[data-cat]').forEach(d=>{
     d.addEventListener('toggle',()=>{
@@ -8133,11 +8163,33 @@ function roundAccuracy(rounds, r) {
 //
 // 返り値の p は 0〜1。正答数がどこにも入っていない科目は p0 を返し、
 // hasData: false で「正答率未入力」と表示できるようにする。
-function blendedRoundAccuracy(rounds, p0) {
+//
+// ---------- 模試（第3引数・任意） ----------
+// 模試は本番形式・範囲混在・時間制限下で測った想起率で、p が推定しようとしている
+// ものそのもの。QBの正答率は「その科目を回している最中」の数字なので、条件としては
+// 模試のほうが本番に近い。そこで模試があれば、QBから出した p を事前分布に降格して、
+// 模試を最も新しい観測として上に載せる。
+//
+//   p_qb = (n直近·p直近 + m·p過去') / (n直近 + m)          ← 模試が無ければこれが p
+//   p    = (n模試·p模試 + m模試·p_qb) / (n模試 + m模試)     ← 模試があるとき
+//
+// 縮小が効くので、模試で0点だった科目も p が 0 まで落ちることはない。落ちると
+// L = 4p(1−p) + ε が潰れて、壊滅した科目ほど後回しという逆向きの並びになる。
+//
+// mock: { n, p } … n = その科目の問題数、p = 正答率（0〜1）。null なら従来どおり。
+function blendedRoundAccuracy(rounds, p0, mock) {
   const neutral = PLANNING_CONFIG.accuracy.neutral;
   const base = Number.isFinite(Number(p0)) ? Number(p0) : neutral;
   const m = Number(PLANNING_CONFIG.accuracy.priorWeight) || 0;
   const m0 = Number(PLANNING_CONFIG.accuracy.globalPriorWeight) || 0;
+  const mMock = Number(PLANNING_CONFIG.accuracy.mockPriorWeight) || 0;
+
+  const mockN = Number(mock && mock.n) || 0;
+  const mockP = Number(mock && mock.p);
+  const hasMock = mockN > 0 && Number.isFinite(mockP);
+  // 模試を QB由来の p に載せる。QBの記録がまったく無い科目でも、模試だけを
+  // 材料に p を出せる（寄せ先は p0）。手つかずの科目こそ模試しか材料が無い。
+  const withMock = (pQb) => hasMock ? (mockN * mockP + mMock * pQb) / (mockN + mMock) : pQb;
 
   const entries = Object.keys(rounds || {}).map(k => parseInt(k, 10))
     .filter(Number.isFinite).sort((a, b) => a - b)
@@ -8149,8 +8201,11 @@ function blendedRoundAccuracy(rounds, p0) {
     .filter(Boolean);
 
   if (!entries.length) {
-    return { p: base, round: null, nRecent: 0, pRecent: null,
-             nPast: 0, pPast: null, pPastShrunk: base, p0: base, hasData: false };
+    // QBの記録が無い科目。模試があればそれだけで p を出す（寄せ先は p0）。
+    return { p: withMock(base), round: null, nRecent: 0, pRecent: null,
+             nPast: 0, pPast: null, pPastShrunk: base, p0: base, pQb: base,
+             hasData: hasMock, hasMock, mockN: hasMock ? mockN : 0,
+             mockP: hasMock ? mockP : null };
   }
 
   const recent = entries[entries.length - 1];          // 昇順なので最後が直近周
@@ -8158,10 +8213,11 @@ function blendedRoundAccuracy(rounds, p0) {
   const nPast = past.reduce((s, e) => s + e.n, 0);
   const pPast = nPast > 0 ? past.reduce((s, e) => s + e.n * e.p, 0) / nPast : null;
   const pPastShrunk = nPast > 0 ? (nPast * pPast + m0 * base) / (nPast + m0) : base;
-  const p = (recent.n * recent.p + m * pPastShrunk) / (recent.n + m);
+  const pQb = (recent.n * recent.p + m * pPastShrunk) / (recent.n + m);
 
-  return { p, round: recent.round, nRecent: recent.n, pRecent: recent.p,
-           nPast, pPast, pPastShrunk, p0: base, hasData: true };
+  return { p: withMock(pQb), round: recent.round, nRecent: recent.n, pRecent: recent.p,
+           nPast, pPast, pPastShrunk, p0: base, pQb, hasData: true,
+           hasMock, mockN: hasMock ? mockN : 0, mockP: hasMock ? mockP : null };
 }
 
 // 全科目・全周をならした正答率 p0。縮小推定の最終的な寄せ先。
@@ -8247,6 +8303,11 @@ const PLANNING_CONFIG = {
     priorWeight: 10,
     // 過去の周を「全科目の平均 p0」へ引き寄せる強さ（事前標本数 m0）。
     globalPriorWeight: 10,
+    // 模試を「QBから出した p」へ引き寄せる強さ（事前標本数 m模試）。
+    // 模試は科目あたりの問題数が少ない（4問の科目もある）ので、そのまま信じると
+    // 数問の当たり外れで p が振り切れる。m と同じ強さで寄せておけば、
+    // 4問の模試はほとんど動かさず、36問の模試はしっかり動く。
+    mockPriorWeight: 10,
     // 正答率がどこにも無いときの中立値（0〜1）。p0 の既定値でもある。
     neutral: 0.5
   },
@@ -12117,6 +12178,16 @@ function diffDateKeys(a, b) {
   return Math.round((da - db) / 86400000);
 }
 
+// 新しいほうの日付キー。空は無視し、どちらも無ければ null。
+// "YYYY-MM-DD" は桁が揃っているので文字列比較で日付の前後と一致する。
+function maxDateKey(a, b) {
+  const ka = a ? String(a).slice(0, 10) : null;
+  const kb = b ? String(b).slice(0, 10) : null;
+  if (!ka) return kb;
+  if (!kb) return ka;
+  return ka > kb ? ka : kb;
+}
+
 // 逆算と期限判定の基準日。アプリ全体と同じ3時境界の論理日を使う。
 function todayPlanKey() {
   return toLocalDateKey(getLogicalDate(new Date()));
@@ -12770,11 +12841,12 @@ function subjectStaleFactor(lastKey, todayKey) {
   return 1 + Math.min(1, days / SUBJECT_STALE_CAP_DAYS) * (SUBJECT_STALE_MAX - 1);
 }
 
-// input: { qb, video, unitCost, lastTouched, todayKey, targetRound, targetRoundBy }
+// input: { qb, video, unitCost, lastTouched, todayKey, targetRound, targetRoundBy, mocks }
 // targetRoundBy は科目ID（小文字）→ その科目の目標周回。残り時間をどこまで数えるかを
 // 科目ごとに変える。渡さなければ全科目 targetRound（既定 1）。
 // 1周目ぶんだけで数えると、1周目を終えた科目は残り時間が 0 になってスコアも 0 になり、
 // 「1周目の出来が悪かった科目ほど2周目が最後尾に沈む」という逆向きの並びになる。
+// mocks は模試の記録（mock_exams の行）。渡せば p と減衰の起点に効く。
 // 返り値: { bySubject: { [sid]: row }, ranked: [row], totalWeightMin }
 //   row = { id, name, remainMin, materialMin, materialPct,
 //           examQuestions, examPct, examDomain, examWeight, cramFactor,
@@ -12784,6 +12856,7 @@ function buildSubjectPriority(input) {
   const qb = o.qb || {}, video = o.video || {}, unitCost = o.unitCost || {};
   const today = o.todayKey || todayPlanKey();
   const lastTouched = o.lastTouched || {};
+  const mockBy = mockBySubject(o.mocks);
   const targetRound = Number(o.targetRound) || 1;
   const targetRoundBy = o.targetRoundBy || null;
   const roundOf = rawId => {
@@ -12852,23 +12925,41 @@ function buildSubjectPriority(input) {
     // 材料がまったく無い科目は全体平均ではなく中立値 0.5 に置く。全体平均に
     // 寄せると、ふだんの正答率が高い人ほど未入力科目の伸びしろが 0 になり、
     // 手つかずの科目が永久に後回しになる。
-    const acc = blendedRoundAccuracy(b.rounds, p0);
+    // 模試があれば、QBから出した p の上に「本番形式で測った直近の観測」として載せる。
+    const mock = mockBy[b.id] || null;
+    const acc = blendedRoundAccuracy(b.rounds, p0, mock);
     const p = acc.hasData ? acc.p : PLANNING_CONFIG.accuracy.neutral;
     const accuracy = b.solved > 0 ? b.correct / b.solved * 100 : null;
 
-    // 試験日時点の予測想起率。直近周を終えた日からの経過で割り引く
-    const fromKey = b.doneKey || today;
+    // 「いつ測った出来か」＝減衰の起点。新しい順に、模試 → 周の完了日 → 最終学習日。
+    //
+    // 最終学習日まで落とすのは、追跡を始める前から終わっていた周に完了日が無いため。
+    // backfillRoundCompletions は日付が分からない周にわざと日付を入れない
+    // （「今日1周目を終えた」ことになるのを避けるため）が、ここで today に
+    // フォールバックすると結局それが復活する。大学の試験のときに1周やった科目が
+    // 「今日やったばかり」扱いになり、伸びしろがほぼ 0 と見積もられて沈む。
+    // 学習ログの最終学習日なら、少なくとも「その日には触っていた」ことは確かで、
+    // 何も分からない today よりはるかに近い。
+    const lastKey = lastTouched[b.id] || null;
+    const measuredKey = maxDateKey(mock && mock.takenOn, b.doneKey) || lastKey;
+    const fromKey = measuredKey || today;
     const t = examKey ? Math.max(0, diffDateKeys(examKey, fromKey) || 0) : 0;
     const decay = recallDecay(t);
     const recallPred = p * decay;
     const gain = Math.max(0, planningRecallTarget() - recallPred);
-    const L = learnability(p, daysToExam);
+
+    // L は「いまどれだけ思い出せるか」で決める。p は測ったときの値なので、
+    // 測定から今日までの経過で割り引いてから入れる。生の p を使うと、
+    // 詰め込んで高得点を取ったきり放置した科目が「もう習得済み」と判定され、
+    // 実際には忘れて L が最大になる帯にいるのに後ろへ回る。
+    // gain 側は recallPred（＝減衰後）を見ているので、揃えておく意味もある。
+    const pNow = p * recallDecay(measuredKey ? Math.max(0, diffDateKeys(today, measuredKey) || 0) : 0);
+    const L = learnability(pNow, daysToExam);
     const examWeight = cbtExamWeightNorm(b.id);
     const cramFactor = cbtCramFactorOf(b.id);
     const minPerQuestion = minutesPerQuestionFor(b.id, unitCost, bySubjectCost);
 
     const exam = cbtExamInfoOf(b.id);
-    const lastKey = lastTouched[b.id] || null;
     return {
       id: b.id, name: subjectNameOf(b.id),
       remainMin: b.remainMin,
@@ -12879,9 +12970,17 @@ function buildSubjectPriority(input) {
       examDomain: exam ? exam.domain : null,
       examWeight, cramFactor, minPerQuestion,
       // スコアの内訳。画面で「なぜこの順番か」を出せるように全部返す
-      p, hasAccuracy: acc.hasData, accuracy, solved: b.solved,
+      p, pNow, hasAccuracy: acc.hasData, accuracy, solved: b.solved,
       decay, recallPred, gain, learnability: L, epsilon: learnabilityEpsilon(daysToExam),
       lastKey, staleDays: lastKey ? Math.max(0, diffDateKeys(today, lastKey) || 0) : null,
+      // p がいつ・何を根拠に出た値か。画面に出して直せるようにする
+      fromMock: !!(acc.hasMock), mockN: acc.mockN || 0,
+      mockP: acc.mockP === undefined ? null : acc.mockP,
+      mockKey: mock ? mock.takenOn : null,
+      measuredKey,
+      // 完了日も模試も無く、最終学習日で代用したか（画面に「推定」と出すため）
+      measuredFromLog: !!(measuredKey && measuredKey === lastKey
+                          && !(mock && mock.takenOn) && !b.doneKey),
       // priority = W × G × L / C。量（remainMin）は掛けない。
       // 「1分使ったときに試験の点がどれだけ伸びるか」を見たいので、残りの多さは
       // 効き目ではなく別の話（締切に間に合うか・日々どれだけ割り当てるか）。
@@ -14142,6 +14241,35 @@ function mockExamAccuracy(row) {
   return t > 0 && Number.isFinite(c) ? c / t : null;
 }
 
+// ---------- 科目ごとの直近の模試 ----------
+// 優先順位のスコアで使う。科目IDは vol.4 と同じ要領で元の科目へ畳む
+// （「4連問の2C」も「2C 循環器」の出来を表すのと同じ理由）。
+//
+// 同じ科目に複数回の模試があるときは【直近の1回だけ】を使う。過去の模試も
+// 混ぜると「いつ時点の実力か」が決まらなくなり、減衰の起点（何日前の測定か）も
+// 置けなくなる。古い模試は、その時点からの減衰で既に説明されている。
+// 同じ日に同じ科目が複数行あるとき（産婦人科を2P/2Qに分けて入れた場合など）は合算。
+//
+// 返り値: { [subjectId]: { n, correct, p, takenOn } }
+function mockBySubject(mocks) {
+  const out = {};
+  (mocks || []).forEach(row => {
+    const sid = baseSubjectIdOf(row && row.subject_id);
+    const t = Number(row && row.total_questions) || 0;
+    const c = Number(row && row.correct_questions);
+    const key = String((row && row.taken_on) || '').slice(0, 10);
+    if (!sid || t <= 0 || !Number.isFinite(c) || !key) return;
+    const cur = out[sid];
+    if (cur && cur.takenOn > key) return;          // 既に新しい回が入っている
+    if (!cur || cur.takenOn < key) {
+      out[sid] = { n: t, correct: c, p: c / t, takenOn: key };
+    } else {
+      cur.n += t; cur.correct += c; cur.p = cur.correct / cur.n;   // 同じ日は合算
+    }
+  });
+  return out;
+}
+
 // ---------- 問題単位の記録の読み書き ----------
 // テーブルがまだ無い環境では localStorage だけで動く。予定づくりは
 // 記録が無くても推定モードで回るので、ここが空でも困らない。
@@ -15022,6 +15150,9 @@ async function runPlanSync(force) {
   // （残り時間 × 誤答率 × 放置日数）。プラン一覧で内訳も出す。
   const qbProgress = getQBProgress();
   const unitCostBySubject = buildUnitCostBySubject(logs);
+  // 模試は2か所で使う。①科目ごとの p と減衰の起点（buildSubjectPriority）、
+  // ②間隔ごとの「後の時点の伸び」（buildLaterRoundGain）。①のほうが先に要る。
+  const mocks = await fetchMockExams();
   const subjectPriority = buildSubjectPriority({
     qb: qbProgress, video: primaryVideoProgress(), unitCost, unitCostBySubject,
     // 試験日は1つだけ（どの試験に向けて勉強しているか）。いちばん近い先の試験。
@@ -15030,12 +15161,13 @@ async function runPlanSync(force) {
     lastTouched: buildSubjectLastTouched(logs), todayKey: today,
     // 残り時間はプランの目標周回ぶんまで数える。1周目ぶんで切ると、1周目を
     // 終えた科目のスコアが 0 になって誤答率が効かなくなる。
-    targetRoundBy: planTargetRoundBySubject(plans)
+    targetRoundBy: planTargetRoundBySubject(plans),
+    // 本番形式で測った出来。QBの周回正答率より本番に近い条件の観測として p に効く。
+    mocks
   });
   // 「間隔 × 後の時点の伸び」の実測。次の周までに空ける日数の基準に使う。
   // 直後の正答率で測ると間隔が短いほど有利に出るので、周回 k+2 か
   // k+1 完了後の模試で測り直したものを見る。
-  const mocks = await fetchMockExams();
   const roundGain = buildLaterRoundGain(qbProgress,
     buildReviewIntervalStats(logs, getLogicalDate(new Date())), mocks);
   // 今日すでに勉強した分は今日の枠から引く。引かないと、今日のぶんを終えるたびに
@@ -15448,6 +15580,208 @@ function mockSubjectOptionsHTML() {
       `<option value="${esc(sub.id)}">${esc(sub.name)}</option>`).join('')}</optgroup>`).join('');
 }
 
+// ==================== 成績表の貼り付け取り込み ====================
+// 模試の成績表は科目が30行あり、1行ずつドロップダウンで選ぶのは現実的でない。
+// 成績表をそのまま貼って取り込めるようにする。
+//
+// 科目名 → QBの科目ID。値が配列なのは、成績表の1科目がQBの2科目に割れる場合
+// （「産婦人科」＝ 2P 婦人科・乳腺外科 ＋ 2Q 産科）。按分の根拠が無いので
+// 機械的には分けず、行を2つに展開して配分を手で入れてもらう。
+const MOCK_SUBJECT_ALIASES = {
+  // 基礎医学
+  '解剖学': ['1B'], '組織学': ['1B'], '細胞生物学': ['1A'], '生理学': ['1C'],
+  '生化学': ['1D'], '発生学': ['1F'], '微生物学': ['1G'], '病理学': ['1J'],
+  '薬理学': ['1I'], '免疫学': ['1H'], '分子生物学': ['1E'],
+  // 内科系
+  '循環器': ['2C'], '神経': ['2J'], '内・代': ['2D'], '代謝・内分泌': ['2D'],
+  '消化管': ['2A'], '肝胆膵': ['2B'], '肝・胆・膵': ['2B'], '血液': ['2G'],
+  '呼吸器': ['2I'], '腎臓': ['2E'], '感染症': ['2H'], 'ア・膠・免': ['2F'],
+  // マイナー・救急
+  '皮膚科': ['2V'], '眼科': ['2R'], '耳鼻咽喉科': ['2S'], '精神科': ['2U'],
+  '泌尿器科': ['2W'], '整形外科': ['2T'], '放射線科': ['2X'], '麻酔科': ['2M'],
+  '救急・中毒': ['2L', '2K'], '老年医学': ['2N'],
+  // 系統別にしか出ない科目（科目別の内訳が無いので、ここから取る）
+  '小児科': ['2O'], '産婦人科': ['2P', '2Q'], '公衆衛生': ['3D'],
+  // QB側の科目名そのもの。成績表を問題ごとに分類し直して
+  // 「産科 3点/6点」のように分けて書いたときは、そのまま1科目として入る
+  // （＝取り込み後に配分を手で直す必要がなくなる）。
+  // 前方一致は長い名前から試すので、「産婦人科」が「婦人科」に食われることはない。
+  '産科': ['2Q'], '婦人科': ['2P'], '婦人科・乳腺外科': ['2P'], '乳腺外科': ['2P'],
+  '救急': ['2L'], '中毒': ['2K'],
+  '腎・泌尿器': ['2E'], '免疫・膠原病': ['2F'], '肝・胆・膵': ['2B'], '消化器': ['2A']
+};
+
+// 系統別成績の集計行。科目別の明細が一緒に貼られていたら、こちらは捨てる
+// （両方を取り込むと二重計上になり、合計が配点の倍になる）。
+// 小児科・産婦人科・公衆衛生は明細が無いので、ここには入れない＝常に使う。
+const MOCK_AGGREGATE_ROWS = {
+  '基礎医学': ['解剖学', '組織学', '細胞生物学', '生理学', '生化学', '発生学',
+               '微生物学', '病理学', '薬理学', '免疫学', '分子生物学'],
+  '内科系':   ['循環器', '神経', '内・代', '代謝・内分泌', '消化管', '肝胆膵',
+               '肝・胆・膵', '血液', '呼吸器', '腎臓', '感染症', 'ア・膠・免'],
+  'マイナー': ['皮膚科', '眼科', '耳鼻咽喉科', '精神科', '泌尿器科', '整形外科',
+               '放射線科', '麻酔科'],
+  '救急・他': ['救急・中毒']
+};
+
+// QBに対応する科目が無い行。捨てるが、得点は合計の照合には数える。
+// 数えないと「223点／320点」と突き合わせたときに必ずずれて、取りこぼしと
+// 区別がつかなくなる。「その他(基礎医学)」のような行が該当する。
+function isMockUnmappableRow(name) {
+  return /^その他/.test(name);
+}
+
+// 「4点/ 9点」「8点／9点」「2／3」。半角/全角スラッシュ、「点」の有無、空白に耐える。
+const MOCK_SCORE_RE = /(\d+)\s*点?\s*[\/／]\s*(\d+)\s*点?/;
+// 科目名からスコアを探しにいく最大セル数。表の列数（正解/配点は先頭から数列以内）
+const MOCK_SCAN_AHEAD = 6;
+
+function normalizeMockCell(s) {
+  // 全角空白と各種空白を潰す。成績表は「内・代」のように中黒を含むのでそこは残す
+  return String(s == null ? '' : s).replace(/[\s　]+/g, '').trim();
+}
+
+// 科目名の一覧を、長いものから順に。前方一致を見るときに
+// 「細胞生物学」より先に「生物学」を当ててしまわないよう長い順に試す。
+const MOCK_SUBJECT_NAMES_BY_LENGTH = (function () {
+  return Object.keys(MOCK_SUBJECT_ALIASES).concat(Object.keys(MOCK_AGGREGATE_ROWS))
+    .sort((a, b) => b.length - a.length);
+})();
+
+// 「解剖学 1点/1点」のように、科目名と得点が1つのセルに入っている場合。
+// 表をコピーすると列がタブで割れるが、手で書いたりAIにまとめさせたテキストは
+// 1行1科目でスペース区切りになる。空白は既に潰してあるので、ここでは
+// 「科目名で始まり、その直後が得点」という形だけを受ける。
+//
+// 直後を数字に限るのが要点。ここを緩めると、領域別の「神経系9点/13点」が
+// 「神経」＋「系9点/13点」に割れて、別の科目の点として取り込まれてしまう。
+function splitMockCell(cell) {
+  const take = (name) => {
+    const rest = cell.slice(name.length).replace(/^[:：=＝,、|｜]+/, '');
+    if (!/^\d+\s*点?\s*[\/／]/.test(rest)) return null;
+    const m = MOCK_SCORE_RE.exec(rest);
+    return m ? { name, correct: Number(m[1]), total: Number(m[2]) } : null;
+  };
+  for (const name of MOCK_SUBJECT_NAMES_BY_LENGTH) {
+    if (cell.length <= name.length || cell.indexOf(name) !== 0) continue;
+    const hit = take(name);
+    if (hit) return hit;
+  }
+  // 「その他(基礎医学) 2点/2点」。対応科目は無いが、合計の照合には数えたい
+  const other = /^その他[（(][^）)]*[）)]/.exec(cell);
+  if (other) return take(other[0]);
+  return null;
+}
+
+// 成績表のテキストを科目ごとの得点に変える。
+// 表のコピーは、行ごとにタブ区切りになることもセルごとに改行になることもあるので、
+// 行を単位にせず「セルの並び」として扱う。科目名を見つけたら、次の科目名に
+// ぶつかるまでの範囲で最初に現れる「N点/M点」をその科目の得点とする。
+//
+// 返り値:
+//   rows       = [{ name, ids, correct, total, split }]  取り込めた科目
+//   unmapped   = [{ name, correct, total }]  QBに対応が無い行（その他など）。合計には数える
+//   needsDetail= [{ name, correct, total }]  明細が貼られていない集計行。合計には数える
+//   duplicates = 同じ科目が2回出てきたもの（領域別も一緒に貼った場合など）
+//   dropped    = 明細があったので捨てた集計行（二重計上を防いだもの）
+//   totalCorrect / totalQuestions … rows だけの合計
+//   grandCorrect / grandQuestions … rows + unmapped + needsDetail の合計。
+//     これが成績表の「223点／320点」と一致すれば、1行も取りこぼしていない。
+function parseMockScoreTable(text) {
+  const cells = String(text || '').split(/[\t\n\r]+/).map(normalizeMockCell).filter(Boolean);
+  const isSubject = c => Object.prototype.hasOwnProperty.call(MOCK_SUBJECT_ALIASES, c)
+                      || Object.prototype.hasOwnProperty.call(MOCK_AGGREGATE_ROWS, c)
+                      || isMockUnmappableRow(c);
+
+  const found = [];
+  const unknown = [];
+  for (let i = 0; i < cells.length; i++) {
+    // 「解剖学 1点/1点」のように1セルに収まっている形を先に拾う。
+    // isSubject より先に試すのが要点。「その他(基礎医学)」は前方一致で
+    // 判定しているので、得点まで入ったセルも isSubject に食われてしまう。
+    const inline = splitMockCell(cells[i]);
+    if (inline) {
+      if (inline.total > 0 && inline.correct <= inline.total) found.push(inline);
+      else unknown.push(cells[i] + '（得点が読めません）');
+      continue;
+    }
+    if (!isSubject(cells[i])) continue;
+    let score = null;
+    for (let j = i + 1; j < cells.length && j <= i + MOCK_SCAN_AHEAD; j++) {
+      // 次の科目にぶつかったら打ち切る。得点が空欄の科目（未受験の行など）で
+      // 次の科目の点を拾ってしまうのを防ぐ
+      if (isSubject(cells[j]) || splitMockCell(cells[j])) break;
+      const m = MOCK_SCORE_RE.exec(cells[j]);
+      if (m) { score = { correct: Number(m[1]), total: Number(m[2]) }; break; }
+    }
+    if (!score || !(score.total > 0) || score.correct > score.total) {
+      // 集計行の名前は、科目別の表では見出しとしても出てくる（「基礎医学｜正解/配点｜…」）。
+      // 得点が無ければただの見出しなので、読めなかった行として挙げない
+      if (!MOCK_AGGREGATE_ROWS[cells[i]]) {
+        unknown.push(cells[i] + (score ? '（得点が読めません）' : '（得点が空欄です）'));
+      }
+      continue;
+    }
+    found.push({ name: cells[i], correct: score.correct, total: score.total });
+  }
+
+  // 明細がある集計行を捨てる（二重計上を防ぐ）
+  const names = new Set(found.map(f => f.name));
+  const dropped = [];
+  const kept = found.filter(f => {
+    const covers = MOCK_AGGREGATE_ROWS[f.name];
+    if (!covers) return true;
+    if (covers.some(n => names.has(n))) { dropped.push(f.name); return false; }
+    return true;   // 明細が貼られていなければ集計行として残し、下で needsDetail に回す
+  });
+
+  // 同じ科目が2回（内科系の「感染症」とE領域の「感染症」など）。先勝ちにして知らせる
+  const seen = new Set();
+  const duplicates = [];
+  const rows = [], unmapped = [], needsDetail = [];
+  kept.forEach(f => {
+    if (seen.has(f.name)) { duplicates.push(f.name); return; }
+    seen.add(f.name);
+    const ids = MOCK_SUBJECT_ALIASES[f.name] || [];
+    if (ids.length) {
+      rows.push({ name: f.name, ids, correct: f.correct, total: f.total, split: ids.length > 1 });
+    } else if (MOCK_AGGREGATE_ROWS[f.name]) {
+      // 系統別だけを貼った場合。45点の「基礎医学」をQBの1科目には落とせない
+      needsDetail.push({ name: f.name, correct: f.correct, total: f.total });
+    } else {
+      unmapped.push({ name: f.name, correct: f.correct, total: f.total });
+    }
+  });
+
+  const sum = (list, k) => list.reduce((s, r) => s + r[k], 0);
+  const totalCorrect = sum(rows, 'correct'), totalQuestions = sum(rows, 'total');
+  return {
+    rows, unmapped, needsDetail, unknown, duplicates, dropped,
+    totalCorrect, totalQuestions,
+    grandCorrect: totalCorrect + sum(unmapped, 'correct') + sum(needsDetail, 'correct'),
+    grandQuestions: totalQuestions + sum(unmapped, 'total') + sum(needsDetail, 'total')
+  };
+}
+
+// 取り込んだ行を、入力フォームの行（科目1つにつき1行）へ展開する。
+// 2科目に割れる科目は、全部を先頭の科目に寄せた2行にする。按分せず0を置くのは、
+// 勝手に半分ずつ配ると、その数字が実測のような顔をして残ってしまうため。
+// 配分は画面で直せる。
+function mockRowsToFormRows(parsed) {
+  const out = [];
+  (parsed && parsed.rows || []).forEach(r => {
+    r.ids.forEach((id, i) => {
+      out.push({
+        subject_id: id,
+        correct: i === 0 ? r.correct : 0,
+        total: i === 0 ? r.total : 0,
+        note: r.split ? `${r.name}（${r.ids.length}科目に分かれます・配分を確認してください）` : r.name
+      });
+    });
+  });
+  return out;
+}
+
 function openMockExamWizard(onDone) {
   const todayKey = todayPlanKey();
   const modal = document.createElement('div');
@@ -15468,7 +15802,22 @@ function openMockExamWizard(onDone) {
         </div>
         <div class="plan-hint" style="margin:-6px 0 12px;">同じ日に解いた科目は、下に行を足してまとめて入れられます。
           正答率ではなく<strong>正答数と問題数</strong>で入れてください（問題数が多い模試ほど、間隔の判定で重く扱います）。</div>
-        <div class="plan-bulk-head"><strong>科目ごとの結果</strong><span class="cal-spacer"></span>
+
+        <details class="mk-paste" id="mk-paste">
+          <summary>成績表を貼り付けて取り込む</summary>
+          <div class="plan-hint" style="margin:8px 0;">成績表の<strong>「系統別成績」と「科目別成績」</strong>の表を選択してコピーし、そのまま貼ってください。
+            領域別の表も一緒に貼ると同じ科目が二重に出てくるので、その場合は取り込み後に確認してください。</div>
+          <textarea id="mk-paste-text" rows="5" placeholder="ここに成績表を貼り付け"
+                    style="width:100%; font-family:monospace; font-size:0.75rem;"></textarea>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:8px;">
+            <button class="btn-log-action" id="mk-paste-run">取り込む</button>
+            <span class="dim" id="mk-paste-msg"></span>
+          </div>
+          <div id="mk-paste-report"></div>
+        </details>
+
+        <div class="plan-bulk-head"><strong>科目ごとの結果</strong>
+          <span class="dim" id="mk-sum"></span><span class="cal-spacer"></span>
           <button class="btn-log-action" data-mk-add>+ 行を追加</button></div>
         <div id="mk-rows"></div>
         <button class="btn btn-primary" id="mk-save" style="width:100%; justify-content:center; margin-top:12px;">保存</button>
@@ -15480,7 +15829,19 @@ function openMockExamWizard(onDone) {
   $('[data-mk-close]').onclick = close;
   modal.onclick = e => { if (e.target === modal) close(); };
 
-  const addRow = () => {
+  // 入っている行の合計。成績表の「223点／320点」と突き合わせるために出す。
+  // 貼り付けの取りこぼしは、合計がずれることでしか気づけない。
+  const updateSum = () => {
+    let c = 0, t = 0, n = 0;
+    modal.querySelectorAll('.mk-row').forEach(r => {
+      const tv = Number(r.querySelector('.mk-total').value) || 0;
+      if (tv <= 0) return;
+      c += Number(r.querySelector('.mk-correct').value) || 0; t += tv; n++;
+    });
+    $('#mk-sum').textContent = n ? `　合計 ${c}点／${t}点（${n}科目）` : '';
+  };
+
+  const addRow = (pre) => {
     const row = document.createElement('div');
     row.className = 'mk-row';
     row.innerHTML = `
@@ -15491,11 +15852,61 @@ function openMockExamWizard(onDone) {
       <button class="btn-log-action delete" data-mk-del>✕</button>`;
     row.querySelector('[data-mk-del]').onclick = () => {
       if (modal.querySelectorAll('.mk-row').length > 1) row.remove();
+      updateSum();
     };
+    if (pre) {
+      row.querySelector('.mk-sub').value = pre.subject_id;
+      if (pre.total > 0) {
+        row.querySelector('.mk-correct').value = pre.correct;
+        row.querySelector('.mk-total').value = pre.total;
+      }
+      if (pre.note) row.title = pre.note;
+      // 2科目に割れた行は、配分を手で入れる必要があるので目印を付ける
+      if (pre.note && pre.note.indexOf('分かれます') >= 0) row.classList.add('mk-row-split');
+    }
+    row.querySelectorAll('input').forEach(i => i.addEventListener('input', updateSum));
     $('#mk-rows').appendChild(row);
+    return row;
   };
   addRow();
-  $('[data-mk-add]').onclick = addRow;
+  $('[data-mk-add]').onclick = () => { addRow(); updateSum(); };
+
+  // ---------- 成績表の貼り付け ----------
+  $('#mk-paste-run').onclick = () => {
+    const parsed = parseMockScoreTable($('#mk-paste-text').value);
+    const formRows = mockRowsToFormRows(parsed);
+    if (!formRows.length) {
+      $('#mk-paste-msg').textContent = '科目を読み取れませんでした';
+      $('#mk-paste-report').innerHTML =
+        `<div class="plan-seq-hint warn">${IC.warn} 科目名が1つも見つかりませんでした。「系統別成績」か「科目別成績」の表を、見出しの行ごと選択してコピーしてみてください。</div>`;
+      return;
+    }
+    $('#mk-rows').innerHTML = '';
+    formRows.forEach(r => addRow(r));
+    updateSum();
+
+    const splits = parsed.rows.filter(r => r.split);
+    const side = parsed.unmapped.concat(parsed.needsDetail);
+    const sideC = side.reduce((s, r) => s + r.correct, 0);
+    const sideQ = side.reduce((s, r) => s + r.total, 0);
+    $('#mk-paste-msg').textContent = `${parsed.rows.length}科目を取り込みました`;
+    $('#mk-paste-report').innerHTML = `
+      <div class="plan-seq-hint"><strong>読み取れた合計: ${parsed.grandCorrect}点／${parsed.grandQuestions}点</strong>
+        ${sideQ > 0 ? `<span class="dim">（うち取り込み ${parsed.totalCorrect}／${parsed.totalQuestions}・対応科目なし ${sideC}／${sideQ}）</span>` : ''}<br>
+        この数字が成績表の<strong>総合成績（得点／配点）と一致していれば、1行も取りこぼしていません。</strong>
+        ずれていたら、貼り足りない表があります。</div>
+      ${parsed.needsDetail.length ? `<div class="plan-seq-hint warn">${IC.warn}
+        ${esc(parsed.needsDetail.map(r => `${r.name} ${r.correct}／${r.total}点`).join('・'))}
+        は系統別の集計行で、QBの科目1つには落とせません。<strong>「科目別成績」の表も一緒に貼ってください</strong>（貼れば自動でこちらが明細に置き換わります）。</div>` : ''}
+      ${splits.length ? `<div class="plan-seq-hint warn">${IC.warn} ${esc(splits.map(s => s.name).join('・'))} はQBでは複数の科目に分かれます。
+        いまは全部を先頭の科目に入れてあるので、下の表で配分を直してください（成績表の領域別に内訳があります）。</div>` : ''}
+      ${parsed.dropped.length ? `<div class="plan-seq-hint">明細があったので集計行は除きました（二重計上の防止）: ${esc(parsed.dropped.join('・'))}</div>` : ''}
+      ${parsed.unmapped.length ? `<div class="plan-seq-hint">QBに対応する科目が無いので取り込みませんでした: ${esc(parsed.unmapped.map(r => `${r.name} ${r.correct}／${r.total}点`).join('・'))}
+        <span class="dim">（上の合計には数えてあります）</span></div>` : ''}
+      ${parsed.duplicates.length ? `<div class="plan-seq-hint warn">${IC.warn} 同じ科目が2回出てきたので、最初の1つだけを使いました: ${esc(parsed.duplicates.join('・'))}。
+        領域別の表も一緒に貼ると起きます。</div>` : ''}
+      ${parsed.unknown.length ? `<div class="plan-seq-hint">読み取れなかった行: ${esc(parsed.unknown.join('・'))}</div>` : ''}`;
+  };
 
   $('#mk-save').onclick = async function () {
     const taken = $('#mk-date').value;
@@ -15752,11 +16163,16 @@ function subjectPriorityTableHTML(sync) {
   return `<details class="plan-prio">
     <summary>科目の優先度（学習状況から）</summary>
     <div class="plan-prio-scroll"><table class="plan-prio-table">
-      <thead><tr><th>科目</th><th>いまの出来<br><span class="dim">p</span></th><th>試験日の見込み<br><span class="dim">R_pred</span></th><th>伸びしろ<br><span class="dim">G</span></th><th>学習可能性<br><span class="dim">L</span></th><th>出題重み<br><span class="dim">W</span></th><th>1問<br><span class="dim">C</span></th><th>残り</th><th>1分あたり<br><span class="dim">の効き</span></th></tr></thead>
+      <thead><tr><th>科目</th><th>測ったときの出来<br><span class="dim">p</span></th><th>いまの見込み<br><span class="dim">p_now</span></th><th>試験日の見込み<br><span class="dim">R_pred</span></th><th>伸びしろ<br><span class="dim">G</span></th><th>学習可能性<br><span class="dim">L</span></th><th>出題重み<br><span class="dim">W</span></th><th>1問<br><span class="dim">C</span></th><th>残り</th><th>1分あたり<br><span class="dim">の効き</span></th></tr></thead>
       <tbody>${rows.map(r => `<tr>
         <td>${esc(r.name)}${r.cramFactor < CBT_CRAM_MARK_BELOW
               ? ` <span class="dim" title="直前の詰め込みが効くので、効きを${r.cramFactor}倍にしています">直前型</span>` : ''}</td>
-        <td>${pct(r.p)}${r.hasAccuracy ? '' : '<span class="dim" title="正答数がまだ入っていないので中立値で置いています">仮</span>'}</td>
+        <td>${pct(r.p)}${r.hasAccuracy ? '' : '<span class="dim" title="正答数がまだ入っていないので中立値で置いています">仮</span>'}${
+              r.fromMock ? ` <span class="dim" title="${esc(r.mockKey || '')}の模試 ${r.mockN}問（正答率${Math.round((r.mockP || 0) * 100)}%）を反映しています">模試</span>` : ''}</td>
+        <td>${pct(r.pNow)}${r.measuredKey
+              ? `<span class="dim" title="${esc(r.measuredKey)}に測った値を、今日までの経過で割り引いています${
+                  r.measuredFromLog ? '（周の完了日が記録に無いので、最後にこの科目を勉強した日で代用しています）' : ''}">（${esc(String(r.measuredKey).slice(5))}${r.measuredFromLog ? '・推定' : ''}）</span>`
+              : '<span class="dim" title="いつ測った出来か分かる記録がないので、割り引いていません">（起点なし）</span>'}</td>
         <td>${pct(r.recallPred)}${r.decay < 1 ? `<span class="dim">（×${r.decay.toFixed(2)}）</span>` : ''}</td>
         <td><strong>${pct(r.gain)}</strong></td>
         <td>${r.learnability.toFixed(2)}</td>
@@ -15770,10 +16186,13 @@ function subjectPriorityTableHTML(sync) {
       残りの多さは掛けません（量が多いことと、いま手を付けて効くことは別）。量は
       ①その日の時間の配り方 ②締切に間に合うか ③同点のときの順番、の3か所で効きます。</div>
     <div class="plan-seq-hint">
-      <strong>p</strong>＝いまの出来。直近の周を過去の周へ、過去の周を全体平均へ、と2段階で寄せた値です（少ない問題数の正答率をそのまま信じないため）。正答数が未入力の科目は50%として扱い「仮」と出します。<br>
-      <strong>R_pred</strong>＝試験日の時点でどれだけ思い出せるかの見込み。p を、直近の周を終えてから試験日までの日数で割り引きます（${PLANNING_CONFIG.score.stabilityDays * 9}日でおよそ半分）。試験日が未登録なら割り引きません。<br>
+      <strong>p</strong>＝<strong>測ったときの</strong>出来。直近の周を過去の周へ、過去の周を全体平均へ、と2段階で寄せた値です（少ない問題数の正答率をそのまま信じないため）。正答数が未入力の科目は50%として扱い「仮」と出します。
+        模試を記録してある科目は、その上に模試を最新の観測として載せます（「模試」と出します）。本番形式で測った値のほうが、教材を回している最中の正答率より本番に近いためです。<br>
+      <strong>p_now</strong>＝<strong>いま</strong>どれだけ思い出せるかの見込み。p を、測った日から今日までの経過で割り引いた値です。かっこ内がその測定日で、新しい順に 模試 → 周の完了日 → 最後にこの科目を勉強した日 から取ります。
+        完了日が記録に無い周（アプリを使い始める前に終えていた周など）は最終学習日で代用し「推定」と出します。ここを今日に置くと、大学の試験のときに1周やったきりの科目が「今日やったばかり」扱いになって沈みます。<br>
+      <strong>R_pred</strong>＝試験日の時点でどれだけ思い出せるかの見込み。p を、測った日から試験日までの日数で割り引きます（${PLANNING_CONFIG.score.stabilityDays * 9}日でおよそ半分）。試験日が未登録なら割り引きません。<br>
       <strong>G</strong>＝目標${Math.round(planningRecallTarget() * 100)}% との差＝伸びしろ。すでに届いている科目は0になり、後ろへ回ります。<br>
-      <strong>L</strong>＝学習可能性。できなさすぎず・できすぎない中間帯がいちばん高くなります。試験まで日数があるうちは端の科目も拾います。<br>
+      <strong>L</strong>＝学習可能性。できなさすぎず・できすぎない中間帯がいちばん高くなります（使うのは p ではなく p_now です）。試験まで日数があるうちは端の科目も拾います。<br>
       <strong>W</strong>＝CBTでの出題重み（平均が1.0になるよう正規化）。<strong>C</strong>＝1問あたりの実測の分。時間のかかる科目ほど1分あたりの効きは下がります。<br>
       「直前型」は出題数が多くても直前の詰め込みで間に合う科目で、効きを下げています（出題数そのものは下げません）。</div>
     <div class="plan-seq-hint">CBT出題数はコア・カリキュラムの領域別割合（A・B 32問／C 48問／D 112問／E 64問／F 64問・計320問）を、

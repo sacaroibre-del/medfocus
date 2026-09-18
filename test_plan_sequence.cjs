@@ -2232,6 +2232,257 @@ const prio3 = (o) => W.buildSubjectPriority(Object.assign({ unitCost: PRIO, toda
   eq('当日は出ない', W.dueRetests(rows, '2026-09-15').length, 0);
 })();
 
+
+// ==================== 模試を優先順位に効かせる ====================
+
+// 模試は p の上に「本番形式で測った直近の観測」として載る
+(function mockBlendsIntoAccuracy() {
+  const rounds = { '1': { total: 100, done: 100, correct: 85 } };
+  const P0 = 0.70;
+  const bare = W.blendedRoundAccuracy(rounds, P0);
+  const tiny = W.blendedRoundAccuracy(rounds, P0, { n: 4, p: 0 });
+  const big  = W.blendedRoundAccuracy(rounds, P0, { n: 36, p: 0.527 });
+
+  eq('模試を渡さなければ従来と同じ', W.blendedRoundAccuracy(rounds, P0).p, bare.p);
+  eq('模試なしは印も立たない', bare.hasMock, false);
+  ok('模試があれば p が下がる', tiny.p < bare.p, { bare: bare.p, tiny: tiny.p });
+  eq('模試の印が立つ', big.hasMock, true);
+  eq('模試の問題数を持ち帰る', big.mockN, 36);
+
+  // 縮小の式どおり: (n模試×p模試 + 10×p_qb) / (n模試 + 10)
+  const mMock = 10;
+  ok('4問0点は縮小式のとおり',
+     Math.abs(tiny.p - (4 * 0 + mMock * bare.pQb) / (4 + mMock)) < 1e-9, tiny.p);
+  ok('36問のほうが強く動く',
+     Math.abs(big.p - bare.p) > 0 && big.mockN > tiny.mockN, { big: big.p, tiny: tiny.p });
+
+  // ここが肝心。p が 0 まで落ちると L = 4p(1-p)+ε が潰れ、
+  // 模試で壊滅した科目ほど後回しという逆向きの並びになる
+  ok('模試0点でも p は 0 に落ちない', tiny.p > 0.4, tiny.p);
+  ok('L が潰れない', W.learnability(tiny.p, 45) > 1, W.learnability(tiny.p, 45));
+
+  // QBの記録がまったく無くても模試だけで p を出せる（手つかずの科目）
+  const only = W.blendedRoundAccuracy({}, P0, { n: 6, p: 1 / 3 });
+  eq('QBが空でも模試があれば材料になる', only.hasData, true);
+  ok('寄せ先は p0', only.p > 1 / 3 && only.p < P0, only.p);
+  eq('模試もQBも無ければ従来どおり p0', W.blendedRoundAccuracy({}, P0).p, P0);
+})();
+
+// 科目ごとの直近の模試
+(function mockFold() {
+  const by = W.mockBySubject([
+    { subject_id: '2C', taken_on: '2026-06-01', correct_questions: 5,  total_questions: 20 },
+    { subject_id: '2C', taken_on: '2026-09-18', correct_questions: 19, total_questions: 21 },
+    { subject_id: '2P', taken_on: '2026-09-18', correct_questions: 3,  total_questions: 7  },
+    { subject_id: '2P', taken_on: '2026-09-18', correct_questions: 3,  total_questions: 6  },
+    { subject_id: '4B2T', taken_on: '2026-09-18', correct_questions: 2, total_questions: 6 }
+  ]);
+  eq('古い回は使わない（直近の1回だけ）', by['2C'].n, 21);
+  eq('直近の受験日を持つ', by['2C'].takenOn, '2026-09-18');
+  eq('同じ日の複数行は合算する', by['2P'].n, 13);
+  eq('合算した正答数', by['2P'].correct, 6);
+  eq('vol.4 の科目は元の科目へ畳む', by['2T'].n, 6);
+  eq('不正な行は捨てる', Object.keys(W.mockBySubject([
+    { subject_id: '2C', taken_on: '', correct_questions: 1, total_questions: 2 },
+    { subject_id: '', taken_on: '2026-09-18', correct_questions: 1, total_questions: 2 },
+    { subject_id: '2C', taken_on: '2026-09-18', correct_questions: 1, total_questions: 0 }
+  ])).length, 0);
+})();
+
+// 減衰の起点。完了日が記録に無い周でも「今日やったばかり」扱いにしない
+(function decayAnchor() {
+  const qb = { '2C': { '1': { total: 100, done: 100, correct: 85 } } };   // completed_at なし
+  const base = { qb, video: {}, unitCost: { hasQuestion: true, minPerQuestion: 2 },
+                 examKey: '2026-11-02', todayKey: '2026-09-18', targetRoundBy: { '2c': 2 } };
+  const run = extra => W.buildSubjectPriority(Object.assign({}, base, extra)).bySubject['2C'];
+
+  const noLog = run({ lastTouched: {} });
+  eq('材料が何も無ければ起点なし', noLog.measuredKey, null);
+  eq('起点が無ければ割り引かない', noLog.pNow, noLog.p);
+
+  const byLog = run({ lastTouched: { '2C': '2026-06-10' } });
+  eq('完了日が無ければ最終学習日を起点にする', byLog.measuredKey, '2026-06-10');
+  eq('代用したことを画面に出せる', byLog.measuredFromLog, true);
+  ok('いまの見込みは測定時より下がる', byLog.pNow < byLog.p, { p: byLog.p, now: byLog.pNow });
+  ok('L は p ではなく p_now から出す',
+     Math.abs(byLog.learnability - W.learnability(byLog.pNow, 45)) < 1e-9, byLog.learnability);
+  // ここが本題。完了日が無い科目が「今日やったばかり」扱いで沈んでいた
+  ok('伸びしろが正しく大きくなる', byLog.gain > noLog.gain * 1.5, { noLog: noLog.gain, byLog: byLog.gain });
+  ok('効きが上がる', byLog.score > noLog.score * 2, { noLog: noLog.score, byLog: byLog.score });
+
+  const mocks = [{ subject_id: '2C', taken_on: '2026-09-18', correct_questions: 19, total_questions: 21 }];
+  const withMock = run({ lastTouched: { '2C': '2026-06-10' }, mocks });
+  eq('模試があれば起点は模試の日', withMock.measuredKey, '2026-09-18');
+  eq('模試由来だと分かる', withMock.fromMock, true);
+  eq('最終学習日での代用ではない', withMock.measuredFromLog, false);
+  ok('模試で解けていれば順位は下がる', withMock.score < byLog.score, { byLog: byLog.score, mock: withMock.score });
+
+  const badMock = run({ lastTouched: { '2C': '2026-06-10' },
+    mocks: [{ subject_id: '2C', taken_on: '2026-09-18', correct_questions: 2, total_questions: 6 }] });
+  ok('模試で落としていれば順位は上がる', badMock.score > withMock.score, { good: withMock.score, bad: badMock.score });
+
+  // 古い模試は起点にしない（周の完了日のほうが新しければそちら）
+  const qbDone = { '2C': { '1': { total: 100, done: 100, correct: 85, completed_at: '2026-08-01' } } };
+  const older = W.buildSubjectPriority(Object.assign({}, base, { qb: qbDone, lastTouched: {},
+    mocks: [{ subject_id: '2C', taken_on: '2026-06-01', correct_questions: 5, total_questions: 20 }] })).bySubject['2C'];
+  eq('新しいほうの日付を起点にする', older.measuredKey, '2026-08-01');
+})();
+
+// ---------- 成績表の貼り付け ----------
+(function pasteImport() {
+  const 系統別 = [
+    '基礎医学\t32点/ 45点\t71.1%\t1720位',
+    '内科系\t112点/ 152点\t73.6%\t1504位',
+    '小児科\t12点/ 16点\t75.0%\t1024位',
+    '産婦人科\t10点/ 16点\t62.5%\t2676位',
+    '公衆衛生\t27点/ 37点\t72.9%\t2108位',
+    'マイナー\t19点/ 36点\t52.7%\t2957位',
+    '救急・他\t11点/ 18点\t61.1%\t2016位'
+  ].join('\n');
+  const 科目別 = [
+    '基礎医学\t正解/配点\t得点率',
+    '解剖学\t1点/ 1点\t100.0%', '細胞生物学\t9点/ 13点\t69.2%', '組織学\t3点/ 5点\t60.0%',
+    '生理学\t3点/ 5点\t60.0%', '生化学\t6点/ 7点\t85.7%', '発生学\t0点/ 2点\t0.0%',
+    '微生物学\t2点/ 2点\t100.0%', '病理学\t2点/ 3点\t66.6%', '薬理学\t4点/ 5点\t80.0%',
+    '行動医学\t\t', 'その他(基礎医学)\t2点/ 2点\t100.0%',
+    '内科系\t正解/配点\t得点率',
+    '循環器\t19点/ 21点\t90.4%', '神経\t12点/ 16点\t75.0%', '内・代\t12点/ 20点\t60.0%',
+    '消化管\t7点/ 11点\t63.6%', '肝胆膵\t8点/ 11点\t72.7%', '血液\t8点/ 13点\t61.5%',
+    '呼吸器\t8点/ 13点\t61.5%', '腎臓\t4点/ 6点\t66.6%', '感染症\t25点/ 30点\t83.3%',
+    'ア・膠・免\t9点/ 11点\t81.8%',
+    '皮膚科\t4点/ 9点\t44.4%', '眼科\t3点/ 5点\t60.0%', '耳鼻咽喉科\t3点/ 3点\t100.0%',
+    '精神科\t3点/ 6点\t50.0%', '泌尿器科\t4点/ 4点\t100.0%', '整形外科\t2点/ 6点\t33.3%',
+    '放射線科\t0点/ 2点\t0.0%', '麻酔科\t0点/ 1点\t0.0%', '救急・中毒\t7点/ 9点\t77.7%',
+    'その他(救急・他)\t4点/ 9点\t44.4%'
+  ].join('\n');
+
+  // 成績表の総合成績と突き合わせられること。これが唯一の取りこぼし検出手段
+  const both = W.parseMockScoreTable(系統別 + '\n' + 科目別);
+  eq('読み取れた合計が総合成績と一致する（得点）', both.grandCorrect, 223);
+  eq('読み取れた合計が総合成績と一致する（配点）', both.grandQuestions, 320);
+  eq('明細があるので集計行は二重計上しない', both.dropped.sort().join(','), 'マイナー,内科系,基礎医学,救急・他');
+  eq('QBに対応が無い行は取り込まない', both.unmapped.length, 2);
+  eq('対応が無い行も合計には数える', both.grandQuestions - both.totalQuestions, 11);
+  eq('得点が空欄の行は「読めない行」に挙げない', both.unknown.length, 0);
+
+  // 系統別だけでも合計は合う。ただし明細が要ると伝わること
+  const only系統 = W.parseMockScoreTable(系統別);
+  eq('系統別だけでも合計は合う', only系統.grandCorrect + '/' + only系統.grandQuestions, '223/320');
+  eq('集計行は明細が要ると分かる', only系統.needsDetail.length, 4);
+  eq('明細が無い3科目だけ取り込む', only系統.rows.map(r => r.name).join(','), '小児科,産婦人科,公衆衛生');
+
+  // コピーの形に依存しない（タブ区切りでもセルごとの改行でも同じ）
+  const perCell = W.parseMockScoreTable((系統別 + '\n' + 科目別).replace(/\t/g, '\n'));
+  eq('セルごとに改行されても同じ結果', perCell.grandCorrect + '/' + perCell.grandQuestions, '223/320');
+  eq('科目数も同じ', perCell.rows.length, both.rows.length);
+
+  // 全角スラッシュ（領域別の表の書式）
+  eq('全角スラッシュを読める',
+     W.parseMockScoreTable('循環器\t19点／21点').rows[0].total, 21);
+  eq('「点」が無くても読める', W.parseMockScoreTable('循環器\t19/21').rows[0].correct, 19);
+
+  // 得点が空欄の科目で、次の科目の点を拾わないこと
+  const blank = W.parseMockScoreTable('行動医学\t\t\nその他(基礎医学)\t2点/ 2点');
+  eq('空欄の科目は次の行の点を拾わない', blank.rows.length + blank.unmapped.length, 1);
+  eq('拾ったのは その他 のほう', blank.unmapped[0].total, 2);
+
+  // 同じ科目が2回（領域別も一緒に貼った場合）
+  const dup = W.parseMockScoreTable('感染症\t25点/ 30点\n感染症\t13点/ 16点');
+  eq('重複は先勝ち', dup.rows[0].total, 30);
+  eq('重複を知らせる', dup.duplicates.length, 1);
+
+  // 複数のQB科目に割れる科目
+  const split = W.parseMockScoreTable('産婦人科\t10点/ 16点');
+  eq('産婦人科は2科目に割れる', split.rows[0].ids.join('+'), '2P+2Q');
+  const form = W.mockRowsToFormRows(split);
+  eq('行を2つに展開する', form.length, 2);
+  eq('全部を先頭の科目に置く（按分しない）', form[0].correct + '/' + form[0].total, '10/16');
+  eq('2つめは空で出す', form[1].total, 0);
+
+  // --- 1行1科目のテキスト（手書き／AIにまとめさせたもの）も読める ---
+  // 表のコピーは列がタブで割れるが、書き起こしたテキストはスペース区切りになる。
+  // 空白は潰してから見るので、「科目名で始まり直後が得点」という形で拾う。
+  const lines = [
+    '小児科 12点/16点', '産婦人科 10点/16点', '公衆衛生 27点/37点',
+    '解剖学 1点/1点', '細胞生物学 9点/13点', '組織学 3点/5点', '生理学 3点/5点',
+    '生化学 6点/7点', '発生学 0点/2点', '微生物学 2点/2点', '病理学 2点/3点',
+    '薬理学 4点/5点', 'その他(基礎医学) 2点/2点',
+    '循環器 19点/21点', '神経 12点/16点', '内・代 12点/20点', '消化管 7点/11点',
+    '肝胆膵 8点/11点', '血液 8点/13点', '呼吸器 8点/13点', '腎臓 4点/6点',
+    '感染症 25点/30点', 'ア・膠・免 9点/11点',
+    '皮膚科 4点/9点', '眼科 3点/5点', '耳鼻咽喉科 3点/3点', '精神科 3点/6点',
+    '泌尿器科 4点/4点', '整形外科 2点/6点', '放射線科 0点/2点', '麻酔科 0点/1点',
+    '救急・中毒 7点/9点', 'その他(救急・他) 4点/9点'
+  ].join('\n');
+  const typed = W.parseMockScoreTable(lines);
+  eq('1行1科目でも合計が合う', typed.grandCorrect + '/' + typed.grandQuestions, '223/320');
+  eq('1行1科目で31科目', typed.rows.length, 31);
+  eq('読めない行は出ない', typed.unknown.length, 0);
+  eq('その他も合計には数える', typed.unmapped.length, 2);
+
+  // 区切りの揺れ
+  eq('区切りなしでも読める', W.parseMockScoreTable('循環器19点/21点').rows[0].total, 21);
+  eq('コロン区切り', W.parseMockScoreTable('循環器: 19/21').rows[0].correct, 19);
+  eq('全角スラッシュ＋1行', W.parseMockScoreTable('循環器 19点／21点').rows[0].total, 21);
+  eq('中黒を含む科目名', W.parseMockScoreTable('内・代 12点/20点').rows[0].ids[0], '2D');
+  eq('長い名前を短い名前より優先', W.parseMockScoreTable('細胞生物学 9点/13点').rows[0].ids[0], '1A');
+
+  // 領域別の「〜系」に誤爆しない（科目名の直後が数字でなければ拾わない）
+  eq('神経系 は 神経 として取り込まない', W.parseMockScoreTable('神経系 9点／13点').rows.length, 0);
+  eq('呼吸器系 も同じ', W.parseMockScoreTable('呼吸器系 7点／9点').rows.length, 0);
+  const mixed = W.parseMockScoreTable(lines + '\n神経系 9点／13点\n呼吸器系 7点／9点');
+  eq('領域別が混ざっても科目数は増えない', mixed.rows.length, typed.rows.length);
+  eq('領域別が混ざっても合計は変わらない', mixed.grandQuestions, 320);
+
+  // タブ区切りの表と1行1科目が混在しても壊れない
+  const both2 = W.parseMockScoreTable('循環器\t19点/ 21点\n神経 12点/16点');
+  eq('混在しても両方読める', both2.rows.length, 2);
+
+  // --- 問題ごとに分類し直して、QB の科目名で直接書いた場合 ---
+  // 成績表の「産婦人科」「救急・中毒」は QB では2科目に割れるが、
+  // 出題一覧から問題単位で分け直せば、分けた側の名前でそのまま入れられる。
+  // こう書けば取り込み後の手作業がゼロになる。
+  const presplit = W.parseMockScoreTable(
+    '産科 3点/6点\n婦人科 7点/10点\n救急 2点/2点\n中毒 5点/7点');
+  eq('分けた名前は1科目として入る', presplit.rows.length, 4);
+  eq('配分待ちの行は出ない', presplit.rows.filter(r => r.split).length, 0);
+  const pid = presplit.rows.reduce((o, r) => (o[r.name] = r.ids.join('+'), o), {});
+  eq('産科 → 2Q', pid['産科'], '2Q');
+  eq('婦人科 → 2P', pid['婦人科'], '2P');
+  eq('救急 → 2L', pid['救急'], '2L');
+  eq('中毒 → 2K', pid['中毒'], '2K');
+  eq('空の行が作られない', W.mockRowsToFormRows(presplit).filter(r => !r.total).length, 0);
+
+  // 「婦人科」を足したせいで「産婦人科」が食われていないこと（長い名前が優先）
+  const still = W.parseMockScoreTable('産婦人科 10点/16点');
+  eq('産婦人科 はいまも2科目に割れる', still.rows[0].ids.join('+'), '2P+2Q');
+  eq('救急・中毒 もいまも2科目に割れる',
+     W.parseMockScoreTable('救急・中毒 7点/9点').rows[0].ids.join('+'), '2L+2K');
+  eq('救急・他 は集計行のまま',
+     W.parseMockScoreTable('救急・他 11点/18点').needsDetail.length, 1);
+
+  // 分けた名前で書いても合計は 223/320 のまま照合できる
+  const finalTxt = [
+    '小児科 12点/16点', '公衆衛生 27点/37点',
+    '産科 3点/6点', '婦人科 7点/10点', '救急 2点/2点', '中毒 5点/7点',
+    '解剖学 1点/1点', '細胞生物学 9点/13点', '組織学 3点/5点', '生理学 3点/5点',
+    '生化学 6点/7点', '発生学 0点/2点', '微生物学 2点/2点', '病理学 2点/3点',
+    '薬理学 4点/5点', 'その他(基礎医学) 2点/2点',
+    '循環器 19点/21点', '神経 12点/16点', '内・代 12点/20点', '消化管 7点/11点',
+    '肝胆膵 8点/11点', '血液 8点/13点', '呼吸器 8点/13点', '腎臓 4点/6点',
+    '感染症 25点/30点', 'ア・膠・免 9点/11点', '皮膚科 4点/9点', '眼科 3点/5点',
+    '耳鼻咽喉科 3点/3点', '精神科 3点/6点', '泌尿器科 4点/4点', '整形外科 2点/6点',
+    '放射線科 0点/2点', '麻酔科 0点/1点', 'その他(救急・他) 4点/9点'
+  ].join('\n');
+  const fin = W.parseMockScoreTable(finalTxt);
+  eq('分割済みでも合計は成績表どおり', fin.grandCorrect + '/' + fin.grandQuestions, '223/320');
+  eq('手で直す行は残らない', fin.rows.filter(r => r.split).length, 0);
+  eq('33科目すべて値が入る', W.mockRowsToFormRows(fin).filter(r => r.total > 0).length, 33);
+
+  eq('空文字でも落ちない', W.parseMockScoreTable('').rows.length, 0);
+  eq('関係ない文字列でも落ちない', W.parseMockScoreTable('あああ\nいいい').rows.length, 0);
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');
