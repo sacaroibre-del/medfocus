@@ -639,7 +639,8 @@ const subjectCategories = [
     {id:'3C',name:'3C 身体診察'},{id:'3D',name:'3D 公衆衛生'}
   ]},
   {id:'cat-other',name:'その他',color:'#94a3b8',subjects:[
-    {id:'anki',name:'Anki'}
+    {id:'anki',name:'Anki'},
+    {id:'mock-review',name:'模試復習'}
   ]}
 ];
 
