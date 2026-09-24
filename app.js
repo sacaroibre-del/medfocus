@@ -637,10 +637,6 @@ const subjectCategories = [
   {id:'cat-vol3',name:'vol.3 医学総論・公衆衛生',color:'#F1948A',subjects:[
     {id:'3A',name:'3A 症候・病態'},{id:'3B',name:'3B 診療の知識・技能'},
     {id:'3C',name:'3C 身体診察'},{id:'3D',name:'3D 公衆衛生'}
-  ]},
-  {id:'cat-other',name:'その他',color:'#94a3b8',subjects:[
-    {id:'anki',name:'Anki'},
-    {id:'mock-review',name:'模試復習'}
   ]}
 ];
 
@@ -689,6 +685,12 @@ const QB_SECTION_BASE_ID = {};
                              qbOnly: true, masterTotal: sec.questionTotal, subjects });
   });
 })();
+// vol.4 の後ろに置く。一覧の末尾（自由入力の直前）に出したいので、科目リストの
+// 組み立てが終わってから追加する。
+subjectCategories.push({id:'cat-other',name:'その他',color:'#94a3b8',subjects:[
+  {id:'anki',name:'Anki'},
+  {id:'mock-review',name:'模試復習'}
+]});
 
 // Subject name normalizer (fix case mismatches like 'anki' vs 'Anki')
 const subjectNameMap={};
