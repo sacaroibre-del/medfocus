@@ -2184,13 +2184,29 @@ i.io-other { background: #64748b; }
   :root { --bottom-nav-h: 94px; }
 }
 
-/* 記録フォームのオーバーレイ。下端の保存・破棄ボタンがナビに隠れていた */
+/* 記録フォームのオーバーレイ（app.js の mountConfirmOverlay で body 直下に置く）。
+   画面に固定し、保存・破棄の sticky バーの基準を「画面の下端」にする。
+   以前はタイマーカードの中に absolute で置いていたため、バーがカードの下端に付き、
+   ページのスクロール位置しだいでボトムナビの下や画面外に入って押せなかった。
+   ボトムナビ（z-index:9999）は上に残して使えるようにし、ナビの高さぶんは
+   padding ではなく border で確保する。border はスクロール領域の外側なので、
+   sticky の bottom:0 がブラウザ差なく「ナビのすぐ上」に止まる。 */
 .timer-overlay {
-  padding: var(--space-md);
-  padding-bottom: calc(var(--space-md) + var(--bottom-nav-h));
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  left: var(--sidebar-width);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  overflow-y: auto;
+  text-align: center;
+  /* 下の padding は 0。sticky が padding を避けて止まるブラウザでは、
+     バーの下に隙間ができてフォームが透けて見えるため */
+  padding: var(--space-md) var(--space-md) 0;
+  border-bottom: var(--bottom-nav-h) solid transparent;
 }
-/* padding-bottom 側でナビ分を確保しているので、ここでナビ高さを足すと二重に浮く。
-   sticky はスクロール領域の padding box を基準に止まるため bottom:0 で十分。 */
 .confirm-actions {
   bottom: 0;
 }

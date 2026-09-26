@@ -2331,8 +2331,8 @@ function finishSession(manualStop = false) {
       overlay = document.createElement('div');
       overlay.id = 'session-finish-overlay';
       overlay.className = 'timer-overlay animate-fade-in';
-      overlay.style = 'position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-y:auto; text-align:center; background:var(--color-bg-primary);';
-      timerCard.appendChild(overlay);
+      overlay.style = 'background:var(--color-bg-primary);';
+      mountConfirmOverlay(overlay);
     }
     const allSubjects=subjectCategories.flatMap(c=>c.subjects.map(s=>({...s})));
     overlay.innerHTML = `
@@ -2497,6 +2497,18 @@ function finishSession(manualStop = false) {
     if (currentRoute === '/study' || window.location.pathname === '/study') renderStudy();
     else showToast(IC.check+' 学習セッションが終了しました！記録を確認してください。');
   }
+}
+
+// 学習後の記録フォームは画面基準のモーダルとして body 直下に置く。
+// タイマーカードの中に置くと、保存ボタンの sticky がカードの下端基準になり、
+// ページのスクロール位置しだいでボトムナビの下や画面外に入って押せなくなる。
+// （.card の backdrop-filter と #main-content の perspective が position:fixed の
+//   基準を奪うので、CSS だけでは画面基準にできない）
+function mountConfirmOverlay(overlay){
+  document.body.appendChild(overlay);
+}
+function removeConfirmOverlays(){
+  document.querySelectorAll('body > .timer-overlay').forEach(el => el.remove());
 }
 
 function pauseSW(){
@@ -3086,6 +3098,8 @@ function setRouteBusy(on) {
 }
 function renderRoute(p){
   currentRoute=p;
+  // 記録フォームは body 直下に出しているので、ページを離れるときは自分で片付ける
+  if (p !== '/study') removeConfirmOverlays();
   const h=routes[p]||routes['/'];
   // サイドバーの選択は各ページの renderSidebar が currentRoute から引くので、
   // ここでは描画を挟まない経路のために当て直すだけ
@@ -4176,6 +4190,7 @@ async function renderStudy(){
   // ここで一緒に描き、まだなら描画後に差し込む（ページの表示を待たせない）
   const studyPlanSync = cachedPlanSync();
 
+  removeConfirmOverlays();
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
     <div class="study-layout">
       <!-- Timer Main Card -->
@@ -4263,7 +4278,7 @@ async function renderStudy(){
 
         <!-- Confirmation Overlay -->
         ${isConfirmingLog ? `
-          <div class="timer-overlay animate-fade-in" style="position:absolute; inset:0; z-index:100; display:flex; flex-direction:column; align-items:center; justify-content:flex-start; overflow-y:auto; text-align:center;">
+          <div class="timer-overlay animate-fade-in">
             <div class="confirm-card animate-slide-up">
               <div class="celebration-icon" style="margin-bottom:var(--space-md);"><span style="font-size:2rem;color:var(--color-accent-teal)">${IC.check}</span></div>
               <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
@@ -4502,6 +4517,8 @@ async function renderStudy(){
       </div>
     </div>
     </div>`;
+  const confirmOverlay = ct.querySelector('.stopwatch-card .timer-overlay');
+  if (confirmOverlay) mountConfirmOverlay(confirmOverlay);
 
 
   // 上で描けていれば○✕を繋ぐだけ、まだなら裏で同期してから学習ログの上へ差し込む
