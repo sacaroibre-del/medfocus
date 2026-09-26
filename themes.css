@@ -1,0 +1,127 @@
+/* 自動生成ファイル: scripts/build-themes.mjs が書き出す。手で編集しない。 */
+
+/* Denim（デニム）/ クール — bg/text 8.73:1 */
+:root[data-theme="denim"] {
+  --color-bg: #CCE6FF;
+  --color-accent: #78AAE9;
+  --color-primary: #4574B7;
+  --color-text: #2D3B56;
+  --color-primary-2: #416AA6;
+  --color-primary-ink: #375D92;
+  --color-on-primary: #FFFFFF;
+  --color-surface: #E8F4FF;
+  --color-surface-2: #C1DAF3;
+  --color-text-muted: #4D5D78;
+  --color-text-subtle: #667993;
+  --color-success: #096B4B;
+  --color-warning: #7F5206;
+  --color-danger: #AC3131;
+  --color-violet: #6A46BB;
+  --color-orange: #95450D;
+  --color-info: #295BAC;
+}
+
+/* Fresh Green（若葉）/ ナチュラル — bg/text 7.62:1 */
+:root[data-theme="fresh-green"] {
+  --color-bg: #DCE1CF;
+  --color-accent: #B7E8A3;
+  --color-primary: #9ECF8A;
+  --color-text: #334258;
+  --color-primary-2: #AFD89F;
+  --color-primary-ink: #495F3F;
+  --color-on-primary: #334258;
+  --color-surface: #EFF2E9;
+  --color-surface-2: #D0D6C7;
+  --color-text-muted: #4E5B6B;
+  --color-text-subtle: #6C7880;
+  --color-success: #096848;
+  --color-warning: #7F5206;
+  --color-danger: #A73030;
+  --color-violet: #6744B6;
+  --color-orange: #95450D;
+  --color-info: #2858A7;
+}
+
+/* Rose Vase（薔薇）/ モダン・ロマンチック — bg/text 9.47:1 */
+:root[data-theme="rose-vase"] {
+  --color-bg: #FCECEB;
+  --color-accent: #FFCBC8;
+  --color-primary: #D38D8B;
+  --color-text: #333D54;
+  --color-primary-2: #DBA2A0;
+  --color-primary-ink: #875A59;
+  --color-on-primary: #2E374C;
+  --color-surface: #FEF6F6;
+  --color-surface-2: #EEE0E0;
+  --color-text-muted: #5F6475;
+  --color-text-subtle: #7F808D;
+  --color-success: #0A7350;
+  --color-warning: #895806;
+  --color-danger: #B63434;
+  --color-violet: #724BCA;
+  --color-orange: #A44C0F;
+  --color-info: #2D63BB;
+}
+
+/* Bamboo（竹林）/ ナチュラル・モダン — bg/text 11.63:1 */
+:root[data-theme="bamboo"] {
+  --color-bg: #D5DE69;
+  --color-accent: #9EB85D;
+  --color-primary: #60782C;
+  --color-text: #191F11;
+  --color-primary-2: #536827;
+  --color-primary-ink: #495B21;
+  --color-on-primary: #FFFFFF;
+  --color-surface: #ECF0BC;
+  --color-surface-2: #C8D163;
+  --color-text-muted: #51582B;
+  --color-text-subtle: #6C7338;
+  --color-success: #086043;
+  --color-warning: #764C05;
+  --color-danger: #992C2C;
+  --color-violet: #5F3FA7;
+  --color-orange: #863E0C;
+  --color-info: #26539D;
+}
+
+/* Garnet（ガーネット）/ モダン — bg/text 14.99:1 */
+:root[data-theme="garnet"] {
+  --color-bg: #F6F5F0;
+  --color-accent: #962141;
+  --color-primary: #48484A;
+  --color-text: #1F1F27;
+  --color-primary-2: #414144;
+  --color-primary-ink: #48484A;
+  --color-on-primary: #FFFFFF;
+  --color-surface: #FBFBF8;
+  --color-surface-2: #E7E6E2;
+  --color-text-muted: #646367;
+  --color-text-subtle: #828183;
+  --color-success: #0A7653;
+  --color-warning: #8E5C06;
+  --color-danger: #BA3535;
+  --color-violet: #754DCF;
+  --color-orange: #A44C0F;
+  --color-info: #2D63BB;
+}
+
+/* Navy Blazer（紺ブレザー）/ カジュアル — bg/text 7.91:1 */
+:root[data-theme="navy-blazer"] {
+  --color-bg: #C0B3A7;
+  --color-accent: #C99D43;
+  --color-primary: #343F7B;
+  --color-text: #212023;
+  --color-primary-2: #31396B;
+  --color-primary-ink: #313B74;
+  --color-on-primary: #FFFFFF;
+  --color-surface: #E3DDD7;
+  --color-surface-2: #B5A99E;
+  --color-text-muted: #413D3D;
+  --color-text-subtle: #5D5855;
+  --color-success: #064631;
+  --color-warning: #583904;
+  --color-danger: #732121;
+  --color-violet: #483080;
+  --color-orange: #693009;
+  --color-info: #1C3E76;
+}

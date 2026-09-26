@@ -1,0 +1,189 @@
+{
+  "$comment": "自動生成ファイル: scripts/build-themes.mjs が書き出す。手で編集しない。",
+  "source": "色彩101® (shikisai101.com) の4色配色パターンを参考",
+  "roleRule": "HSL 明度の降順に bg / accent / primary / text",
+  "themes": [
+    {
+      "id": "denim",
+      "name": "Denim",
+      "nameJa": "デニム",
+      "tags": [
+        "クール"
+      ],
+      "colors": [
+        "#CCE6FF",
+        "#78AAE9",
+        "#4574B7",
+        "#2D3B56"
+      ],
+      "roles": {
+        "bg": "#CCE6FF",
+        "accent": "#78AAE9",
+        "primary": "#4574B7",
+        "text": "#2D3B56"
+      },
+      "contrast": {
+        "bgText": 8.73,
+        "bgTextOriginal": 8.73,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 4.74,
+        "primaryInk": 4.64,
+        "textMuted": 4.63
+      },
+      "warnings": []
+    },
+    {
+      "id": "fresh-green",
+      "name": "Fresh Green",
+      "nameJa": "若葉",
+      "tags": [
+        "ナチュラル"
+      ],
+      "colors": [
+        "#DCE1CF",
+        "#B7E8A3",
+        "#9ECF8A",
+        "#334258"
+      ],
+      "roles": {
+        "bg": "#DCE1CF",
+        "accent": "#B7E8A3",
+        "primary": "#9ECF8A",
+        "text": "#334258"
+      },
+      "contrast": {
+        "bgText": 7.62,
+        "bgTextOriginal": 7.62,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 5.7,
+        "primaryInk": 4.72,
+        "textMuted": 4.66
+      },
+      "warnings": []
+    },
+    {
+      "id": "rose-vase",
+      "name": "Rose Vase",
+      "nameJa": "薔薇",
+      "tags": [
+        "モダン",
+        "ロマンチック"
+      ],
+      "colors": [
+        "#FCECEB",
+        "#FFCBC8",
+        "#D38D8B",
+        "#333D54"
+      ],
+      "roles": {
+        "bg": "#FCECEB",
+        "accent": "#FFCBC8",
+        "primary": "#D38D8B",
+        "text": "#333D54"
+      },
+      "contrast": {
+        "bgText": 9.47,
+        "bgTextOriginal": 9.47,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 4.5,
+        "primaryInk": 4.5,
+        "textMuted": 4.59
+      },
+      "warnings": []
+    },
+    {
+      "id": "bamboo",
+      "name": "Bamboo",
+      "nameJa": "竹林",
+      "tags": [
+        "ナチュラル",
+        "モダン"
+      ],
+      "colors": [
+        "#D5DE69",
+        "#9EB85D",
+        "#60782C",
+        "#191F11"
+      ],
+      "roles": {
+        "bg": "#D5DE69",
+        "accent": "#9EB85D",
+        "primary": "#60782C",
+        "text": "#191F11"
+      },
+      "contrast": {
+        "bgText": 11.63,
+        "bgTextOriginal": 11.63,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 4.98,
+        "primaryInk": 4.55,
+        "textMuted": 4.59
+      },
+      "warnings": []
+    },
+    {
+      "id": "garnet",
+      "name": "Garnet",
+      "nameJa": "ガーネット",
+      "tags": [
+        "モダン"
+      ],
+      "colors": [
+        "#F6F5F0",
+        "#962141",
+        "#48484A",
+        "#1F1F27"
+      ],
+      "roles": {
+        "bg": "#F6F5F0",
+        "accent": "#962141",
+        "primary": "#48484A",
+        "text": "#1F1F27"
+      },
+      "contrast": {
+        "bgText": 14.99,
+        "bgTextOriginal": 14.99,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 9.12,
+        "primaryInk": 7.31,
+        "textMuted": 4.77
+      },
+      "warnings": []
+    },
+    {
+      "id": "navy-blazer",
+      "name": "Navy Blazer",
+      "nameJa": "紺ブレザー",
+      "tags": [
+        "カジュアル"
+      ],
+      "colors": [
+        "#C0B3A7",
+        "#C99D43",
+        "#343F7B",
+        "#212023"
+      ],
+      "roles": {
+        "bg": "#C0B3A7",
+        "accent": "#C99D43",
+        "primary": "#343F7B",
+        "text": "#212023"
+      },
+      "contrast": {
+        "bgText": 7.91,
+        "bgTextOriginal": 7.91,
+        "passesAA": true,
+        "corrected": false,
+        "onPrimary": 9.8,
+        "primaryInk": 4.55,
+        "textMuted": 4.66
+      },
+      "warnings": []
+    }
+  ]
+}

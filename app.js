@@ -603,11 +603,12 @@ function saveDailySnapshot(dateKey, goalMinutes, actualMinutes) {
 }
 
 function getGoalRingColor(percent) {
-  if (percent >= 100) return '#10b981'; // Emerald green - achieved
-  if (percent >= 80) return '#ef4444';  // Red - heat
-  if (percent >= 60) return '#f59e0b';  // Amber - approaching goal
-  if (percent >= 30) return '#3b82f6';  // Blue - momentum
-  return '#64748b';                     // Slate gray - calm start
+  // CSS 変数で返す（テーマに追従させるため）。SVG では stroke 属性でなく style で使う
+  if (percent >= 100) return 'var(--color-success)'; // Emerald green - achieved
+  if (percent >= 80) return 'var(--color-danger)';   // Red - heat
+  if (percent >= 60) return 'var(--color-warning)';  // Amber - approaching goal
+  if (percent >= 30) return 'var(--color-info)';     // Blue - momentum
+  return 'var(--color-text-tertiary)';               // Slate gray - calm start
 }
 
 let examCountdowns = []; // Array of exam countdowns
@@ -838,7 +839,7 @@ function videoCountChip(log){
   // 版が記録されていればそれを見出しにする（未設定のログは今までどおり「動画」）
   const ed = log.video_edition;
   const label = isVideoEdition(ed) ? videoEditionShort(ed) : '動画';
-  const color = isVideoEdition(ed) ? videoEditionColor(ed) : '#8b5cf6';
+  const color = isVideoEdition(ed) ? videoEditionColor(ed) : 'var(--color-violet)';
   return `<span class="qb-count-chip" style="--chip-color:${color}">${label} ${Number(n)}本</span>`;
 }
 
@@ -948,13 +949,13 @@ function syncVideoCountFields(suffix){
   const now = parseInt(inp.value, 10);
   if (!Number.isFinite(now)) { dEl.textContent = '—'; dEl.style.color = ''; noteEl.textContent = `${edLabel}の現在 ${before}本`; return; }
   if (vp.total > 0 && now > vp.total) {
-    dEl.textContent = '登録本数を超過'; dEl.style.color = '#ef4444';
+    dEl.textContent = '登録本数を超過'; dEl.style.color = 'var(--color-danger)';
     noteEl.textContent = `${edLabel}の現在 ${before}本 / 登録 ${vp.total}本`;
     return;
   }
   const diff = now - before;
   dEl.textContent = diff === 0 ? '±0' : (diff > 0 ? '+' + diff : String(diff));
-  dEl.style.color = diff > 0 ? '#10b981' : (diff < 0 ? '#f59e0b' : 'var(--color-text-tertiary)');
+  dEl.style.color = diff > 0 ? 'var(--color-success)' : (diff < 0 ? 'var(--color-warning)' : 'var(--color-text-tertiary)');
   noteEl.textContent = `保存すると${edLabel}の教材進捗を ${before} → ${now}本 に更新します`;
 }
 
@@ -1087,7 +1088,7 @@ function syncQbCountFields(suffix){
   const c = parseInt(cEl.value, 10);
   if (!Number.isFinite(s) || s <= 0 || !Number.isFinite(c)) { aEl.textContent = '—'; aEl.style.color = ''; return; }
   // 正解数が問題数を超えていたら黙って直さず、その場で赤く知らせる
-  if (c > s) { aEl.textContent = '正解数が多すぎます'; aEl.style.color = '#ef4444'; return; }
+  if (c > s) { aEl.textContent = '正解数が多すぎます'; aEl.style.color = 'var(--color-danger)'; return; }
   const pct = (c / s) * 100;
   aEl.textContent = pct.toFixed(0) + '%';
   aEl.style.color = accColor(pct);
@@ -1154,25 +1155,152 @@ const subjectProgress = [];
 const studyLogs = [];
 
 // ==================== THEME ====================
+// ダーク/ライトの切り替え（isDark）と、色彩101 の配色テーマ（public/theme.js の MedFocusTheme）の2段構え。
+// 配色テーマはどれも明るい背景なので、選んでいる間はライトモード用の上書きを有効にする。
+// isDark の保存値はそのまま残し、「デフォルト」に戻したときに元のダーク/ライトへ戻す。
+// theme.js は <head> で読むが、テスト（jsdom で eval）では無いので、無くても動くようにしておく。
 let isDark = localStorage.getItem('medfocus-theme') !== 'light';
+function colorThemeApi(){ return (typeof window !== 'undefined' && window.MedFocusTheme) || null; }
+function isPaletteTheme(){ const t = colorThemeApi(); return !!(t && t.isPalette()); }
+
+// CSS 変数（color-mix を含む）を Chart.js が読める rgba() に解決する。
+// getComputedStyle は color-mix を color(srgb …) で返すことがあり Chart.js が解釈できないため、
+// 1px のキャンバスに塗って画素を読む。
+let _colorProbe = null;
+function resolveCssColor(expr, fallback){
+  try {
+    if (typeof document === 'undefined' || !document.body) return fallback;
+    if (!_colorProbe) {
+      _colorProbe = { el: document.createElement('span'), canvas: document.createElement('canvas') };
+      _colorProbe.el.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+      _colorProbe.canvas.width = _colorProbe.canvas.height = 1;
+    }
+    const { el, canvas } = _colorProbe;
+    el.style.color = '';
+    el.style.color = expr;
+    if (!el.style.color) return fallback;
+    document.body.appendChild(el);
+    const computed = getComputedStyle(el).color;
+    el.remove();
+    const ctx = canvas.getContext && canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return computed || fallback;
+    ctx.clearRect(0, 0, 1, 1);
+    ctx.fillStyle = computed;
+    ctx.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = ctx.getImageData(0, 0, 1, 1).data;
+    return `rgba(${r},${g},${b},${Math.round(a / 255 * 1000) / 1000})`;
+  } catch (e) { return fallback; }
+}
+// グラフの色。テーマの変数から毎回解決する（テーマを切り替えたら次の描画で追従する）
+function chartColor(name, fallback){ return resolveCssColor(`var(--color-${name})`, fallback); }
+function chartAlpha(name, pct, fallback){ return resolveCssColor(`color-mix(in srgb, var(--color-${name}) ${pct}%, transparent)`, fallback); }
+// Chart.js の共通の配色（文字・罫線）とツールチップ。テーマに合わせて毎回解決する
+function applyChartThemeDefaults(){
+  if (typeof Chart === 'undefined') return;
+  Chart.defaults.color = chartColor('text-secondary', '#94a3b8');
+  Chart.defaults.borderColor = chartAlpha('text-secondary', 15, 'rgba(148,163,184,0.12)');
+}
+function chartTooltipTheme(){
+  return {
+    backgroundColor: chartColor('bg-secondary', '#1a2332'),
+    titleColor: chartColor('text-primary', '#f0f4f8'),
+    bodyColor: chartColor('text-secondary', '#94a3b8'),
+    borderColor: chartAlpha('primary', 30, 'rgba(78,205,196,0.3)'),
+    borderWidth: 1, cornerRadius: 8,
+  };
+}
+// 棒グラフの縦グラデーション（主要色 → アクセント）
+function chartBarGradient(context, fromPct = 40){
+  const { ctx: c, chartArea } = context.chart;
+  if (!chartArea) return chartColor('primary', '#4ECDC4');
+  const g = c.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
+  g.addColorStop(0, chartAlpha('primary', fromPct, 'rgba(78,205,196,0.4)'));
+  g.addColorStop(1, chartAlpha('accent', 80, 'rgba(69,183,209,0.8)'));
+  return g;
+}
+
 function applyTheme(){
-  if(isDark){ document.documentElement.classList.remove('light'); }
-  else { document.documentElement.classList.add('light'); }
-  
+  document.documentElement.classList.toggle('light', !isDark || isPaletteTheme());
+
   try {
     localStorage.setItem('medfocus-theme', isDark ? 'dark' : 'light');
   } catch(e) { console.warn('localStorage not available', e); }
 
   // Update Chart.js defaults
-  if (typeof Chart !== 'undefined') {
-    const textColor = isDark ? '#94a3b8' : '#3d6380';
-    const borderColor = isDark ? 'rgba(148,163,184,0.12)' : 'rgba(43,181,171,0.15)';
-    Chart.defaults.color = textColor;
-    Chart.defaults.borderColor = borderColor;
-  }
+  applyChartThemeDefaults();
+  // スマホのステータスバーの色
+  const meta = typeof document !== 'undefined' && document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', resolveCssColor('var(--color-bg-primary)', '#4ecdc4'));
 }
 function toggleTheme(){ isDark = !isDark; applyTheme(); renderSidebar(); }
+// 配色テーマの切り替え。選んだテーマは theme.js が localStorage に保存し、次回は <head> で復元される
+function setColorTheme(id){
+  const t = colorThemeApi();
+  if (!t) return;
+  t.apply(id);
+  applyTheme();
+  t.verify(t.current());
+  // グラフなど描画時に色を焼き込んでいる部分もあるので、いまのページを描き直す
+  if (typeof currentRoute !== 'undefined' && routes[currentRoute]) renderRoute(currentRoute);
+  else renderSidebar();
+}
 applyTheme();
+
+// ==================== カラーテーマ選択 UI ====================
+// 各テーマ名の横に4色のミニチップ（明るい順: 背景・アクセント・主要色・文字色）を出す。
+// 設定ページはスウォッチ一覧、PC のサイドバーはドロップダウンで同じ部品を使う。
+const DEFAULT_THEME_CHIPS = {
+  dark:  ['#0a1120', '#3b82f6', '#4ecdc4', '#f9fafb'],
+  light: ['#f8fafc', '#3b82f6', '#4ecdc4', '#0f172a'],
+};
+function colorThemeOptions(){
+  const t = colorThemeApi();
+  const def = { id: 'default', name: 'Default', nameJa: 'デフォルト', tags: [isDark ? 'ダーク' : 'ライト'], chips: DEFAULT_THEME_CHIPS[isDark ? 'dark' : 'light'] };
+  return t ? [def, ...t.themes] : [def];
+}
+function currentColorThemeId(){ const t = colorThemeApi(); return t ? t.current() : 'default'; }
+function themeChipsHtml(chips){
+  return `<span class="theme-chips" aria-hidden="true">${chips.map(c => `<i style="background:${c}"></i>`).join('')}</span>`;
+}
+function themeSwatchListHtml(variant){
+  const cur = currentColorThemeId();
+  return `<div class="theme-swatch-list ${variant === 'menu' ? 'is-menu' : ''}" role="radiogroup" aria-label="カラーテーマ">${colorThemeOptions().map(o => `
+    <button type="button" class="theme-swatch ${o.id === cur ? 'active' : ''}" role="radio" aria-checked="${o.id === cur}" data-color-theme="${o.id}">
+      ${themeChipsHtml(o.chips)}
+      <span class="theme-swatch-text">
+        <span class="theme-swatch-name">${esc(o.nameJa)}</span>
+        <span class="theme-swatch-sub">${esc(o.name)} / ${esc(o.tags.join('・'))}</span>
+      </span>
+      <span class="theme-swatch-check" aria-hidden="true">${IC._s('<polyline points="20 6 9 17 4 12"/>')}</span>
+    </button>`).join('')}</div>`;
+}
+// デフォルトテーマのときだけダーク/ライトを選べる。配色テーマはどれも明るい背景なので案内だけ出す
+function themeModeRowHtml(){
+  if (isPaletteTheme()) {
+    return `<span class="theme-mode-label">配色テーマは明るい背景で表示します。ダークモードは「デフォルト」で使えます。</span>`;
+  }
+  return `<span class="theme-mode-label">${isDark ? 'ダークモード' : 'ライトモード'}</span><button class="theme-toggle" id="theme-btn-settings" title="ダーク/ライト切り替え"></button>`;
+}
+// opts.rerender=false のときはページを描き直さず、選択状態だけ更新する（設定ページの入力途中の値を消さないため）
+function bindThemePicker(root, opts = {}){
+  root.querySelectorAll('[data-color-theme]').forEach(btn => btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const id = btn.dataset.colorTheme;
+    if (opts.rerender === false) {
+      const t = colorThemeApi();
+      if (t) { t.apply(id); applyTheme(); t.verify(t.current()); }
+      root.querySelectorAll('[data-color-theme]').forEach(b => {
+        const on = b.dataset.colorTheme === id;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', String(on));
+      });
+      renderSidebar();
+      if (opts.onChange) opts.onChange(id);
+    } else {
+      setColorTheme(id);
+    }
+  }));
+}
 
 // ==================== カードの折りたたみ ====================
 // 学習記録ページの長いカード（学習ログ、QB × 学習分析）を畳めるようにする。
@@ -1253,8 +1381,7 @@ const chartInstances = {};
 function destroyChart(id){if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];}}
 function destroyAllCharts(){Object.keys(chartInstances).forEach(destroyChart);}
 if (typeof Chart !== 'undefined') {
-  Chart.defaults.color='#94a3b8';
-  Chart.defaults.borderColor='rgba(148,163,184,0.12)';
+  applyChartThemeDefaults();
   Chart.defaults.font.family="'Inter','Noto Sans JP',sans-serif";
 } else {
   console.warn('DEBUG: Chart.js not loaded. Charts will be skipped.');
@@ -1818,8 +1945,7 @@ document.addEventListener("visibilitychange", () => {
 
 
 if (typeof Chart !== 'undefined') {
-  Chart.defaults.color='#94a3b8';
-  Chart.defaults.borderColor='rgba(148,163,184,0.12)';
+  applyChartThemeDefaults();
   Chart.defaults.font.family="'Inter','Noto Sans JP',sans-serif";
 }
 
@@ -1829,13 +1955,12 @@ function createRadarChart(canvasId,labels,data){
   destroyChart(canvasId);const ctx=document.getElementById(canvasId);if(!ctx)return;
   try {
     chartInstances[canvasId]=new Chart(ctx,{type:'radar',data:{labels,datasets:[{label:'進捗率',data,
-      backgroundColor:'rgba(78,205,196,0.15)',borderColor:'#4ECDC4',borderWidth:2,
-      pointBackgroundColor:'#4ECDC4',pointBorderColor:'#0a0e1a',pointBorderWidth:2,pointRadius:5}]},
+      backgroundColor:chartAlpha('primary',15,'rgba(78,205,196,0.15)'),borderColor:chartColor('primary','#4ECDC4'),borderWidth:2,
+      pointBackgroundColor:chartColor('primary','#4ECDC4'),pointBorderColor:chartColor('bg-primary','#0a0e1a'),pointBorderWidth:2,pointRadius:5}]},
     options:{responsive:true,maintainAspectRatio:true,scales:{r:{beginAtZero:true,max:100,ticks:{stepSize:20,display:false},
-      grid:{color:'rgba(148,163,184,0.08)'},angleLines:{color:'rgba(148,163,184,0.08)'},
-      pointLabels:{font:{size:11,weight:'500'},color:'#94a3b8'}}},
-    plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',
-      borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8,callbacks:{label:c=>`${c.raw}%`}}},
+      grid:{color:chartAlpha('text-secondary',8,'rgba(148,163,184,0.08)')},angleLines:{color:chartAlpha('text-secondary',8,'rgba(148,163,184,0.08)')},
+      pointLabels:{font:{size:11,weight:'500'},color:chartColor('text-secondary','#94a3b8')}}},
+    plugins:{legend:{display:false},tooltip:{...chartTooltipTheme(),callbacks:{label:c=>`${c.raw}%`}}},
     animation:{duration:1000,easing:'easeOutQuart'}}});
   } catch(e) { console.error('DEBUG: Chart.js createRadarChart error:', e); }
 }
@@ -1845,13 +1970,10 @@ function createBarChart(canvasId,labels,data){
   destroyChart(canvasId);const ctx=document.getElementById(canvasId);if(!ctx)return;
   try {
     chartInstances[canvasId]=new Chart(ctx,{type:'bar',data:{labels,datasets:[{label:'勉強時間(分)',data,
-      backgroundColor:(context)=>{
-        const{ctx:c,chartArea}=context.chart;if(!chartArea)return'#4ECDC4';
-        const g=c.createLinearGradient(0,chartArea.bottom,0,chartArea.top);
-        g.addColorStop(0,'rgba(78,205,196,0.4)');g.addColorStop(1,'rgba(69,183,209,0.8)');return g;},
+      backgroundColor:(context)=>chartBarGradient(context),
       borderRadius:6,borderSkipped:false,maxBarThickness:40}]},
-    options:{responsive:true,maintainAspectRatio:true,scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.06)'}}},
-    plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2332',titleColor:'#f0f4f8',bodyColor:'#94a3b8',borderColor:'rgba(78,205,196,0.3)',borderWidth:1,cornerRadius:8}},
+    options:{responsive:true,maintainAspectRatio:true,scales:{x:{grid:{display:false}},y:{beginAtZero:true,grid: { color: chartAlpha('text-secondary', 6, 'rgba(148,163,184,0.06)') }}},
+    plugins:{legend:{display:false},tooltip:chartTooltipTheme()},
     animation:{duration:800,easing:'easeOutQuart'}}});
   } catch(e) { console.error('DEBUG: Chart.js createBarChart error:', e); }
 }
@@ -2575,7 +2697,7 @@ function renderLogin(){
     <div class="auth-container" style="width:100%; height:100%; display:flex; align-items:center; justify-content:center; padding: 20px;">
       <div class="auth-card" style="width:100%; max-width:400px; padding: 32px; border-radius: 20px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); background: var(--color-bg-card);">
         <div class="auth-header" style="text-align:center; margin-bottom:24px;">
-          <div class="auth-logo" style="width:48px; height:48px; background:var(--gradient-primary); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.5rem; font-weight:800; color:#0e1525; margin:0 auto 16px;">M</div>
+          <div class="auth-logo" style="width:48px; height:48px; background:var(--gradient-primary); border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:1.5rem; font-weight:800; color:var(--color-on-primary); margin:0 auto 16px;">M</div>
           <h1 class="auth-title" style="font-size:1.5rem; font-weight:700; margin-bottom:8px;">MedFocus</h1>
           <p class="auth-subtitle" style="font-size:0.9rem; color:var(--color-text-secondary);">自分に合った方法で始めましょう</p>
         </div>
@@ -2611,14 +2733,14 @@ function renderLogin(){
           </div>
         </form>
         
-        <div id="id-announcement" style="display:none; margin-top:20px; padding:16px; background:rgba(78,205,196,0.1); border:1px dashed var(--color-accent-teal); border-radius:12px; text-align:center;">
+        <div id="id-announcement" style="display:none; margin-top:20px; padding:16px; background:color-mix(in srgb, var(--color-primary) 10%, transparent); border:1px dashed var(--color-accent-teal); border-radius:12px; text-align:center;">
           <p style="font-size:0.8rem; color:var(--color-text-secondary); margin-bottom:8px;">あなたのログインIDを発行しました：</p>
           <div id="generated-id-display" style="font-size:1.4rem; font-weight:800; color:var(--color-accent-teal); font-family:monospace; margin-bottom:12px;"></div>
           <p style="font-size:0.75rem; color:var(--color-accent-pink);">⚠️ このIDは忘れないようにメモしてください！</p>
           <button id="btn-start-after-id" class="btn btn-primary" style="margin-top:16px; width:100%; justify-content:center;">スタートする</button>
         </div>
 
-        <div id="rescue-section" style="display:none; margin-top:20px; padding:16px; background:rgba(241,148,138,0.1); border:1px solid rgba(241,148,138,0.2); border-radius:12px;">
+        <div id="rescue-section" style="display:none; margin-top:20px; padding:16px; background:color-mix(in srgb, var(--color-danger) 10%, transparent); border:1px solid color-mix(in srgb, var(--color-danger) 20%, transparent); border-radius:12px;">
           <p style="font-size:0.85rem; font-weight:600; margin-bottom:12px; color:var(--color-accent-pink);">${IC._s('<circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>')} IDを検索・復旧する</p>
           <div style="display:flex; gap:8px;">
             <input type="text" id="rescue-name" placeholder="以前使っていたお名前" style="flex:1; font-size:0.85rem;" />
@@ -3038,7 +3160,20 @@ function renderSidebar(){
 
   sb.innerHTML=`<div class="sidebar-header"><div class="sidebar-logo"><div class="sidebar-logo-icon">M</div><span class="sidebar-logo-text">MedFocus</span></div></div>
     <nav class="sidebar-nav">${navHtml}</nav>
-    <div class="sidebar-theme-row"><span class="sidebar-theme-label">${themeIcon} ${themeLabel}</span><button class="theme-toggle" id="theme-btn" title="テーマ切り替え"></button></div>
+    <div class="sidebar-theme-row">
+      ${isPaletteTheme()
+        ? `<span class="sidebar-theme-label">${IC._s('<circle cx="13.5" cy="6.5" r="1.5"/><circle cx="17.5" cy="10.5" r="1.5"/><circle cx="8.5" cy="7.5" r="1.5"/><circle cx="6.5" cy="12.5" r="1.5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.8 1.7-1.7 0-.4-.2-.8-.4-1.1-.3-.3-.4-.7-.4-1.1 0-.9.8-1.7 1.7-1.7H16c3.1 0 5.6-2.5 5.6-5.6C21.9 6.2 17.5 2 12 2z"/>')} ${esc((colorThemeApi().find(currentColorThemeId()) || {}).nameJa || '')}</span>`
+        : `<span class="sidebar-theme-label">${themeIcon} ${themeLabel}</span><button class="theme-toggle" id="theme-btn" title="ダーク/ライト切り替え"></button>`}
+      <div class="theme-menu" id="theme-menu">
+        <button type="button" class="theme-menu-btn" id="theme-menu-btn" aria-haspopup="true" aria-expanded="false" title="カラーテーマを選ぶ">
+          ${themeChipsHtml((colorThemeOptions().find(o => o.id === currentColorThemeId()) || colorThemeOptions()[0]).chips)}
+        </button>
+        <div class="theme-menu-pop" role="menu">
+          <div class="theme-menu-title">カラーテーマ</div>
+          ${themeSwatchListHtml('menu')}
+        </div>
+      </div>
+    </div>
     <div class="sidebar-profile" id="logout-btn" title="クリックでログアウト" style="cursor:pointer">
       ${avatarHtml}
       <div class="sidebar-profile-info">
@@ -3058,12 +3193,21 @@ function renderSidebar(){
       btn.setAttribute('aria-expanded', String(open));
     });
   });
-  document.getElementById('theme-btn').addEventListener('click', toggleTheme);
+  document.getElementById('theme-btn')?.addEventListener('click', toggleTheme);
+  const themeMenu = document.getElementById('theme-menu');
+  document.getElementById('theme-menu-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    const open = !themeMenu.classList.contains('open');
+    themeMenu.classList.toggle('open', open);
+    e.currentTarget.setAttribute('aria-expanded', String(open));
+  });
+  bindThemePicker(themeMenu);
   document.getElementById('logout-btn').addEventListener('click', () => { if(confirm('ログアウトしますか？')) handleLogout(); });
 }
 
 // ドック外をタップしたら「その他」のポップオーバーを閉じる
 document.addEventListener('click', e => {
+  if (!e.target.closest('#theme-menu')) document.getElementById('theme-menu')?.classList.remove('open');
   if (e.target.closest('.nav-group')) return;
   document.querySelectorAll('#sidebar .nav-group.open').forEach(g => {
     g.classList.remove('open');
@@ -3140,20 +3284,13 @@ function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLab
         datasets: [
           {
             type: 'bar', label: barLabel || '実績(分)', data: barData,
-            backgroundColor: (context) => {
-              const { ctx: c, chartArea } = context.chart;
-              if (!chartArea) return '#4ECDC4';
-              const g = c.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
-              g.addColorStop(0, 'rgba(78,205,196,0.4)');
-              g.addColorStop(1, 'rgba(69,183,209,0.8)');
-              return g;
-            },
+            backgroundColor: (context) => chartBarGradient(context),
             borderRadius: 6, borderSkipped: false, maxBarThickness: 40, order: 2
           },
           {
             type: 'line', label: lineLabel || '目標(分)', data: lineData,
-            borderColor: '#f59e0b', borderWidth: 2, borderDash: [6, 3],
-            pointBackgroundColor: '#f59e0b', pointRadius: 3,
+            borderColor: chartColor('warning', '#f59e0b'), borderWidth: 2, borderDash: [6, 3],
+            pointBackgroundColor: chartColor('warning', '#f59e0b'), pointRadius: 3,
             fill: false, tension: 0.1, order: 1
           }
         ]
@@ -3162,14 +3299,11 @@ function createMixedChart(canvasId, labels, barData, lineData, barLabel, lineLab
         responsive: true, maintainAspectRatio: true,
         scales: {
           x: { grid: { display: false } },
-          y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' } }
+          y: { beginAtZero: true, grid: { color: chartAlpha('text-secondary', 6, 'rgba(148,163,184,0.06)') } }
         },
         plugins: {
           legend: { display: true, labels: { boxWidth: 12, padding: 16, font: { size: 11 } } },
-          tooltip: {
-            backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8',
-            borderColor: 'rgba(78,205,196,0.3)', borderWidth: 1, cornerRadius: 8
-          }
+          tooltip: chartTooltipTheme()
         },
         animation: { duration: 800, easing: 'easeOutQuart' }
       }
@@ -3458,7 +3592,7 @@ async function renderDashboard(){
         const todayEntry = getSleepLogForDate(toLocalDateKey(logicalToday));
         const showAllNighter = todayEntry && todayEntry.wake_up && !todayEntry.bedtime;
         return showAllNighter
-          ? `<button class="sleep-toggle-btn" id="sleep-allnighter-btn" style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;font-size:0.8rem;padding:8px 14px;">
+          ? `<button class="sleep-toggle-btn" id="sleep-allnighter-btn" style="background:color-mix(in srgb, var(--color-violet) 15%, transparent);border:1px solid color-mix(in srgb, var(--color-violet) 30%, transparent);color:var(--color-violet-ink);font-size:0.8rem;padding:8px 14px;">
               <span style="font-size:1.1rem;">🌙</span>
               <span style="font-size:0.8rem;">徹夜</span>
             </button>`
@@ -3473,7 +3607,7 @@ async function renderDashboard(){
           const prevEntry = getSleepLogForDate(toLocalDateKey(prevDate));
 
           if (todayEntry && isAllNighter(todayEntry)) {
-            return `${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 起床 ${todayEntry.wake_up || '--:--'} <span style="color:#a5b4fc;font-size:0.75rem;">（徹夜 0h）</span>`;
+            return `${IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>')} 起床 ${todayEntry.wake_up || '--:--'} <span style="color:var(--color-violet-ink);font-size:0.75rem;">（徹夜 0h）</span>`;
           }
           if (todayEntry && todayEntry.wake_up) {
             return `起床 ${todayEntry.wake_up}${todayEntry.bedtime ? ' / 就寝 ' + todayEntry.bedtime : ''}`;
@@ -3496,9 +3630,9 @@ async function renderDashboard(){
         <svg viewBox="0 0 240 240">
           <circle class="goal-ring-bg" cx="120" cy="120" r="${radius}"/>
           <circle class="goal-ring-glow" cx="120" cy="120" r="${radius}"
-            stroke="${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="goal-ring-glow"/>
+            style="stroke:${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="goal-ring-glow"/>
           <circle class="goal-ring-progress" cx="120" cy="120" r="${radius}"
-            stroke="${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="goal-ring-arc"/>
+            style="stroke:${ringColor}" stroke-dasharray="${circ}" stroke-dashoffset="${circ}" id="goal-ring-arc"/>
         </svg>
         <div class="goal-ring-text">
           <div class="goal-ring-current" style="color:${ringColor}">${todayH}h</div>
@@ -3543,7 +3677,7 @@ async function renderDashboard(){
           </div>
           <div class="pacer-stat">
             <div class="pacer-stat-label">直近7日の実績</div>
-            <div class="pacer-stat-value" style="color:${pacer.pace.perDay === null ? 'var(--color-text-tertiary)' : (pacer.pace.perDay >= pacer.requiredPerDay ? '#10b981' : '#ef4444')}">${pacer.pace.perDay === null ? '--' : Math.round(pacer.pace.perDay)}<span class="acc-unit">${pacer.pace.perDay === null ? '' : '問/日'}</span></div>
+            <div class="pacer-stat-value" style="color:${pacer.pace.perDay === null ? 'var(--color-text-tertiary)' : (pacer.pace.perDay >= pacer.requiredPerDay ? 'var(--color-success)' : 'var(--color-danger)')}">${pacer.pace.perDay === null ? '--' : Math.round(pacer.pace.perDay)}<span class="acc-unit">${pacer.pace.perDay === null ? '' : '問/日'}</span></div>
             <div class="pacer-stat-sub">${pacer.pace.perDay === null ? '記録が貯まると表示' : (pacer.pace.perDay >= pacer.requiredPerDay ? '必要ペースを満たしています' : `不足 ${Math.ceil(pacer.requiredPerDay - pacer.pace.perDay)}問/日`)}</div>
           </div>
           <div class="pacer-stat">
@@ -3572,9 +3706,9 @@ async function renderDashboard(){
             : `${pacer.video.remaining}本 残っています（1日 ${Math.ceil(pacer.video.requiredPerDay * 10) / 10}本）。`
         }${
           pacer.video.pace.minPerDay !== null && pacer.video.requiredMinPerDay !== null
-            ? `直近7日は 1日 <strong style="color:${pacer.video.pace.minPerDay >= pacer.video.requiredMinPerDay ? '#10b981' : '#ef4444'}">${formatMinutes(Math.round(pacer.video.pace.minPerDay))}</strong> のペースです。`
+            ? `直近7日は 1日 <strong style="color:${pacer.video.pace.minPerDay >= pacer.video.requiredMinPerDay ? 'var(--color-success)' : 'var(--color-danger)'}">${formatMinutes(Math.round(pacer.video.pace.minPerDay))}</strong> のペースです。`
             : (pacer.video.pace.perDay !== null
-                ? `直近7日は 1日 <strong style="color:${pacer.video.pace.perDay >= pacer.video.requiredPerDay ? '#10b981' : '#ef4444'}">${(Math.round(pacer.video.pace.perDay * 10) / 10)}本</strong> のペースです。`
+                ? `直近7日は 1日 <strong style="color:${pacer.video.pace.perDay >= pacer.video.requiredPerDay ? 'var(--color-success)' : 'var(--color-danger)'}">${(Math.round(pacer.video.pace.perDay * 10) / 10)}本</strong> のペースです。`
                 : '')
         }見ていない範囲はQBに進めないので、実際の必要ペースはこれより厳しくなります。</div>` : ''}
       `}
@@ -3920,7 +4054,7 @@ async function renderDashboard(){
             <button class="btn btn-primary" id="btn-save-sleep-edit" style="flex:1;">
               記録を保存する
             </button>
-            <button class="btn" id="btn-allnighter-sleep-edit" style="background:rgba(99,102,241,0.15);border:1px solid rgba(99,102,241,0.3);color:#a5b4fc;padding:8px 16px;border-radius:8px;font-size:0.85rem;white-space:nowrap;">
+            <button class="btn" id="btn-allnighter-sleep-edit" style="background:color-mix(in srgb, var(--color-violet) 15%, transparent);border:1px solid color-mix(in srgb, var(--color-violet) 30%, transparent);color:var(--color-violet-ink);padding:8px 16px;border-radius:8px;font-size:0.85rem;white-space:nowrap;">
               🌙 徹夜
             </button>
           </div>
@@ -3952,7 +4086,7 @@ async function renderDashboard(){
       const allNighterBtn = modal.querySelector('#btn-allnighter-sleep-edit');
       if (allNighterBtn) {
         const isAN = isAllNighter(entry);
-        allNighterBtn.style.background = isAN ? 'rgba(99,102,241,0.4)' : 'rgba(99,102,241,0.15)';
+        allNighterBtn.style.background = isAN ? 'color-mix(in srgb, var(--color-violet) 40%, transparent)' : 'color-mix(in srgb, var(--color-violet) 15%, transparent)';
         allNighterBtn.textContent = isAN ? '🌙 徹夜記録済み' : '🌙 徹夜';
       }
     };
@@ -3971,7 +4105,7 @@ async function renderDashboard(){
             <span class="sleep-history-date">${log.date}</span>
             <span class="sleep-history-times" style="margin-left:8px;">
               ${isAllNighter(log)
-                ? `起床: ${log.wake_up || '--:--'} / <span style="color:#a5b4fc;">🌙 徹夜(0h)</span>`
+                ? `起床: ${log.wake_up || '--:--'} / <span style="color:var(--color-violet-ink);">🌙 徹夜(0h)</span>`
                 : `起床: ${log.wake_up || '--:--'} / 就寝: ${log.bedtime || '--:--'}`
               }
             </span>
@@ -4203,7 +4337,7 @@ async function renderStudy(){
           <button class="mode-tab ${isSimulation?'active':''}" id="mode-simulation">本番模試</button>
         </div>
 
-        <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stop-color="#4ECDC4"/><stop offset="100%" stop-color="#45B7D1"/></linearGradient></defs></svg>
+        <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" style="stop-color:var(--color-primary)"/><stop offset="100%" style="stop-color:var(--color-accent)"/></linearGradient></defs></svg>
         <div class="stopwatch-subject-selector">
           <select id="study-subject">
             <option value="">-- 科目を選択 --</option>
@@ -4216,7 +4350,7 @@ async function renderStudy(){
         </div>
         
         <!-- Action Buttons -->
-        <div class="action-buttons-container" style="position:absolute; top:16px; right:16px; display:flex; gap:8px; z-index:10; background:rgba(148,163,184,0.1); padding:4px; border-radius:24px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);">
+        <div class="action-buttons-container" style="position:absolute; top:16px; right:16px; display:flex; gap:8px; z-index:10; background:color-mix(in srgb, var(--color-text-secondary) 10%, transparent); padding:4px; border-radius:24px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);">
           <!-- Sound Toggle Button -->
           <button id="btn-sound-toggle" class="stopwatch-btn" title="通知音のON/OFF" style="font-size:1.1rem; background:transparent; width:36px; height:36px; border-radius:50%; display:flex; align-items:center; justify-content:center;">
             ${localStorage.getItem('medfocus_sound') !== 'false' ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>' : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5L6 9H2v6h4l5 4V5z"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>'}
@@ -4474,7 +4608,7 @@ async function renderStudy(){
 
     <!-- QB × 学習分析: 通常は全幅。学習ログを畳んだときは右カラムでタイマーの横に上がる（CSS 側で制御） -->
     <div class="study-check-card card animate-slide-up ${isCardCollapsed('study-qb') ? 'is-collapsed' : ''}" style="animation-delay:.2s;">
-      <div class="card-header" style="border-bottom:1px solid rgba(148,163,184,0.1);padding-bottom:var(--space-sm);">
+      <div class="card-header" style="border-bottom:1px solid color-mix(in srgb, var(--color-text-secondary) 10%, transparent);padding-bottom:var(--space-sm);">
         <div class="card-title">${IC.stats}QB × 学習分析 ${cardCollapseBtnHTML('study-qb')}</div>
       </div>
       <div style="padding:var(--space-md);">
@@ -4495,19 +4629,19 @@ async function renderStudy(){
           }).filter(Boolean).sort((a,b)=>b.studyMin-a.studyMin);
           if(rows.length===0)return'<div style="text-align:center;padding:var(--space-lg);color:var(--color-text-tertiary);font-size:0.9rem;">学習記録またはQB進捗を登録すると分析が表示されます</div>';
           return rows.map(r=>`
-            <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(148,163,184,0.06);">
+            <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid color-mix(in srgb, var(--color-text-secondary) 6%, transparent);">
               <div>
                 <div style="font-weight:600;font-size:0.9rem;margin-bottom:4px;">${r.name}</div>
                 <div style="display:flex;gap:12px;flex-wrap:wrap;">
                   <span style="font-size:0.75rem;color:var(--color-text-tertiary);">${IC.timer} ${formatMinutes(r.studyMin)}</span>
                   ${r.total>0?`<span style="font-size:0.75rem;color:var(--color-text-tertiary);">${IC.list} ${r.done}/${r.total}問</span>
-                  <span style="font-size:0.75rem;color:${r.acc>=80?'#10b981':r.acc>=60?'#f59e0b':'#ef4444'};">正答率 ${r.acc}%</span>`:''}
+                  <span style="font-size:0.75rem;color:${r.acc>=80?'var(--color-success)':r.acc>=60?'var(--color-warning)':'var(--color-danger)'};">正答率 ${r.acc}%</span>`:''}
                 </div>
               </div>
               <div style="width:52px;height:52px;position:relative;">
                 <svg viewBox="0 0 36 36" style="width:52px;height:52px;transform:rotate(-90deg);">
                   <circle cx="18" cy="18" r="14" fill="none" stroke="var(--color-bg-elevated)" stroke-width="3"/>
-                  <circle cx="18" cy="18" r="14" fill="none" stroke="${r.pct>=80?'#10b981':r.pct>=50?'#f59e0b':'#4ecdc4'}" stroke-width="3" stroke-dasharray="${r.pct*0.88} 88" stroke-linecap="round"/>
+                  <circle cx="18" cy="18" r="14" fill="none" style="stroke:${r.pct>=80?'var(--color-success)':r.pct>=50?'var(--color-warning)':'var(--color-primary)'}" stroke-width="3" stroke-dasharray="${r.pct*0.88} 88" stroke-linecap="round"/>
                 </svg>
                 <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:0.65rem;font-weight:700;">${r.pct}%</div>
               </div>
@@ -5017,7 +5151,7 @@ async function renderCountdown() {
           const dt = new Date(e.exam_date).toLocaleDateString('ja-JP', {year:'numeric',month:'long',day:'numeric'});
           const isPast = d === 0 && new Date(e.exam_date) < new Date();
           return `<div class="countdown-card animate-slide-up" style="position:relative">
-            <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${isPast ? 'var(--color-text-tertiary)' : (e.color||'#4ECDC4')}"></div>
+            <div style="position:absolute;top:0;left:0;right:0;height:3px;background:${isPast ? 'var(--color-text-tertiary)' : (e.color||'var(--color-primary)')}"></div>
             <div style="display:flex;justify-content:space-between;align-items:flex-start">
               <div>
                 <div class="countdown-name">${esc(e.name)}</div>
@@ -5026,7 +5160,7 @@ async function renderCountdown() {
               <button class="btn-log-action delete btn-delete-cd" data-id="${e.id}" title="削除">✕</button>
             </div>
             <div class="countdown-days">
-              <span class="countdown-number" style="color:${isPast ? 'var(--color-text-tertiary)' : (e.color||'#4ECDC4')}">${isPast ? '終了' : d}</span>
+              <span class="countdown-number" style="color:${isPast ? 'var(--color-text-tertiary)' : (e.color||'var(--color-primary)')}">${isPast ? '終了' : d}</span>
               ${isPast ? '' : '<span class="countdown-label">日</span>'}
             </div>
           </div>`;
@@ -6022,7 +6156,7 @@ function volRoundAggregate(qb, video, cat) {
   };
 }
 
-function roundBarColor(pct) { return pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : 'var(--color-text-secondary)'; }
+function roundBarColor(pct) { return pct >= 80 ? 'var(--color-success)' : pct >= 50 ? 'var(--color-warning)' : 'var(--color-text-secondary)'; }
 
 // vol カードの中身（動画1本＋周回ごとに1本ずつ）。入力欄を含まないので差し替えても安全。
 function volSummaryInnerHtml(agg, opts) {
@@ -6030,19 +6164,19 @@ function volSummaryInnerHtml(agg, opts) {
   // vol.4（多肢選択・4連問）は問題集で講義動画が無いので、動画の行ごと落とす
   const showVideo = !opts || opts.showVideo !== false;
   const vid = !showVideo ? '' : `<div class="prog-dual-row">
-      <span class="prog-dual-tag" style="--chip-color:#8b5cf6">動画</span>
-      <div class="prog-dual-bar"><div style="height:100%;width:${agg.video.pct}%;background:#8b5cf6;border-radius:3px;"></div></div>
+      <span class="prog-dual-tag" style="--chip-color:var(--color-violet)">動画</span>
+      <div class="prog-dual-bar"><div style="height:100%;width:${agg.video.pct}%;background:var(--color-violet);border-radius:3px;"></div></div>
       <span class="prog-dual-pct">${agg.video.total > 0 ? agg.video.pct + '%' : '--'}</span>
     </div>`;
   const rows = agg.rounds.length === 0
     ? `<div class="prog-dual-row">
-         <span class="prog-dual-tag" style="--chip-color:#4ECDC4">QB</span>
+         <span class="prog-dual-tag" style="--chip-color:var(--color-primary)">QB</span>
          <div class="prog-dual-bar"></div>
          <span class="prog-dual-pct">--</span>
        </div>`
     : agg.rounds.map(r => `<div class="prog-dual-row">
-        <span class="prog-dual-tag" style="--chip-color:#4ECDC4">${r.round}周</span>
-        <div class="prog-dual-bar"><div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,#4ECDC4,#45B7D1);border-radius:3px;"></div></div>
+        <span class="prog-dual-tag" style="--chip-color:var(--color-primary)">${r.round}周</span>
+        <div class="prog-dual-bar"><div style="height:100%;width:${r.pct}%;background:linear-gradient(90deg,var(--color-primary),var(--color-accent));border-radius:3px;"></div></div>
         <span class="prog-dual-pct" style="color:${roundBarColor(r.pct)}">${r.total > 0 ? r.pct + '%' : '--'}</span>
       </div>`).join('');
   const countParts = [];
@@ -6093,10 +6227,10 @@ function refreshQbDerived() {
         const pct = r.total > 0 ? Math.round(r.done / r.total * 100) : 0;
         const correct = r.correct || 0;
         const accPct = r.done > 0 ? Math.round(correct / r.done * 100) : 0;
-        const accColorHex = accPct >= 80 ? '#3b82f6' : accPct >= 60 ? '#8b5cf6' : '#ec4899';
+        const accColorHex = accPct >= 80 ? 'var(--color-info)' : accPct >= 60 ? 'var(--color-violet)' : '#ec4899';
         set(`[data-roundfill="${s.id}|${rk}"]`, el => {
           el.style.width = pct + '%';
-          el.style.background = pct >= 80 ? '#10b981' : pct >= 50 ? '#f59e0b' : '#ef4444';
+          el.style.background = pct >= 80 ? 'var(--color-success)' : pct >= 50 ? 'var(--color-warning)' : 'var(--color-danger)';
         });
         set(`[data-roundpct="${s.id}|${rk}"]`, el => { el.textContent = pct + '%'; });
         set(`[data-accof="${s.id}|${rk}"]`, el => { el.textContent = '/ ' + (r.done || 0); });
@@ -6114,7 +6248,7 @@ function refreshQbDerived() {
       const showGap = vp.total > 0 && r1 && r1.total > 0 && gap >= 20;
       set(`[data-gapslot="${s.id}"]`, el => {
         el.innerHTML = showGap
-          ? `<span class="gap-badge" style="--chip-color:${gap >= 40 ? '#ef4444' : '#f59e0b'}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`
+          ? `<span class="gap-badge" style="--chip-color:${gap >= 40 ? 'var(--color-danger)' : 'var(--color-warning)'}" title="動画の視聴が QB1周目より ${gap}pt 先行しています">未回収 +${gap}pt</span>`
           : '';
       });
     });
@@ -6338,7 +6472,7 @@ async function renderQBProgress(){
             const gap=vPct-q1Pct;
             // 動画・QBの両方に母数があり、動画が20pt以上先行しているときだけ警告する
             const showGap=vp.total>0&&r1&&r1.total>0&&gap>=20;
-            const gapColor=gap>=40?'#ef4444':'#f59e0b';
+            const gapColor=gap>=40?'var(--color-danger)':'var(--color-warning)';
             return`<div style="padding:8px 6px;border-bottom:1px solid var(--color-border);">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;flex-wrap:wrap;">
                 <span style="font-weight:600;font-size:0.85rem;">${s.name}</span>
@@ -6362,7 +6496,7 @@ async function renderQBProgress(){
                     <span>/</span>
                     <input type="number" class="qb-total" data-sub="${s.id}" data-round="${rk}" value="${r.total}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                     <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                      <div data-roundfill="${s.id}|${rk}" style="height:100%;width:${pct}%;background:${pct>=80?'#10b981':pct>=50?'#f59e0b':'#ef4444'};border-radius:3px;"></div>
+                      <div data-roundfill="${s.id}|${rk}" style="height:100%;width:${pct}%;background:${pct>=80?'var(--color-success)':pct>=50?'var(--color-warning)':'var(--color-danger)'};border-radius:3px;"></div>
                     </div>
                     <span data-roundpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;">${pct}%</span>
                   </div>
@@ -6371,9 +6505,9 @@ async function renderQBProgress(){
                     <input type="number" class="qb-correct" data-sub="${s.id}" data-round="${rk}" value="${correct}" min="0" style="width:48px;text-align:center;padding:4px 2px;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:4px;color:var(--color-text-primary);font-size:0.8rem;">
                     <span data-accof="${s.id}|${rk}" style="font-size:0.7rem;color:var(--color-text-tertiary);">/ ${r.done}</span>
                     <div style="flex:1;min-width:40px;height:6px;background:var(--color-bg-base);border-radius:3px;overflow:hidden;">
-                      <div data-accfill="${s.id}|${rk}" style="height:100%;width:${accPct}%;background:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};border-radius:3px;"></div>
+                      <div data-accfill="${s.id}|${rk}" style="height:100%;width:${accPct}%;background:${accPct>=80?'var(--color-info)':accPct>=60?'var(--color-violet)':'#ec4899'};border-radius:3px;"></div>
                     </div>
-                    <span data-accpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:${accPct>=80?'#3b82f6':accPct>=60?'#8b5cf6':'#ec4899'};">${r.done>0?accPct+'%':'---'}</span>
+                    <span data-accpct="${s.id}|${rk}" style="min-width:32px;text-align:right;font-weight:700;font-size:0.8rem;color:${accPct>=80?'var(--color-info)':accPct>=60?'var(--color-violet)':'#ec4899'};">${r.done>0?accPct+'%':'---'}</span>
                   </div>
                   ${qbMarksHTML(s.id, rk)}
                 </div>`;
@@ -6728,10 +6862,10 @@ function resetInsightFilters() {
 const ACC_MIN_SAMPLE = 20;
 
 function accColor(a) {
-  if (a < 60) return '#ef4444';
-  if (a < 75) return '#f59e0b';
-  if (a < 85) return '#3b82f6';
-  return '#10b981';
+  if (a < 60) return 'var(--color-danger)';
+  if (a < 75) return 'var(--color-warning)';
+  if (a < 85) return 'var(--color-info)';
+  return 'var(--color-success)';
 }
 
 // qb_progress（現在値＝過去すべての累積）から正答率の断面を作る。
@@ -9141,7 +9275,7 @@ function dailyReviewBodyHTML(rv, colorOf) {
         ` : ''}
         ${rv.videos > 0 ? `
           <div class="review-output-item">
-            <span class="review-output-value" style="color:#8b5cf6">${rv.videos}<span class="acc-unit">本</span></span>
+            <span class="review-output-value" style="color:var(--color-violet)">${rv.videos}<span class="acc-unit">本</span></span>
             <span class="review-output-label">視聴した講義動画</span>
           </div>` : ''}
       </div>` : ''}
@@ -9451,8 +9585,8 @@ async function renderInsights(){
       const val = todDowMap[`${dow}-${hr}`] || 0;
       const intensity = maxHeatVal > 0 ? val / maxHeatVal : 0;
       const alpha = Math.min(1, intensity * 1.2);
-      const bg = val > 0 ? `rgba(78,205,196,${0.15 + alpha * 0.85})` : '';
-      const shadow = alpha > 0.7 ? `box-shadow:0 0 4px rgba(78,205,196,${alpha * 0.5})` : '';
+      const bg = val > 0 ? `color-mix(in srgb, var(--color-primary) ${Math.round((0.15 + alpha * 0.85) * 100)}%, transparent)` : '';
+      const shadow = alpha > 0.7 ? `box-shadow:0 0 4px color-mix(in srgb, var(--color-primary) ${Math.round(alpha * 50)}%, transparent)` : '';
       heatmapHTML += `<div class="tod-heatmap-cell" style="${val > 0 ? 'background:'+bg+';'+shadow : ''}" title="${dowNames[dow]} ${hr}時: ${Math.round(val)}分"></div>`;
     });
   });
@@ -9554,11 +9688,11 @@ async function renderInsights(){
   if (morningPct >= 40) {
     chronoType = 'morning'; chronoName = '朝型スプリンター';
     chronoIconSvg = IC._s('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>');
-    chronoColor = '#f59e0b';
+    chronoColor = 'var(--color-warning)';
   } else if (nightPct >= 50) {
     chronoType = 'night'; chronoName = '夜型ディープフォーカス';
     chronoIconSvg = IC._s('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>');
-    chronoColor = '#8b5cf6';
+    chronoColor = 'var(--color-violet)';
   }
 
   // B-2: Learning pace CV
@@ -9574,7 +9708,7 @@ async function renderInsights(){
   const isConsistent = paceCV < 0.6;
   const paceName = isConsistent ? 'コツコツ習慣化タイプ' : '追い込み集中タイプ';
   const paceIconSvg = isConsistent ? IC._s('<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>') : IC._s('<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/>');
-  const paceColor = isConsistent ? '#22c55e' : '#f59e0b';
+  const paceColor = isConsistent ? 'var(--color-success)' : 'var(--color-warning)';
 
   // B-3: Best focus environment (location x timeSlot x purpose)
   const envMap = {};
@@ -9780,7 +9914,7 @@ async function renderInsights(){
     const cbtDur = purposeStats['cbt'] ? purposeStats['cbt'].dur : 0;
     const cbtRatio = cbtDur / totalBalanceDur;
     if (cbtRatio < 0.1 && (insightFilters.preset === 'all' || insightFilters.preset === 'month')) {
-      balanceAlertHtml = `<div style="background:rgba(245,158,11,0.1); border:1px solid rgba(245,158,11,0.3); color:#fcd34d; padding:12px; border-radius:8px; margin-top:12px; font-size:0.85rem; display:flex; align-items:center; gap:8px;">${IC.warn} CBTの学習比率が10%未満です。計画を見直してみましょう。</div>`;
+      balanceAlertHtml = `<div style="background:color-mix(in srgb, var(--color-warning) 10%, transparent); border:1px solid color-mix(in srgb, var(--color-warning) 30%, transparent); color:var(--color-warning-ink); padding:12px; border-radius:8px; margin-top:12px; font-size:0.85rem; display:flex; align-items:center; gap:8px;">${IC.warn} CBTの学習比率が10%未満です。計画を見直してみましょう。</div>`;
     }
   }
 
@@ -10037,7 +10171,7 @@ function insightsOverviewHTML(d) {
       <div class="insight-summary-sub">${sortedSubjects.length}科目</div>
     </div>
     <div class="insight-summary-card">
-      <div class="insight-summary-value" style="color:${streakActive ? '#f97316' : 'var(--color-text-secondary)'}">${studyStreak}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
+      <div class="insight-summary-value" style="color:${streakActive ? 'var(--color-orange)' : 'var(--color-text-secondary)'}">${studyStreak}<span style="font-size:0.8rem;font-weight:500;color:var(--color-text-secondary)">日</span></div>
       <div class="insight-summary-label">連続学習</div>
       <div class="insight-summary-sub">${streakActive ? '🔥 継続中！' : '😴 昨日まで'}</div>
     </div>
@@ -10420,10 +10554,10 @@ function insightsQbAccuracyHTML(d) {
     </div>
     <div class="acc-scatter-wrap"><canvas id="insightAccScatter"></canvas></div>
     <div class="acc-quad-legend">
-      <span><i style="background:#10b981"></i>左上: 短時間で得点源</span>
-      <span><i style="background:#3b82f6"></i>右上: 時間なりに伸びている</span>
-      <span><i style="background:#64748b"></i>左下: これから伸ばす余地</span>
-      <span><i style="background:#ef4444"></i>右下: 時間の割に伸びていない</span>
+      <span><i style="background:var(--color-success)"></i>左上: 短時間で得点源</span>
+      <span><i style="background:var(--color-info)"></i>右上: 時間なりに伸びている</span>
+      <span><i style="background:var(--color-text-tertiary)"></i>左下: これから伸ばす余地</span>
+      <span><i style="background:var(--color-danger)"></i>右下: 時間の割に伸びていない</span>
     </div>
     ${reviewMethod.length > 0 ? `
       <div class="acc-review-box">
@@ -10533,7 +10667,7 @@ function insightsQbPipelineHTML(d) {
         ` : `
           <div class="backlog-summary">
             <div class="backlog-stat">
-              <div class="backlog-stat-value" style="color:${backlog.length >= 5 ? '#ef4444' : '#f59e0b'}">${backlog.length}</div>
+              <div class="backlog-stat-value" style="color:${backlog.length >= 5 ? 'var(--color-danger)' : 'var(--color-warning)'}">${backlog.length}</div>
               <div class="backlog-stat-label">消化待ちの科目</div>
             </div>
             <div class="backlog-stat">
@@ -10554,7 +10688,7 @@ function insightsQbPipelineHTML(d) {
                   <span class="gain-arrow">→</span>
                   <span class="backlog-qb">QB ${b.qb1Pct === null ? '未着手' : b.qb1Pct.toFixed(0) + '%'}</span>
                 </span>
-                <span class="backlog-gap" style="color:${b.gap >= 40 ? '#ef4444' : '#f59e0b'}">+${b.gap.toFixed(0)}pt</span>
+                <span class="backlog-gap" style="color:${b.gap >= 40 ? 'var(--color-danger)' : 'var(--color-warning)'}">+${b.gap.toFixed(0)}pt</span>
                 <span class="backlog-days">${b.daysSince !== null ? b.daysSince + '日前' : '—'}</span>
               </div>
             `).join('')}
@@ -10633,7 +10767,7 @@ function insightsQbPipelineHTML(d) {
               <div class="break-row-label">${x.subject}</div>
               <div class="break-row-num">${x.videoDay}</div>
               <div class="break-row-num"></div>
-              <div class="break-row-num" style="color:${x.ageDays >= 30 ? '#ef4444' : '#f59e0b'}">${x.ageDays}日前</div>
+              <div class="break-row-num" style="color:${x.ageDays >= 30 ? 'var(--color-danger)' : 'var(--color-warning)'}">${x.ageDays}日前</div>
             </div>
           `).join('')}
         </div>
@@ -10949,7 +11083,7 @@ function insightsQbQualityHTML(d) {
             <div class="break-row break-row-run ${b.count === 0 ? 'is-thin' : ''}">
               <div class="break-row-label">${b.label}</div>
               <div class="break-row-num">${b.count}件</div>
-              <div class="break-row-num" style="color:${b.shrunkGain === null ? 'var(--color-text-tertiary)' : b.shrunkGain >= 10 ? '#10b981' : b.shrunkGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${
+              <div class="break-row-num" style="color:${b.shrunkGain === null ? 'var(--color-text-tertiary)' : b.shrunkGain >= 10 ? 'var(--color-success)' : b.shrunkGain > 0 ? 'var(--color-text-primary)' : 'var(--color-danger)'}">${
                 b.shrunkGain === null ? '-' : (b.shrunkGain >= 0 ? '+' : '') + b.shrunkGain.toFixed(1) + 'pt'}${
                 b.avgGain !== null && b.shrunkGain !== null ? `<span class="dim">（素 ${b.avgGain >= 0 ? '+' : ''}${b.avgGain.toFixed(0)}）</span>` : ''}</div>
               <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
@@ -11019,7 +11153,7 @@ function insightsQbQualityHTML(d) {
               <div class="break-row-label">${x.subject}</div>
               <div class="break-row-num">${x.visitCount}回</div>
               <div class="break-row-num"></div>
-              <div class="break-row-num" style="color:${x.daysSince >= 30 ? '#ef4444' : '#f59e0b'}">${x.daysSince}日前</div>
+              <div class="break-row-num" style="color:${x.daysSince >= 30 ? 'var(--color-danger)' : 'var(--color-warning)'}">${x.daysSince}日前</div>
             </div>
           `).join('')}
         </div>
@@ -11037,7 +11171,7 @@ function insightsQbQualityHTML(d) {
             <div class="break-row break-row-run ${b.count === 0 ? 'is-thin' : ''}">
               <div class="break-row-label">${b.label}</div>
               <div class="break-row-num">${b.count}科目</div>
-              <div class="break-row-num" style="color:${b.avgGain === null ? 'var(--color-text-tertiary)' : b.avgGain >= 10 ? '#10b981' : b.avgGain > 0 ? 'var(--color-text-primary)' : '#ef4444'}">${b.avgGain === null ? '-' : (b.avgGain >= 0 ? '+' : '') + b.avgGain.toFixed(0) + 'pt'}</div>
+              <div class="break-row-num" style="color:${b.avgGain === null ? 'var(--color-text-tertiary)' : b.avgGain >= 10 ? 'var(--color-success)' : b.avgGain > 0 ? 'var(--color-text-primary)' : 'var(--color-danger)'}">${b.avgGain === null ? '-' : (b.avgGain >= 0 ? '+' : '') + b.avgGain.toFixed(0) + 'pt'}</div>
               <div class="break-row-num" style="font-weight:500;color:var(--color-text-tertiary);overflow:hidden;text-overflow:ellipsis">${esc(b.subjects.slice(0, 2).join('・'))}</div>
             </div>
           `).join('')}
@@ -11258,17 +11392,17 @@ function insightsLifeHTML(d) {
     ${chronoTotal30 > 1 ? `
     <div class="personal-type-grid">
       <div class="personal-type-item">
-        <div class="personal-type-icon" style="background:${chronoColor}22;color:${chronoColor}">${chronoIconSvg}</div>
+        <div class="personal-type-icon" style="background:color-mix(in srgb, ${chronoColor} 13%, transparent);color:${chronoColor}">${chronoIconSvg}</div>
         <div class="personal-type-name">${chronoName}</div>
         <div class="personal-type-detail">朝${morningPct}% / 夜${nightPct}%</div>
       </div>
       <div class="personal-type-item">
-        <div class="personal-type-icon" style="background:${paceColor}22;color:${paceColor}">${paceIconSvg}</div>
+        <div class="personal-type-icon" style="background:color-mix(in srgb, ${paceColor} 13%, transparent);color:${paceColor}">${paceIconSvg}</div>
         <div class="personal-type-name">${paceName}</div>
         <div class="personal-type-detail">CV: ${paceCV.toFixed(2)}</div>
       </div>
       <div class="personal-type-item">
-        <div class="personal-type-icon" style="background:rgba(78,205,196,0.13);color:var(--color-accent-teal)">${IC._s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')}</div>
+        <div class="personal-type-icon" style="background:color-mix(in srgb, var(--color-primary) 13%, transparent);color:var(--color-accent-teal)">${IC._s('<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>')}</div>
         <div class="personal-type-name">${bestEnv ? bestEnv.name : '分析中...'}</div>
         <div class="personal-type-detail">${bestEnv ? '★' + bestEnv.avg + '（' + bestEnv.count + '件）' : 'データ蓄積中'}</div>
       </div>
@@ -11298,7 +11432,7 @@ function insightsLifeHTML(d) {
         return `<div class="break-row break-row-run ${row.base ? 'is-best' : row.d.days === 0 ? 'is-thin' : ''}">
           <div class="break-row-label">${row.label}</div>
           <div class="break-row-num">${row.d.days}日</div>
-          <div class="break-row-num">${row.d.avgMin === null ? '-' : formatMinutes(Math.round(row.d.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -10 ? '#ef4444' : diff > 10 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
+          <div class="break-row-num">${row.d.avgMin === null ? '-' : formatMinutes(Math.round(row.d.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -10 ? 'var(--color-danger)' : diff > 10 ? 'var(--color-success)' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
           <div class="break-row-num">${row.d.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + row.d.avgFocus.toFixed(1)}</div>
         </div>`;
       }).join('')}
@@ -11324,7 +11458,7 @@ function insightsLifeHTML(d) {
         return `<div class="break-row break-row-run ${i === 0 ? 'is-best' : b.count === 0 ? 'is-thin' : ''}">
           <div class="break-row-label">${b.label}</div>
           <div class="break-row-num">${b.count}日</div>
-          <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -20 ? '#ef4444' : diff > 0 ? '#10b981' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
+          <div class="break-row-num">${b.avgMin === null ? '-' : formatMinutes(Math.round(b.avgMin))}${diff !== null ? `<span class="break-row-share" style="color:${diff < -20 ? 'var(--color-danger)' : diff > 0 ? 'var(--color-success)' : 'var(--color-text-tertiary)'}">${diff >= 0 ? '+' : ''}${diff.toFixed(0)}%</span>` : ''}</div>
           <div class="break-row-num">${b.avgFocus === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : '★' + b.avgFocus.toFixed(1)}</div>
         </div>`;
       }).join('')}
@@ -11384,7 +11518,7 @@ function insightsLifeHTML(d) {
       </div>
       <div class="sleep-insight-item">
         <div class="sleep-insight-label">${IC.target} 睡眠負債</div>
-        <div class="sleep-insight-value" style="font-size:1.3rem;color:${sleepDebtHours > 7 ? '#ef4444' : sleepDebtHours > 3 ? '#f59e0b' : '#4ade80'}">${sleepDebtHours > 0 ? '+' : ''}${sleepDebtHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
+        <div class="sleep-insight-value" style="font-size:1.3rem;color:${sleepDebtHours > 7 ? 'var(--color-danger)' : sleepDebtHours > 3 ? 'var(--color-warning)' : 'var(--color-success)'}">${sleepDebtHours > 0 ? '+' : ''}${sleepDebtHours.toFixed(1)}<span style="font-size:0.7rem;color:var(--color-text-secondary)">h</span></div>
         <div class="sleep-insight-note">${sleepDebtHours > 7 ? '⚠ 深刻な睡眠不足です' : sleepDebtHours > 3 ? '注意：睡眠が不足気味です' : sleepDebtHours > 0 ? 'ほぼ良好です' : '十分に眠れています'}（基準: ${IDEAL_SLEEP_HOURS}h/日）</div>
       </div>
       <div class="sleep-insight-item">
@@ -11394,7 +11528,7 @@ function insightsLifeHTML(d) {
       </div>
       <div class="sleep-insight-item">
         <div class="sleep-insight-label">🌙 徹夜</div>
-        <div class="sleep-insight-value" style="font-size:1.3rem;color:${allNighterCount > 0 ? '#f59e0b' : '#4ade80'}">${allNighterCount}<span style="font-size:0.7rem;color:var(--color-text-secondary)">回</span></div>
+        <div class="sleep-insight-value" style="font-size:1.3rem;color:${allNighterCount > 0 ? 'var(--color-warning)' : 'var(--color-success)'}">${allNighterCount}<span style="font-size:0.7rem;color:var(--color-text-secondary)">回</span></div>
         <div class="sleep-insight-note">${allNighterCount > 2 ? '⚠ 徹夜は集中度を大幅に低下させます' : allNighterCount > 0 ? '控えめに' : '良い睡眠習慣です'}</div>
       </div>
     </div>
@@ -11413,7 +11547,7 @@ function insightsLifeHTML(d) {
         ${sleepSlotCompare.map(s => `
           <div style="flex:1;min-width:70px;background:var(--color-bg-elevated);border-radius:8px;padding:10px;text-align:center;">
             <div style="font-size:0.75rem;color:var(--color-text-tertiary);margin-bottom:4px;">${s.slot}</div>
-            <div style="font-size:1.1rem;font-weight:700;color:${s.slot === '<6h' ? '#ef4444' : s.slot === '8h+' ? '#4ade80' : 'var(--color-text-primary)'}">${s.avg}★</div>
+            <div style="font-size:1.1rem;font-weight:700;color:${s.slot === '<6h' ? 'var(--color-danger)' : s.slot === '8h+' ? 'var(--color-success)' : 'var(--color-text-primary)'}">${s.avg}★</div>
             <div style="font-size:0.65rem;color:var(--color-text-tertiary)">${s.count}件</div>
           </div>
         `).join('')}
@@ -11422,7 +11556,7 @@ function insightsLifeHTML(d) {
         const best = sleepSlotCompare.sort((a, b) => parseFloat(b.avg) - parseFloat(a.avg))[0];
         const worst = sleepSlotCompare.sort((a, b) => parseFloat(a.avg) - parseFloat(b.avg))[0];
         if (best && worst && best.slot !== worst.slot && parseFloat(best.avg) - parseFloat(worst.avg) >= 0.3) {
-          return `<div style="background:rgba(78,205,196,0.1);border:1px solid rgba(78,205,196,0.3);color:var(--color-accent-teal);padding:10px;border-radius:8px;margin-top:10px;font-size:0.8rem;">
+          return `<div style="background:color-mix(in srgb, var(--color-primary) 10%, transparent);border:1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);color:var(--color-accent-teal);padding:10px;border-radius:8px;margin-top:10px;font-size:0.8rem;">
             💡 ${best.slot}の睡眠時は平均★${best.avg}、${worst.slot}では★${worst.avg}。差は${(parseFloat(best.avg) - parseFloat(worst.avg)).toFixed(1)}ポイントです。
           </div>`;
         }
@@ -11492,9 +11626,9 @@ function insightsTrendHTML(d) {
       <div style="display:flex;justify-content:flex-end;align-items:center;gap:4px;font-size:10px;color:var(--color-text-tertiary);margin-top:8px">
         <span>少</span>
         <div style="width:12px;height:12px;border-radius:2px;background:var(--color-bg-elevated)"></div>
-        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.3)"></div>
-        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,0.6)"></div>
-        <div style="width:12px;height:12px;border-radius:2px;background:rgba(78,205,196,1)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:color-mix(in srgb, var(--color-primary) 30%, transparent)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:color-mix(in srgb, var(--color-primary) 60%, transparent)"></div>
+        <div style="width:12px;height:12px;border-radius:2px;background:var(--color-primary)"></div>
         <span>多</span>
       </div>
     </div>
@@ -11534,7 +11668,7 @@ function insightsTrendHTML(d) {
       <div class="focus-rank" style="--focus-marker:${markerPct.toFixed(1)}%">
         ${sortedSubjectFocus.map(([name, avg, cnt]) => {
           // #f7dc6f はライトモードだと白地に沈むので、中位帯だけ濃いアンバーにする
-          const color = avg >= 4.5 ? '#4ecdc4' : avg >= 3.5 ? '#45b7d1' : avg >= 2.5 ? '#d99e0b' : '#ff6b6b';
+          const color = avg >= 4.5 ? 'var(--color-primary)' : avg >= 3.5 ? 'var(--color-accent)' : avg >= 2.5 ? 'var(--color-warning)' : 'var(--color-danger)';
           const diff = avg - overallAvg;
           const diffLabel = Math.abs(diff) < 0.05 ? '平均並み' : `平均より ${diff > 0 ? '+' : '−'}${Math.abs(diff).toFixed(1)}`;
           return `<div class="focus-rank-row" title="${esc(name)}：平均 ★${avg.toFixed(1)}、${cnt}件、${diffLabel}">
@@ -11647,10 +11781,10 @@ function drawInsightCharts(ct, d) {
       destroyChart('insightAccScatter');
       const scCtx = document.getElementById('insightAccScatter');
       if (scCtx) {
-        const ptColor = p => (p.x >= medHours && p.y <  medAcc) ? '#ef4444'
-                           : (p.x >= medHours && p.y >= medAcc) ? '#3b82f6'
-                           : (p.x <  medHours && p.y >= medAcc) ? '#10b981'
-                           : '#64748b';
+        const ptColor = p => (p.x >= medHours && p.y <  medAcc) ? chartColor('danger', '#ef4444')
+                           : (p.x >= medHours && p.y >= medAcc) ? chartColor('info', '#3b82f6')
+                           : (p.x <  medHours && p.y >= medAcc) ? chartColor('success', '#10b981')
+                           : chartColor('text-tertiary', '#64748b');
         chartInstances['insightAccScatter'] = new Chart(scCtx, {
           type: 'scatter',
           data: { datasets: [{
@@ -11682,7 +11816,7 @@ function drawInsightCharts(ct, d) {
               const my = scales.y.getPixelForValue(medAcc);
               g.save();
               g.setLineDash([4, 4]);
-              g.strokeStyle = 'rgba(148,163,184,0.45)';
+              g.strokeStyle = chartAlpha('text-secondary', 45, 'rgba(148,163,184,0.45)');
               g.lineWidth = 1;
               g.beginPath(); g.moveTo(mx, a.top); g.lineTo(mx, a.bottom); g.stroke();
               g.beginPath(); g.moveTo(a.left, my); g.lineTo(a.right, my); g.stroke();
@@ -11715,11 +11849,11 @@ function drawInsightCharts(ct, d) {
               responsive: true, maintainAspectRatio: false,
               scales: {
                 x: { stacked: true, grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: true, maxTicksLimit: 8, maxRotation: 0, minRotation: 0 } },
-                y: { stacked: true, beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' }, ticks: { font: { size: 9 } } }
+                y: { stacked: true, beginAtZero: true, grid: { color: chartAlpha('text-secondary', 6, 'rgba(148,163,184,0.06)') }, ticks: { font: { size: 9 } } }
               },
               plugins: { 
-                legend: { display: true, labels: { color: '#94a3b8', font: { size: 10 } } }, 
-                tooltip: { backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8' } 
+                legend: { display: true, labels: { color: chartColor('text-secondary', '#94a3b8'), font: { size: 10 } } }, 
+                tooltip: chartTooltipTheme() 
               },
               animation: { duration: 800, easing: 'easeOutQuart' }
             }
@@ -11730,22 +11864,16 @@ function drawInsightCharts(ct, d) {
           type: 'bar',
           data: { labels: trendLabels, datasets: [{
             label: '学習時間(分)', data: trendData,
-            backgroundColor: (context) => {
-              const {ctx:c, chartArea} = context.chart;
-              if (!chartArea) return '#4ECDC4';
-              const g = c.createLinearGradient(0, chartArea.bottom, 0, chartArea.top);
-              g.addColorStop(0, 'rgba(78,205,196,0.3)'); g.addColorStop(1, 'rgba(69,183,209,0.8)');
-              return g;
-            },
+            backgroundColor: (context) => chartBarGradient(context, 30),
             borderRadius: 4, borderSkipped: false, maxBarThickness: 24
           }]},
           options: {
             responsive: true, maintainAspectRatio: true,
             scales: {
               x: { grid: { display: false }, ticks: { font: { size: 10 }, autoSkip: true, maxTicksLimit: 10, maxRotation: 0, minRotation: 0 } },
-              y: { beginAtZero: true, grid: { color: 'rgba(148,163,184,0.06)' }, ticks: { font: { size: 9 }, callback: v => v + 'm' } }
+              y: { beginAtZero: true, grid: { color: chartAlpha('text-secondary', 6, 'rgba(148,163,184,0.06)') }, ticks: { font: { size: 9 }, callback: v => v + 'm' } }
             },
-            plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8', borderColor: 'rgba(78,205,196,0.3)', borderWidth: 1, cornerRadius: 8 } },
+            plugins: { legend: { display: false }, tooltip: chartTooltipTheme() },
             animation: { duration: 800, easing: 'easeOutQuart' }
           }
         });
@@ -11768,10 +11896,10 @@ function drawInsightCharts(ct, d) {
               data: sleepDailyData.map(d => d.hours),
               backgroundColor: (context) => {
                 const v = context.raw;
-                if (v === 0) return 'rgba(239,68,68,0.7)'; // 徹夜: red
-                if (v < 6) return 'rgba(245,158,11,0.7)';   // <6h: amber
-                if (v >= 7) return 'rgba(74,222,128,0.7)';   // 7h+: green
-                return 'rgba(99,102,241,0.6)';               // 6-7h: indigo
+                if (v === 0) return chartAlpha('danger', 70, 'rgba(239,68,68,0.7)'); // 徹夜: red
+                if (v < 6) return chartAlpha('warning', 70, 'rgba(245,158,11,0.7)');   // <6h: amber
+                if (v >= 7) return chartAlpha('success', 70, 'rgba(74,222,128,0.7)');   // 7h+: green
+                return chartAlpha('violet', 60, 'rgba(99,102,241,0.6)');               // 6-7h: indigo
               },
               borderRadius: 4,
               borderSkipped: false,
@@ -11785,15 +11913,15 @@ function drawInsightCharts(ct, d) {
               y: {
                 beginAtZero: true,
                 max: Math.max(10, sleepMaxHours + 1),
-                grid: { color: 'rgba(148,163,184,0.06)' },
+                grid: { color: chartAlpha('text-secondary', 6, 'rgba(148,163,184,0.06)') },
                 ticks: { font: { size: 9 }, callback: v => v + 'h' }
               }
             },
             plugins: {
               legend: { display: false },
               tooltip: {
-                backgroundColor: '#1a2332', titleColor: '#f0f4f8', bodyColor: '#94a3b8',
-                borderColor: 'rgba(99,102,241,0.3)', borderWidth: 1, cornerRadius: 8,
+                ...chartTooltipTheme(),
+                borderColor: chartAlpha('violet', 30, chartAlpha('violet', 30, 'rgba(99,102,241,0.3)')),
                 callbacks: {
                   label: (ctx) => ctx.raw === 0 ? '徹夜' : ctx.raw + '時間'
                 }
@@ -11802,8 +11930,8 @@ function drawInsightCharts(ct, d) {
                 annotations: {
                   idealLine: {
                     type: 'line', yMin: IDEAL_SLEEP_HOURS, yMax: IDEAL_SLEEP_HOURS,
-                    borderColor: 'rgba(74,222,128,0.5)', borderWidth: 2, borderDash: [5, 5],
-                    label: { display: true, content: '理想 ' + IDEAL_SLEEP_HOURS + 'h', position: 'end', backgroundColor: 'rgba(74,222,128,0.15)', color: '#4ade80', font: { size: 9 } }
+                    borderColor: chartAlpha('success', 50, 'rgba(74,222,128,0.5)'), borderWidth: 2, borderDash: [5, 5],
+                    label: { display: true, content: '理想 ' + IDEAL_SLEEP_HOURS + 'h', position: 'end', backgroundColor: chartAlpha('success', 15, 'rgba(74,222,128,0.15)'), color: chartColor('success', '#4ade80'), font: { size: 9 } }
                   }
                 }
               }
@@ -11943,6 +12071,14 @@ function renderSettings(){
       </div>
     </div>
 
+    <!-- Color Theme -->
+    <div class="settings-card animate-slide-up" id="settings-color-theme" style="animation-delay:.04s">
+      <h3 class="settings-section-title">🎨 カラーテーマ</h3>
+      <p class="theme-settings-note">色彩101® の4色配色をもとにしたテーマです。選んだテーマはこの端末に保存され、次に開いたときも使われます。</p>
+      ${themeSwatchListHtml('settings')}
+      <div class="theme-mode-row" id="theme-mode-row">${themeModeRowHtml()}</div>
+    </div>
+
     <!-- Profile Edit -->
     <div class="settings-card animate-slide-up" style="animation-delay:.08s">
       <h3 class="settings-section-title">👤 プロフィール設定</h3>
@@ -12024,7 +12160,7 @@ function renderSettings(){
       </div>
     </div>
     
-    <div style="text-align:center;padding:40px 0;"><button id="btn-logout" class="btn btn-secondary" style="border-color:rgba(241,148,138,0.4);color:var(--color-accent-pink)">ログアウト</button></div>
+    <div style="text-align:center;padding:40px 0;"><button id="btn-logout" class="btn btn-secondary" style="border-color:color-mix(in srgb, var(--color-danger) 40%, transparent);color:var(--color-accent-pink)">ログアウト</button></div>
   </div>`;
 
   // ---- Event Listeners ----
@@ -12137,8 +12273,19 @@ function renderSettings(){
       else { session = null; renderRoute('/'); }
     }
   });
-  // Theme toggle in settings page
-  document.getElementById('theme-btn-settings')?.addEventListener('click', ()=>{ toggleTheme(); renderSettings(); });
+  // カラーテーマ（入力途中のプロフィールを消さないよう、ページ全体は描き直さない）
+  const themeCard = document.getElementById('settings-color-theme');
+  const bindModeToggle = () => document.getElementById('theme-btn-settings')?.addEventListener('click', () => {
+    toggleTheme();
+    const def = themeCard.querySelector('[data-color-theme="default"] .theme-chips');
+    if (def) def.outerHTML = themeChipsHtml(colorThemeOptions()[0].chips);
+    const sub = themeCard.querySelector('[data-color-theme="default"] .theme-swatch-sub');
+    if (sub) sub.textContent = `Default / ${isDark ? 'ダーク' : 'ライト'}`;
+    refreshModeRow();
+  });
+  const refreshModeRow = () => { document.getElementById('theme-mode-row').innerHTML = themeModeRowHtml(); bindModeToggle(); };
+  bindThemePicker(themeCard, { rerender: false, onChange: refreshModeRow });
+  bindModeToggle();
 
   // Feedback Event Listener
   document.getElementById('btn-submit-feedback')?.addEventListener('click', async (e) => {
