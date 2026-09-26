@@ -616,8 +616,6 @@ svg { width: 24px; height: 24px; flex-shrink: 0; }
 .modal-body input, .modal-body textarea { width:100%; margin-bottom:var(--space-md); }
 .modal-body textarea { min-height:120px; resize:vertical; }
 .modal-footer { display:flex; align-items:center; justify-content:space-between; padding:var(--space-md) var(--space-lg); border-top:1px solid var(--color-border); }
-.anonymous-toggle { display:flex; align-items:center; gap:var(--space-sm); font-size:var(--font-size-sm); color:var(--color-text-secondary); cursor:pointer; }
-.anonymous-toggle input[type="checkbox"] { width:auto; accent-color:var(--color-accent-teal); }
 
 .countdown-section { display:flex; flex-direction:column; gap:var(--space-lg); }
 .countdown-card { padding:var(--space-lg); border-radius:var(--radius-lg); background:var(--color-bg-card); border:1px solid var(--color-border); position:relative; overflow:hidden; transition:all var(--transition-base); }
