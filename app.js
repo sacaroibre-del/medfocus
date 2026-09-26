@@ -3936,6 +3936,7 @@ async function renderDashboard(){
   // Period tabs
   // 上で描けていれば○✕を繋ぐだけ、まだなら裏で同期してから差し込む
   wireRetestButtons(document);
+  wireTodayPlanRows(document.getElementById('dash-today-plan'));
   mountTodayPlanInto('dash-today-plan', planSync, '/');
 
   document.getElementById('pacer-exam')?.addEventListener('change', e => { setPacerExamId(e.target.value); renderDashboard(); });
@@ -4261,6 +4262,7 @@ async function mountTodayPlanInto(slotId, pre, route) {
   if (!slot) return;
   slot.innerHTML = todayPlanCardHTML(sync);
   wireRetestButtons(slot);
+  wireTodayPlanRows(slot);
 }
 
 async function renderStudy(){
@@ -4638,6 +4640,7 @@ async function renderStudy(){
 
   // 上で描けていれば○✕を繋ぐだけ、まだなら裏で同期してから学習ログの上へ差し込む
   wireRetestButtons(ct);
+  wireTodayPlanRows(document.getElementById('study-today-plan'));
   mountTodayPlanInto('study-today-plan', studyPlanSync, '/study');
 
   const display=document.getElementById('timer-display');const ring=document.getElementById('timer-ring');
@@ -16458,6 +16461,81 @@ async function markRetest(key, correct) {
   if (currentRoute === '/study') renderStudy(); else renderDashboard();
 }
 
+// 「今日のノルマ」の行を押したら、そのプランの科目・活動（QB→問題演習、講義動画→講義動画）・動画の版を
+// 記録の設定にする。学習記録ページではその場で反映し、ダッシュボードからは学習記録ページへ移る。
+function applyPlanToRecording({ subject, unit, edition }) {
+  if (!subject) return false;
+  const known = subjectCategories.some(c => c.subjects.some(s => s.id === subject));
+  selectedSubjectId = known ? subject : 'custom';
+  if (!known) selectedSubjectCustom = subjectNameOf(subject);
+  if (unit === 'q') selectedActivity = 'qb';
+  else if (unit === 'video') selectedActivity = 'video';
+  selectedVideoEdition = (unit === 'video' && isVideoEdition(edition)) ? edition : '';
+  saveTimerState();
+  syncRecordingFormsToState();
+  return true;
+}
+
+// 画面に出ている記録フォーム（タイマーの科目欄・終了後の記録フォーム）を、いまの選択状態に合わせる
+function syncRecordingFormsToState() {
+  const custom = selectedSubjectId === 'custom';
+  const study = document.getElementById('study-subject');
+  if (study) study.value = selectedSubjectId;
+  const studyRow = document.getElementById('study-subject-custom-row');
+  if (studyRow) studyRow.style.display = custom ? 'block' : 'none';
+  const studyCustom = document.getElementById('study-subject-custom');
+  if (studyCustom) studyCustom.value = selectedSubjectCustom;
+  const conf = document.getElementById('confirm-subject');
+  if (conf) conf.value = selectedSubjectId;
+  const confCustom = document.getElementById('confirm-subject-custom');
+  if (confCustom) { confCustom.style.display = custom ? 'block' : 'none'; confCustom.value = selectedSubjectCustom; }
+  // 科目が変わったので、視聴済み本数は新しい科目の現在値を入れ直させる
+  ['', '-sync'].forEach(sfx => { const i = document.getElementById('video-done' + sfx); if (i) i.dataset.subject = ''; });
+  document.querySelectorAll('.activity-btn').forEach(b => {
+    const on = b.dataset.val === selectedActivity;
+    b.classList.toggle('btn-primary', on);
+    b.classList.toggle('btn-secondary', !on);
+  });
+  ['', '-sync'].forEach(sfx => { syncQbCountFields(sfx); syncVideoCountFields(sfx); });
+  markPickedPlanRows();
+}
+
+// いまの記録設定と同じプランの行に印を付ける
+function markPickedPlanRows() {
+  document.querySelectorAll('.tp-row.is-pickable').forEach(row => {
+    const sub = row.dataset.planSubject;
+    const subjectOk = selectedSubjectId === 'custom' ? selectedSubjectCustom === subjectNameOf(sub) : selectedSubjectId === sub;
+    const activityOk = selectedActivity === (row.dataset.planUnit === 'video' ? 'video' : 'qb');
+    const on = !!sub && subjectOk && activityOk;
+    row.classList.toggle('is-picked', on);
+    row.setAttribute('aria-pressed', String(on));
+  });
+}
+
+function wireTodayPlanRows(root) {
+  if (!root) return;
+  const pick = row => {
+    const ok = applyPlanToRecording({ subject: row.dataset.planSubject, unit: row.dataset.planUnit, edition: row.dataset.planEdition });
+    if (!ok) return;
+    const act = ACTIVITY_MAP[selectedActivity];
+    showToast(`${IC.check} ${esc(subjectNameOf(row.dataset.planSubject))}${act ? `（${act.l}）` : ''}を記録に設定しました`);
+    if (currentRoute !== '/study') { navigate('/study'); return; }
+    // スマホではタイマーが画面外にあることが多いので、見える位置まで戻す
+    const timer = document.querySelector('.stopwatch-card');
+    if (timer) {
+      const r = timer.getBoundingClientRect();
+      if (r.top < 0 || r.top > window.innerHeight * 0.6) timer.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+  root.querySelectorAll('.tp-row.is-pickable').forEach(row => {
+    row.addEventListener('click', () => pick(row));
+    row.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(row); }
+    });
+  });
+  markPickedPlanRows();
+}
+
 // ダッシュボード用「今日のノルマ」。進行中プランの今日ぶんを1枚にまとめる。
 function todayPlanCardHTML(sync) {
   if (!sync) return '';
@@ -16488,7 +16566,8 @@ function todayPlanCardHTML(sync) {
       main = `<span>節目</span>`;
       sub = esc(milestone.title || '');
     }
-    return `<div class="tp-row" style="--plan:${esc(color)}">
+    const pick = `data-plan-subject="${esc(plan.subject_id || '')}" data-plan-unit="${esc(plan.unit || '')}" data-plan-edition="${esc(plan.unit === 'video' && isVideoEdition(plan.video_edition) ? plan.video_edition : '')}"`;
+    return `<div class="tp-row ${plan.subject_id ? 'is-pickable' : ''}" style="--plan:${esc(color)}" ${plan.subject_id ? `${pick} role="button" tabindex="0" title="押すとこの科目を記録に設定します"` : ''}>
       <div class="tp-bar"></div>
       <div class="tp-body">
         <div class="tp-title">${esc(plan.title)}</div>
