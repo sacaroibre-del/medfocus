@@ -3840,6 +3840,14 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, color-mix(in srgb, v
 .tp-list { display:flex; flex-direction:column; }
 .tp-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--color-border); }
 .tp-row:last-child { border-bottom:none; }
+/* 押すとその科目を記録に設定できる行 */
+.tp-row.is-pickable { cursor:pointer; margin:0 -8px; padding-left:8px; padding-right:8px; border-radius:var(--radius-md); transition:background var(--transition-fast); }
+.tp-row.is-pickable:hover { background:color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.tp-row.is-pickable:focus-visible { outline:2px solid var(--color-border-focus); outline-offset:-2px; }
+.tp-row.is-picked { background:color-mix(in srgb, var(--color-primary) 14%, transparent); }
+.tp-row.is-picked .tp-bar { width:5px; }
+.tp-row.is-picked .tp-title::after { content:'記録中の科目'; margin-left:6px; padding:1px 6px; border-radius:var(--radius-full);
+  font-size:0.62rem; font-weight:700; vertical-align:1px; color:var(--color-on-primary); background:var(--color-primary); }
 .tp-bar { width:3px; height:34px; border-radius:2px; background:var(--plan); flex:none; }
 .tp-body { min-width:0; flex:1; }
 .tp-title { font-size:var(--font-size-sm); font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
