@@ -97,16 +97,18 @@ const mins = arr => arr.map(x => x.plannedMin);
   ok('配分超過で通知済みになる', G('multiSession.segments[0].notified') === true);
 
   // ---- 保存する行 ----
+  // 科目を離れた時刻は実際の現在時刻で入るので、終了はそれより後にする
+  const END = new Date(Date.now() + 3600e3).toISOString();
   G(`multiSession.segments.push(Object.assign(newMultiSegment('2E', 10), { plannedMin: 15 }));`);
   const rows = W.buildCombinedRows(G('multiSession'), [
     { index: 0, minutes: 7, solved: 20, correct: 15 },
     { index: 1, minutes: 3, solved: 5, correct: 4 },
     { index: 2, minutes: 0, solved: 0, correct: 0 }
-  ], '2026-09-28T02:00:00.000Z');
+  ], END);
   eq('行の並びと科目', rows.map(r => [r.subjectId, r.order, r.minutes]), [['2A', 0, 7], ['2C', 1, 3], ['2E', 2, 0]]);
-  eq('いまの科目の終了はセッションの終了', rows[0].endedAt, '2026-09-28T02:00:00.000Z');
-  ok('離れた科目の終了は離れた時刻', rows[1].endedAt < '2026-09-28T02:00:00.000Z', rows[1].endedAt);
-  eq('手を付けなかった科目は終了時刻に0分で置く', [rows[2].startedAt, rows[2].endedAt, rows[2].minutes], ['2026-09-28T02:00:00.000Z', '2026-09-28T02:00:00.000Z', 0]);
+  eq('いまの科目の終了はセッションの終了', rows[0].endedAt, END);
+  ok('離れた科目の終了は離れた時刻', rows[1].endedAt < END, rows[1].endedAt);
+  eq('手を付けなかった科目は終了時刻に0分で置く', [rows[2].startedAt, rows[2].endedAt, rows[2].minutes], [END, END, 0]);
   eq('予定問題数', rows.map(r => r.plannedQuestions), [20, 40, 10]);
   eq('閉じた休憩だけ残す', rows[1].breaks.length, 1);
 
