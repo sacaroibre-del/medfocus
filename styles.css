@@ -830,6 +830,46 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .mode-tab { flex: 1; transition: all var(--transition-fast); font-weight: 500; background: transparent; color: var(--color-text-secondary); border: none; padding: 8px; border-radius: var(--radius-sm); cursor: pointer; }
 .mode-tab.active { background: var(--color-primary); color: var(--color-on-primary) !important; box-shadow: 0 4px 12px color-mix(in srgb, var(--color-primary) 20%, transparent); }
 
+/* 複数科目統合セッション */
+/* モードが5つになったので、PC幅でもタブの文字を折り返さない */
+@media (min-width:769px) {
+  .timer-mode-switcher .mode-tab { white-space:nowrap; font-size:0.78rem; padding:8px 4px; }
+}
+.multi-panel { width:100%; max-width:420px; margin:0 auto var(--space-lg); display:flex; flex-direction:column; gap:10px; text-align:left; }
+.multi-list { display:flex; flex-direction:column; gap:6px; }
+.multi-empty { font-size:0.85rem; color:var(--color-text-tertiary); text-align:center; padding:8px; }
+.multi-row { display:grid; grid-template-columns:minmax(0,1fr) 72px 48px 28px; gap:6px; align-items:center; }
+.multi-row select, .multi-row input, .multi-total-row input { min-width:0; width:100%; padding:6px 8px; background:var(--color-bg-input); border:1px solid var(--color-border); border-radius:var(--radius-sm); color:var(--color-text-primary); font-size:0.85rem; }
+.multi-row input { text-align:center; }
+.multi-alloc { font-size:0.8rem; color:var(--color-text-secondary); text-align:right; font-variant-numeric:tabular-nums; }
+.multi-remove { background:none; border:none; color:var(--color-text-tertiary); cursor:pointer; font-size:0.9rem; padding:4px; }
+.multi-remove:hover { color:var(--color-accent-pink); }
+.multi-add-row, .multi-nav { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+.multi-total-row { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; font-size:0.85rem; color:var(--color-text-secondary); }
+.multi-total-row label { display:flex; align-items:center; gap:6px; }
+.multi-total-row input { width:72px; text-align:center; }
+.multi-recommend { font-size:0.8rem; color:var(--color-text-secondary); text-align:center; min-height:1em; }
+.multi-recommend .btn { padding:2px 10px; font-size:0.75rem; margin-left:4px; }
+.multi-seg { padding:8px 10px; border:1px solid var(--color-border); border-radius:var(--radius-sm); cursor:pointer; transition:border-color var(--transition-fast); }
+.multi-seg.is-current { border-color:var(--color-primary); background:color-mix(in srgb, var(--color-primary) 8%, transparent); }
+.multi-seg-head { display:flex; align-items:baseline; gap:8px; font-size:0.85rem; }
+.multi-seg-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--color-text-primary); }
+.multi-seg-q { color:var(--color-text-tertiary); font-size:0.75rem; }
+.multi-seg-time { color:var(--color-text-secondary); font-variant-numeric:tabular-nums; font-size:0.8rem; }
+.multi-seg-bar { height:4px; margin-top:6px; background:var(--color-bg-elevated); border-radius:2px; overflow:hidden; }
+.multi-seg-fill { height:100%; background:var(--color-primary); transition:width .3s; }
+.multi-seg.is-over .multi-seg-fill { background:var(--color-accent-pink); }
+.multi-seg.is-over .multi-seg-time { color:var(--color-accent-pink); }
+.stopwatch-time.is-overtime { color:var(--color-accent-pink); }
+.multi-confirm-table { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
+.multi-confirm-row { display:grid; grid-template-columns:minmax(0,1.6fr) 44px repeat(3, minmax(0,1fr)); gap:6px; align-items:center; font-size:0.85rem; }
+.multi-confirm-head { font-size:0.72rem; color:var(--color-text-tertiary); }
+.multi-confirm-row input { width:100%; min-width:0; text-align:center; padding:6px 4px; }
+.multi-confirm-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.multi-confirm-name span { display:block; font-size:0.7rem; font-weight:400; color:var(--color-text-tertiary); }
+.multi-confirm-plan { color:var(--color-text-secondary); font-variant-numeric:tabular-nums; }
+body.zen-mode .multi-panel { display:none; }
+
 .countdown-settings .preset-btn { padding: 4px 12px; font-size: 0.75rem; border-radius: var(--radius-full); }
 .countdown-settings input::-webkit-outer-spin-button,
 .countdown-settings input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }

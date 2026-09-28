@@ -1613,7 +1613,19 @@ function prefetchCommonData() {
 const STUDY_LOG_PAGE = 500;
 const STUDY_LOG_MAX_PAGES = 100;   // 暴走よけ（5万件ぶん）
 
+// 統合セッションで手を付けなかった科目は 0分 の行として残る（配分と実績の差を見るため）。
+// 普通の集計（セッション数・1日の科目数・学習ログ一覧など）には入れない。
+function isUntouchedSegmentLog(l) {
+  return !!(l && l.combined_session_id && !(Number(l.duration_minutes) > 0));
+}
 async function fetchStudyLogs() {
+  const all = await fetchStudyLogsAll();
+  // 該当が無ければ同じ配列を返す（キャッシュと同一のまま扱えるように）
+  return all.some(isUntouchedSegmentLog) ? all.filter(l => !isUntouchedSegmentLog(l)) : all;
+}
+
+// 0分の行も含めた生のログ。統合セッションの配分と実績の集計だけが使う
+async function fetchStudyLogsAll() {
   if (!hasDB()) return [];
   return cachedFetch('study_logs', async () => {
     const page = (from, withCount) => {
@@ -1799,6 +1811,18 @@ async function addSessionMarks(applied, marks) {
   }
 }
 
+// 記録を保存したあと、今日の目標と合計時間の日次スナップショットを取り直す
+async function refreshTodaySnapshot() {
+  const logicalDate = getLogicalDate(new Date());
+  const dateKey = toLocalDateKey(logicalDate);
+  const goalForToday = getTodayGoalMinutes();
+  const allLogs = await fetchStudyLogs();
+  const ds = new Date(logicalDate); ds.setHours(5, 0, 0, 0);
+  const de = new Date(logicalDate); de.setHours(28, 59, 59, 999);
+  const todayTotal = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
+  saveDailySnapshot(dateKey, goalForToday, todayTotal);
+}
+
 async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
@@ -1851,15 +1875,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       invalidateCache('study_logs'); _planSyncAt = 0;
       // 問題演習で問題数を記録したときは、教材進捗トラッカーも同時に進める
       const qbApplied = applyQb();
-      // Save daily snapshot with current goal
-      const logicalDate = getLogicalDate(new Date());
-      const dateKey = toLocalDateKey(logicalDate);
-      const goalForToday = getTodayGoalMinutes();
-      const allLogs = await fetchStudyLogs();
-      const ds = new Date(logicalDate); ds.setHours(5, 0, 0, 0);
-      const de = new Date(logicalDate); de.setHours(28, 59, 59, 999);
-      const todayTotal = allLogs.filter(l => { const t = new Date(l.started_at); return t >= ds && t <= de; }).reduce((s, l) => s + l.duration_minutes, 0);
-      saveDailySnapshot(dateKey, goalForToday, todayTotal);
+      await refreshTodaySnapshot();
       showQbToast(qbApplied, ' 勉強記録を保存しました！');
       return true;
     }
@@ -1982,6 +1998,7 @@ function saveTimerState() {
     selectedVideoEdition,
     cumulativeStudySeconds,
     sessionStartedAt, sessionBreaks,
+    isMulti, multiSession,
     lastUpdate: Date.now()
   }));
 }
@@ -2014,6 +2031,8 @@ function loadTimerState() {
   cumulativeStudySeconds = state.cumulativeStudySeconds || 0;
   sessionStartedAt = state.sessionStartedAt || null;
   sessionBreaks = state.sessionBreaks || [];
+  isMulti = !!state.isMulti;
+  multiSession = state.multiSession && Array.isArray(state.multiSession.segments) ? state.multiSession : null;
   
   const delta = Math.floor((Date.now() - state.lastUpdate)/1000);
   if (isRunning) {
@@ -2277,6 +2296,7 @@ function startSW(){
   if(sessionBreaks.length > 0 && !sessionBreaks[sessionBreaks.length-1].end) {
     sessionBreaks[sessionBreaks.length-1].end = new Date().toISOString();
   }
+  multiOnStart(new Date().toISOString());
   isRunning=true;
   timerStartTime = Date.now();
   baseElapsed = elapsedSeconds;
@@ -2293,6 +2313,13 @@ function startSW(){
       }
     }
     if(elapsedSeconds % 5 === 0) saveTimerState();
+    if(isMulti) {
+      // 複数科目モードは科目ごとの残り時間を出す
+      multiTick();
+      updatePip();
+      updateTabTitle();
+      return;
+    }
     // Always query fresh DOM to avoid stale references after re-renders
     const disp = document.getElementById('timer-display');
     if(disp) {
@@ -2420,6 +2447,17 @@ function finishSession(manualStop = false) {
         cumulativeStudySeconds += elapsedSeconds;
       }
     }
+  }
+
+  // 複数科目モードは科目ごとの記録フォームを出す
+  if (isMulti && multiSession && multiSession.id) {
+    multiCommit();
+    pendingLogDuration = Math.floor(cumulativeStudySeconds / 60);
+    isConfirmingLog = true;
+    saveTimerState();
+    if (document.querySelector('.stopwatch-card')) showMultiConfirmOverlay();
+    else showToast(IC.check+' 学習セッションが終了しました！記録を確認してください。');
+    return;
   }
 
   pendingLogDuration = Math.floor(cumulativeStudySeconds / 60);
@@ -2621,6 +2659,7 @@ function pauseSW(){
     if(isCountdown) countdownSeconds = Math.max(0, baseCountdown - delta);
     // Record break start
     sessionBreaks.push({ start: new Date().toISOString(), end: null });
+    multiOnPause(new Date().toISOString());
   }
   isRunning=false;
   if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
@@ -2642,6 +2681,7 @@ function resetSW(){
   pomodoroPhase='study';
   simulationPhase='study';
   simulationBlockCurrent=1;
+  multiResetRuntime();
   saveTimerState();
 }
 
@@ -2653,6 +2693,740 @@ function fmtSW(t){
 
 function generateUID() {
   return 'mf-' + Math.random().toString(36).substring(2, 9);
+}
+
+// ==================== 複数科目統合セッション ====================
+// 複数の科目を1セッションで解く。合計時間を問題数の比で科目に配り、科目ごとの実績時間を
+// 測って、終わったら科目ごとに1行ずつ study_logs に入れる（combined_session_id で束ねる）。
+// 活動は問題演習(qb)に固定。手を付けなかった科目も 0分 の行として残し、配分との差を後で見られるようにする。
+// タイマー本体はストップウォッチとして動かし、科目の実績は elapsedSeconds の差分で積む
+// （一時停止中は elapsedSeconds が進まないので、休憩は自然に実績から外れる）。
+const MULTI_MIN_PER_Q_KEY = 'medfocus_multi_min_per_q';
+let isMulti = false;
+let multiSession = null;  // { id, totalMin, current, segBase, segments:[{subjectId, questions, plannedMin, actualSec, startedAt, endedAt, breaks, notified}] }
+
+// 合計時間を問題数の比で配る。端数は切り捨て、余りは問題数が最多の科目（同数なら先の科目）に足す。
+// 問題数が0以下の科目には配らない。入力の並びと同じ長さの配列を返す。
+function allocateCombinedMinutes(totalMin, items) {
+  const total = Math.max(0, Math.floor(Number(totalMin) || 0));
+  const qs = (items || []).map(it => Math.max(0, Math.floor(Number(it && it.questions) || 0)));
+  const sumQ = qs.reduce((s, q) => s + q, 0);
+  const out = (items || []).map((it, i) => Object.assign({}, it, { plannedMin: 0 }));
+  if (!total || !sumQ) return out;
+  let used = 0, maxIdx = -1;
+  qs.forEach((q, i) => {
+    if (q <= 0) return;
+    const m = Math.floor(total * q / sumQ);
+    out[i].plannedMin = m; used += m;
+    if (maxIdx < 0 || q > qs[maxIdx]) maxIdx = i;
+  });
+  out[maxIdx].plannedMin += total - used;
+  return out;
+}
+
+// 推奨合計時間（分）= Σ 問題数 × その科目の1問あたりの分。minPerQFor(subjectId) で単価を引く。
+function recommendedCombinedMinutes(items, minPerQFor) {
+  let sum = 0;
+  (items || []).forEach(it => {
+    const q = Math.max(0, Number(it && it.questions) || 0);
+    if (!q || !it.subjectId) return;
+    const u = Number(minPerQFor(it.subjectId));
+    if (u > 0) sum += q * u;
+  });
+  return Math.ceil(sum);
+}
+
+// 1問あたりの標準時間の上書き（分）。空なら実測を使う
+function getMultiMinPerQOverride() {
+  try { const v = parseFloat(localStorage.getItem(MULTI_MIN_PER_Q_KEY)); return v > 0 ? v : null; } catch (e) { return null; }
+}
+function setMultiMinPerQOverride(v) {
+  try { if (v > 0) localStorage.setItem(MULTI_MIN_PER_Q_KEY, String(v)); else localStorage.removeItem(MULTI_MIN_PER_Q_KEY); } catch (e) {}
+}
+
+function newMultiDraft() {
+  return { id: null, totalMin: 60, current: 0, segBase: 0, segments: [] };
+}
+function ensureMultiSession() {
+  if (!multiSession || !Array.isArray(multiSession.segments)) multiSession = newMultiDraft();
+  return multiSession;
+}
+function newMultiSegment(subjectId, questions) {
+  return { subjectId: subjectId || '', questions: questions === '' || questions == null ? '' : Math.max(0, parseInt(questions, 10) || 0),
+           plannedMin: 0, actualSec: 0, startedAt: null, endedAt: null, breaks: [], notified: false };
+}
+// 始めたあと（記録・リセットまで）は、ほかのモードへ移れない
+function multiLocked() { return !!(isMulti && multiSession && multiSession.id); }
+
+function multiUuid() {
+  if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  const h = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
+  return `${h()}${h()}-${h()}-4${h().slice(1)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${h().slice(1)}-${h()}${h()}${h()}`;
+}
+
+// いまの科目で経過中のぶんも含めた実績（秒）
+function multiLiveSec(i) {
+  const ms = multiSession;
+  if (!ms || !ms.segments[i]) return 0;
+  const seg = ms.segments[i];
+  const live = (ms.id && i === ms.current) ? Math.max(0, elapsedSeconds - (ms.segBase || 0)) : 0;
+  return (seg.actualSec || 0) + live;
+}
+// 経過中のぶんを、いまの科目の実績へ確定させる。何度呼んでも二重には積まない
+function multiCommit() {
+  const ms = multiSession;
+  if (!ms || !ms.id || !ms.segments[ms.current]) return;
+  ms.segments[ms.current].actualSec = multiLiveSec(ms.current);
+  ms.segBase = elapsedSeconds;
+}
+function multiSwitchTo(i) {
+  const ms = multiSession;
+  if (!ms || !ms.id || i < 0 || i >= ms.segments.length || i === ms.current) return;
+  multiCommit();
+  const now = new Date().toISOString();
+  ms.segments[ms.current].endedAt = now;
+  ms.current = i;
+  if (!ms.segments[i].startedAt) ms.segments[i].startedAt = now;
+  saveTimerState();
+}
+
+// 設定を検証して配分を確定させ、セッションを始められる状態にする。問題があれば文言を返す
+function multiStart() {
+  const ms = ensureMultiSession();
+  const segs = ms.segments.filter(s => s.subjectId && Number(s.questions) > 0);
+  if (!segs.length) return '科目と問題数を1つ以上入力してください';
+  const ids = segs.map(s => s.subjectId);
+  if (new Set(ids).size !== ids.length) return '同じ科目が2回選ばれています';
+  const totalMin = parseInt(ms.totalMin, 10);
+  if (!(totalMin > 0)) return '合計時間を入力してください';
+  const alloc = allocateCombinedMinutes(totalMin, segs);
+  ms.segments = alloc.map(s => Object.assign(newMultiSegment(s.subjectId, s.questions), { plannedMin: s.plannedMin }));
+  ms.totalMin = totalMin;
+  ms.id = multiUuid();
+  ms.current = 0;
+  ms.segBase = elapsedSeconds;
+  return null;
+}
+
+// リセット後は科目と問題数を下書きとして残す（同じ組み合わせで続けて始められるように）
+function multiResetRuntime() {
+  if (!multiSession) return;
+  multiSession.id = null;
+  multiSession.current = 0;
+  multiSession.segBase = 0;
+  multiSession.segments = multiSession.segments.map(s => newMultiSegment(s.subjectId, s.questions));
+}
+
+// startSW / pauseSW から呼ぶ。休憩は止めたときにいた科目に付ける
+function multiOnStart(nowIso) {
+  const ms = multiSession;
+  if (!isMulti || !ms || !ms.id) return;
+  const cur = ms.segments[ms.current];
+  if (cur && !cur.startedAt) cur.startedAt = nowIso;
+  ms.segments.forEach(s => {
+    const last = s.breaks && s.breaks[s.breaks.length - 1];
+    if (last && !last.end) last.end = nowIso;
+  });
+}
+function multiOnPause(nowIso) {
+  const ms = multiSession;
+  if (!isMulti || !ms || !ms.id) return;
+  const cur = ms.segments[ms.current];
+  if (cur) (cur.breaks = cur.breaks || []).push({ start: nowIso, end: null });
+}
+
+// 今日のノルマ（問題集のプラン）から、科目ごとの今日の残り問題数を拾う
+function multiQuotaRows(sync) {
+  if (!sync || !Array.isArray(sync.plans)) return [];
+  const today = sync.todayKey;
+  const known = new Set(subjectCategories.flatMap(c => c.subjects.map(s => s.id)));
+  const out = [];
+  sync.plans.filter(p => p.status === 'active' && p.unit === 'q' && p.subject_id && known.has(p.subject_id)).forEach(plan => {
+    const mine = (sync.tasks || []).filter(t => t.plan_id === plan.id);
+    if (!mine.some(t => !t.extra && t.kind === 'quota' && String(t.due_date).slice(0, 10) === today)) return;
+    const prog = planProgress(plan, mine, today);
+    const left = Math.max(0, (prog.todayTarget || 0) - (prog.todayDone || 0));
+    const hit = out.find(r => r.subjectId === plan.subject_id);
+    if (hit) hit.questions += left;
+    else if (left > 0) out.push({ subjectId: plan.subject_id, questions: left });
+  });
+  return out;
+}
+// その科目の問題数の初期値: 今日のノルマの残り → いまの周の残り問題数 → 空
+function multiSuggestedQuestions(subjectId) {
+  const q = multiQuotaRows(cachedPlanSync()).find(r => r.subjectId === subjectId);
+  if (q) return q.questions;
+  const rounds = getQBProgress()[subjectId];
+  if (rounds) {
+    const keys = Object.keys(rounds).map(k => parseInt(k, 10)).filter(Number.isFinite).sort((a, b) => a - b);
+    for (const k of keys) {
+      const r = rounds[String(k)] || {};
+      if ((r.total || 0) > (r.done || 0)) return r.total - r.done;
+    }
+  }
+  return '';
+}
+
+// 1問あたりの分。設定の上書き → 科目別の実測 → 全体の実測 → 仮の単価
+let _multiUnitCost = null;
+function multiMinPerQ(subjectId) {
+  const o = getMultiMinPerQOverride();
+  if (o) return o;
+  const u = _multiUnitCost || {};
+  return minutesPerQuestionFor(subjectId, u.unit, u.bySubject);
+}
+
+function fmtMultiSec(sec) {
+  const over = sec < 0;
+  return (over ? '+' : '') + fmtSW(Math.abs(Math.round(sec)));
+}
+function multiDisplayHTML() {
+  const ms = ensureMultiSession();
+  if (!ms.id) return fmtSW((parseInt(ms.totalMin, 10) || 0) * 60);
+  const seg = ms.segments[ms.current];
+  return fmtMultiSec(seg.plannedMin * 60 - multiLiveSec(ms.current));
+}
+function multiStatusText() {
+  const ms = multiSession;
+  if (!ms || !ms.id) return '';
+  const seg = ms.segments[ms.current];
+  const over = multiLiveSec(ms.current) > seg.plannedMin * 60;
+  return `${esc(subjectNameOf(seg.subjectId))}（${ms.current + 1}/${ms.segments.length}）${over ? '・配分超過' : ''}`;
+}
+
+function multiSubjectOptions(selected) {
+  const known = subjectCategories.some(c => c.subjects.some(s => s.id === selected));
+  return `<option value="">-- 科目 --</option>`
+    + (selected && !known ? `<option value="${esc(selected)}" selected>${esc(subjectNameOf(selected))}</option>` : '')
+    + subjectCategories.map(c => `<optgroup label="${esc(c.name)}">${c.subjects.map(s =>
+        `<option value="${esc(s.id)}" ${selected === s.id ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</optgroup>`).join('');
+}
+
+function multiPanelHTML() {
+  const ms = ensureMultiSession();
+  if (ms.id) {
+    const rows = ms.segments.map((s, i) => {
+      const live = multiLiveSec(i), plan = s.plannedMin * 60;
+      const pct = plan > 0 ? Math.min(100, live / plan * 100) : 0;
+      return `<div class="multi-seg ${i === ms.current ? 'is-current' : ''} ${plan > 0 && live > plan ? 'is-over' : ''}" data-multi-seg="${i}" role="button" tabindex="0">
+        <div class="multi-seg-head">
+          <span class="multi-seg-name">${esc(subjectNameOf(s.subjectId))}</span>
+          <span class="multi-seg-q">${s.questions}問</span>
+          <span class="multi-seg-time"><span class="multi-seg-actual">${formatMinutes(Math.floor(live / 60))}</span> / ${formatMinutes(s.plannedMin)}</span>
+        </div>
+        <div class="multi-seg-bar"><div class="multi-seg-fill" style="width:${pct.toFixed(1)}%"></div></div>
+      </div>`;
+    }).join('');
+    return `<div class="multi-panel" id="multi-panel">
+      <div class="multi-list">${rows}</div>
+      <div class="multi-nav">
+        <button type="button" class="btn btn-secondary btn-sm" id="multi-prev" ${ms.current === 0 ? 'disabled' : ''}>◀ 前の科目</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="multi-next" ${ms.current >= ms.segments.length - 1 ? 'disabled' : ''}>次の科目 ▶</button>
+      </div>
+    </div>`;
+  }
+  const quota = multiQuotaRows(cachedPlanSync());
+  const override = getMultiMinPerQOverride();
+  const rows = ms.segments.map((s, i) => `
+    <div class="multi-row" data-multi-row="${i}">
+      <select class="multi-subject">${multiSubjectOptions(s.subjectId)}</select>
+      <input type="number" class="multi-questions" min="0" inputmode="numeric" placeholder="問題数" value="${s.questions === '' ? '' : esc(s.questions)}" />
+      <span class="multi-alloc" data-multi-alloc="${i}"></span>
+      <button type="button" class="multi-remove" data-multi-remove="${i}" title="外す">✕</button>
+    </div>`).join('');
+  return `<div class="multi-panel multi-setup" id="multi-panel">
+    <div class="multi-list">${rows || '<div class="multi-empty">科目を追加してください</div>'}</div>
+    <div class="multi-add-row">
+      <button type="button" class="btn btn-secondary btn-sm" id="multi-add">＋ 科目を追加</button>
+      ${quota.length ? `<button type="button" class="btn btn-secondary btn-sm" id="multi-add-quota">今日のノルマから追加</button>` : ''}
+    </div>
+    <div class="multi-total-row">
+      <label>合計 <input type="number" id="multi-total" min="1" inputmode="numeric" value="${esc(ms.totalMin)}" /> 分</label>
+      <label>1問あたり <input type="number" id="multi-minperq" min="0" step="0.1" inputmode="decimal" placeholder="実測" value="${override ? esc(override) : ''}" /> 分</label>
+    </div>
+    <div class="multi-recommend" id="multi-recommend"></div>
+  </div>`;
+}
+
+// 入力中はパネルを描き直さず、配分と推奨だけ書き換える（入力欄のフォーカスを失わないため）
+function updateMultiPreview() {
+  const ms = multiSession;
+  const panel = document.getElementById('multi-panel');
+  if (!ms || ms.id || !panel) return;
+  const alloc = allocateCombinedMinutes(ms.totalMin, ms.segments.map(s => s.subjectId ? s : { questions: 0 }));
+  panel.querySelectorAll('[data-multi-alloc]').forEach(el => {
+    const a = alloc[+el.dataset.multiAlloc];
+    el.textContent = a && a.plannedMin > 0 ? `${a.plannedMin}分` : '';
+  });
+  const rec = recommendedCombinedMinutes(ms.segments, multiMinPerQ);
+  const box = document.getElementById('multi-recommend');
+  if (box) box.innerHTML = rec > 0
+    ? `推奨 <strong>${formatMinutes(rec)}</strong>（1問あたり${getMultiMinPerQOverride() ? '設定値' : '実測'}から）${rec !== parseInt(ms.totalMin, 10) ? ` <button type="button" class="btn btn-secondary btn-sm" id="multi-apply-rec">適用</button>` : ''}`
+    : '';
+  document.getElementById('multi-apply-rec')?.addEventListener('click', () => {
+    ms.totalMin = rec;
+    const t = document.getElementById('multi-total'); if (t) t.value = rec;
+    saveTimerState(); updateMultiPreview(); updateMultiDisplay();
+  });
+}
+
+function refreshMultiPanel() {
+  const panel = document.getElementById('multi-panel');
+  if (!panel) return;
+  panel.outerHTML = multiPanelHTML();
+  wireMultiPanel();
+  updateMultiDisplay();
+}
+
+function wireMultiPanel() {
+  const panel = document.getElementById('multi-panel');
+  if (!panel) return;
+  const ms = ensureMultiSession();
+  if (ms.id) {
+    document.getElementById('multi-prev')?.addEventListener('click', () => { multiSwitchTo(ms.current - 1); refreshMultiPanel(); });
+    document.getElementById('multi-next')?.addEventListener('click', () => { multiSwitchTo(ms.current + 1); refreshMultiPanel(); });
+    panel.querySelectorAll('[data-multi-seg]').forEach(el => {
+      const go = () => { multiSwitchTo(+el.dataset.multiSeg); refreshMultiPanel(); };
+      el.addEventListener('click', go);
+      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+    });
+    return;
+  }
+  panel.querySelectorAll('[data-multi-row]').forEach(row => {
+    const i = +row.dataset.multiRow;
+    row.querySelector('.multi-subject').addEventListener('change', e => {
+      const seg = ms.segments[i];
+      seg.subjectId = e.target.value;
+      // 問題数が空なら、ノルマ・残り問題数から入れる
+      if (seg.subjectId && (seg.questions === '' || !Number(seg.questions))) seg.questions = multiSuggestedQuestions(seg.subjectId);
+      saveTimerState(); refreshMultiPanel();
+    });
+    row.querySelector('.multi-questions').addEventListener('input', e => {
+      const v = e.target.value.trim();
+      ms.segments[i].questions = v === '' ? '' : Math.max(0, parseInt(v, 10) || 0);
+      saveTimerState(); updateMultiPreview();
+    });
+  });
+  panel.querySelectorAll('[data-multi-remove]').forEach(b => b.addEventListener('click', () => {
+    ms.segments.splice(+b.dataset.multiRemove, 1);
+    saveTimerState(); refreshMultiPanel();
+  }));
+  document.getElementById('multi-add')?.addEventListener('click', () => {
+    ms.segments.push(newMultiSegment('', ''));
+    saveTimerState(); refreshMultiPanel();
+  });
+  document.getElementById('multi-add-quota')?.addEventListener('click', () => {
+    multiQuotaRows(cachedPlanSync()).forEach(r => {
+      const hit = ms.segments.find(s => s.subjectId === r.subjectId);
+      if (hit) hit.questions = r.questions;
+      else {
+        // 空の行があればそこへ入れる
+        const blank = ms.segments.find(s => !s.subjectId);
+        if (blank) { blank.subjectId = r.subjectId; blank.questions = r.questions; }
+        else ms.segments.push(newMultiSegment(r.subjectId, r.questions));
+      }
+    });
+    saveTimerState(); refreshMultiPanel();
+  });
+  document.getElementById('multi-total')?.addEventListener('input', e => {
+    ms.totalMin = e.target.value.trim() === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0);
+    saveTimerState(); updateMultiPreview(); updateMultiDisplay();
+  });
+  document.getElementById('multi-minperq')?.addEventListener('input', e => {
+    setMultiMinPerQOverride(parseFloat(e.target.value));
+    updateMultiPreview();
+  });
+  updateMultiPreview();
+}
+
+// タイマーの表示・リング・科目ごとの進捗を書き換える（毎tick）
+function updateMultiDisplay() {
+  const ms = multiSession;
+  if (!isMulti || !ms) return;
+  const disp = document.getElementById('timer-display');
+  if (disp) { const f = multiDisplayHTML(); if (disp.innerHTML !== f) disp.innerHTML = f; }
+  const ring = document.getElementById('timer-ring');
+  if (!ms.id) {
+    if (ring) ring.style.strokeDashoffset = 2 * Math.PI * 140;
+    return;
+  }
+  const seg = ms.segments[ms.current];
+  const live = multiLiveSec(ms.current), plan = seg.plannedMin * 60;
+  const over = plan > 0 && live > plan;
+  if (ring) {
+    const circ = 2 * Math.PI * 140;
+    const p = plan > 0 ? Math.min(1, live / plan) : 1;
+    ring.style.strokeDasharray = circ;
+    ring.style.strokeDashoffset = circ - p * circ;
+    ring.style.stroke = over ? 'var(--color-accent-pink)' : 'var(--color-primary)';
+  }
+  if (disp) disp.classList.toggle('is-overtime', over);
+  const st = document.getElementById('timer-status');
+  if (st && isRunning) {
+    const html = `<span class="status-dot"></span>${multiStatusText()}`;
+    if (st.innerHTML !== html) st.innerHTML = html;
+  }
+  document.querySelectorAll('[data-multi-seg]').forEach(el => {
+    const i = +el.dataset.multiSeg, s = ms.segments[i];
+    if (!s) return;
+    const l = multiLiveSec(i), pl = s.plannedMin * 60;
+    const a = el.querySelector('.multi-seg-actual');
+    if (a) { const t = formatMinutes(Math.floor(l / 60)); if (a.textContent !== t) a.textContent = t; }
+    const fill = el.querySelector('.multi-seg-fill');
+    if (fill) fill.style.width = (pl > 0 ? Math.min(100, l / pl * 100) : 0).toFixed(1) + '%';
+    el.classList.toggle('is-over', pl > 0 && l > pl);
+  });
+}
+
+// 配分時間に届いたら1回だけ知らせる。次の科目へは自動では移らない
+function multiTick() {
+  const ms = multiSession;
+  if (!isMulti || !ms || !ms.id) return;
+  const seg = ms.segments[ms.current];
+  if (seg && !seg.notified && seg.plannedMin > 0 && multiLiveSec(ms.current) >= seg.plannedMin * 60) {
+    seg.notified = true;
+    saveTimerState();
+    playBeep();
+    showToast(IC.timer + ` ${subjectNameOf(seg.subjectId)} の配分時間（${formatMinutes(seg.plannedMin)}）になりました`);
+  }
+  updateMultiDisplay();
+}
+
+// ---- 終了後の記録 ----
+function showMultiConfirmOverlay() {
+  const ms = multiSession;
+  if (!ms || !ms.id) return;
+  removeConfirmOverlays();
+  const overlay = document.createElement('div');
+  overlay.id = 'multi-finish-overlay';
+  overlay.className = 'timer-overlay animate-fade-in';
+  overlay.style = 'background:var(--color-bg-primary);';
+  const plannedTotal = ms.segments.reduce((s, x) => s + x.plannedMin, 0);
+  overlay.innerHTML = `
+    <div class="confirm-card animate-slide-up">
+      <div class="celebration-icon" style="margin-bottom:var(--space-md);"><span style="font-size:2rem;color:var(--color-accent-teal)">${IC.check}</span></div>
+      <h2 style="font-size:1.5rem; font-weight:700; color:var(--color-primary); margin-bottom:var(--space-xs);">お疲れ様でした！</h2>
+      <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg); font-size:0.9rem;">${ms.segments.length}科目・配分 ${formatMinutes(plannedTotal)} の記録です</p>
+      <div class="confirm-form" style="width:100%; display:flex; flex-direction:column; gap:16px; text-align:left;">
+        <div class="field">
+          <label>科目ごとの実績（手を付けなかった科目は 0分 で残ります）</label>
+          <div class="multi-confirm-table">
+            <div class="multi-confirm-row multi-confirm-head"><div>科目</div><div>配分</div><div>実績(分)</div><div>解いた</div><div>正解</div></div>
+            ${ms.segments.map((s, i) => {
+              const touched = s.actualSec > 0;
+              return `<div class="multi-confirm-row" data-multi-confirm="${i}">
+                <div class="multi-confirm-name">${esc(subjectNameOf(s.subjectId))}<span>${s.questions}問予定</span></div>
+                <div class="multi-confirm-plan">${s.plannedMin}分</div>
+                <div><input type="number" class="mc-min" min="0" inputmode="numeric" value="${Math.round(s.actualSec / 60)}" /></div>
+                <div><input type="number" class="mc-solved" min="0" inputmode="numeric" value="${touched ? s.questions : 0}" /></div>
+                <div><input type="number" class="mc-correct" min="0" inputmode="numeric" placeholder="-" /></div>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>
+        <div class="field">
+          <label>学習の目的</label>
+          <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
+            ${[['cbt','CBT'],['regular_exam','定期試験'],['assignment','課題・実習'],['other','その他']].map(([v, l]) =>
+              `<button type="button" class="btn ${selectedPurpose===v?'btn-primary':'btn-secondary'} purpose-btn" data-val="${v}" style="flex:1; padding:6px 0; font-size:0.85rem;">${l}</button>`).join('')}
+          </div>
+        </div>
+        <div class="field">
+          <label>振り返りメモ（全科目共通）</label>
+          <textarea id="multi-confirm-memo" placeholder="学んだことや一言..." style="width:100%; min-height:70px;"></textarea>
+        </div>
+        <div style="display:flex; gap:12px;">
+          <div class="field" style="flex:1;">
+            <label>場所</label>
+            <select id="multi-confirm-location" style="width:100%;">
+              ${['自宅','図書館','カフェ','大学','移動中'].map(v => `<option value="${v}" ${selectedLocation===v?'selected':''}>${locIcon(v)} ${v}</option>`).join('')}
+              <option value="その他" ${selectedLocation==='その他'?'selected':''}>${IC.pin} その他</option>
+            </select>
+          </div>
+          <div class="field" style="flex:1;">
+            <label>集中度</label>
+            <select id="multi-confirm-focus" style="width:100%;">${focusOptions(selectedFocusLevel)}</select>
+          </div>
+        </div>
+        <div class="confirm-actions">
+          <button class="btn btn-secondary" id="btn-multi-discard" style="flex:1; justify-content:center;">破棄</button>
+          <button class="btn btn-primary" id="btn-multi-save" style="flex:2; justify-content:center;">記録を保存</button>
+        </div>
+      </div>
+    </div>`;
+  mountConfirmOverlay(overlay);
+
+  overlay.querySelectorAll('.purpose-btn').forEach(b => b.addEventListener('click', ev => {
+    overlay.querySelectorAll('.purpose-btn').forEach(x => x.classList.replace('btn-primary', 'btn-secondary'));
+    ev.currentTarget.classList.replace('btn-secondary', 'btn-primary');
+    selectedPurpose = ev.currentTarget.dataset.val;
+  }));
+  overlay.querySelector('#btn-multi-discard').addEventListener('click', () => {
+    if (!confirm('この記録を破棄しますか？')) return;
+    overlay.remove(); resetSW(); renderStudy();
+  });
+  overlay.querySelector('#btn-multi-save').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    const read = readMultiConfirm(overlay);
+    if (read.error) { showToast(IC.x + ' ' + read.error); return; }
+    btn.disabled = true; btn.textContent = '保存中...'; btn.style.opacity = '0.7';
+    try {
+      selectedLocation = overlay.querySelector('#multi-confirm-location').value;
+      selectedFocusLevel = parseFloat(overlay.querySelector('#multi-confirm-focus').value);
+      saveTimerState();
+      const ok = await saveCombinedStudyLogs(ms.id, buildCombinedRows(ms, read.rows, new Date().toISOString()), {
+        memo: overlay.querySelector('#multi-confirm-memo').value.trim(),
+        focusLevel: selectedFocusLevel, location: selectedLocation, purpose: selectedPurpose
+      });
+      if (ok) { overlay.remove(); resetSW(); renderStudy(); return; }
+    } catch (err) {
+      console.error('multi session save error:', err);
+      showToast(IC.x + ' 予期せぬエラーが発生しました');
+    }
+    btn.disabled = false; btn.textContent = '記録を保存'; btn.style.opacity = '1';
+  });
+}
+
+function readMultiConfirm(root) {
+  const rows = [];
+  for (const el of root.querySelectorAll('[data-multi-confirm]')) {
+    const min = parseInt(el.querySelector('.mc-min').value, 10);
+    const sRaw = el.querySelector('.mc-solved').value.trim();
+    const cRaw = el.querySelector('.mc-correct').value.trim();
+    const solved = sRaw === '' ? null : parseInt(sRaw, 10);
+    const correct = cRaw === '' ? null : parseInt(cRaw, 10);
+    if (!Number.isFinite(min) || min < 0) return { error: '実績時間が正しくありません' };
+    if (solved !== null && (!Number.isFinite(solved) || solved < 0)) return { error: '問題数が正しくありません' };
+    if (correct !== null && (!Number.isFinite(correct) || correct < 0)) return { error: '正解数が正しくありません' };
+    if (correct !== null && correct > (solved || 0)) return { error: '正解数が問題数を超えています' };
+    rows.push({ index: +el.dataset.multiConfirm, minutes: min, solved, correct: correct === null && solved !== null ? 0 : correct });
+  }
+  if (!rows.some(r => r.minutes > 0)) return { error: '実績時間が1分以上の科目がありません' };
+  return { rows };
+}
+
+// セッションの状態と確認フォームの入力から、保存する行を組み立てる。
+// 手を付けなかった科目（startedAt なし）は終了時刻に 0分 で置く。
+function buildCombinedRows(ms, inputs, endedIso) {
+  const cur = ms.segments[ms.current];
+  return inputs.map(inp => {
+    const s = ms.segments[inp.index];
+    const start = s.startedAt || endedIso;
+    // いまの科目と、途中で離れていない科目の終了は、セッションの終了時刻にする
+    const end = (s === cur || !s.endedAt) ? endedIso : s.endedAt;
+    return {
+      subjectId: s.subjectId, order: inp.index,
+      plannedMin: s.plannedMin, plannedQuestions: Number(s.questions) || 0,
+      minutes: inp.minutes, solved: inp.solved, correct: inp.correct,
+      startedAt: start, endedAt: end < start ? start : end,
+      // 終了時に開いたままの一時停止は、勉強のあとなので休憩に数えない
+      breaks: (s.breaks || []).filter(b => b.start && b.end)
+    };
+  });
+}
+
+// study_logs.combined_session_id などは add_combined_sessions.sql で足す列。
+// 未実行の環境でも記録は残るよう、列が無いと言われたら落として1回だけやり直す。
+let combinedColumnsMissing = false;
+const COMBINED_COLUMNS = ['combined_session_id', 'planned_minutes', 'planned_questions', 'segment_order'];
+function isMissingCombinedColumn(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return COMBINED_COLUMNS.some(c => m.includes(c)) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
+function isDurationCheckError(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return ((error && error.code === '23514') || /check constraint/i.test(m)) && /duration/i.test(m);
+}
+
+async function saveCombinedStudyLogs(sessionId, rows, common) {
+  const applyQb = () => rows
+    .filter(r => r.solved > 0)
+    .map(r => applyQbSessionToProgress(r.subjectId, r.solved, r.correct || 0))
+    .filter(Boolean);
+  const toastDone = (results, suffix) => {
+    const notes = results.map(describeQbChanges).filter(Boolean);
+    const warn = results.some(r => r && (r.skipped || r.noTotal));
+    showToast((warn ? IC.warn : IC.check) + ` ${rows.length}科目の記録を保存しました${suffix || ''}${notes.length ? '（' + notes.join('／') + '）' : ''}`, notes.length ? 6000 : 3000);
+  };
+  if (!hasDB()) { toastDone(applyQb(), '（デモ）'); return true; }
+  try {
+    let payloads = rows.map(r => {
+      const p = {
+        user_id: session.user.id,
+        subject_name: r.subjectId,
+        duration_minutes: r.minutes,
+        memo: common.memo || null,
+        focus_level: common.focusLevel,
+        location: common.location,
+        study_purpose: common.purpose || 'other',
+        activity: 'qb',
+        questions_solved: r.solved,
+        questions_correct: r.solved === null ? null : r.correct,
+        started_at: r.startedAt,
+        ended_at: r.endedAt,
+        combined_session_id: sessionId,
+        planned_minutes: r.plannedMin,
+        planned_questions: r.plannedQuestions,
+        segment_order: r.order
+      };
+      if (r.breaks && r.breaks.length) p.breaks = JSON.stringify(r.breaks);
+      return p;
+    });
+    const strip = ps => ps.map(p => { const o = { ...p }; COMBINED_COLUMNS.forEach(c => delete o[c]); return o; });
+    if (combinedColumnsMissing) payloads = strip(payloads);
+    let { error } = await supabase.from('study_logs').insert(payloads);
+    if (error && isMissingCombinedColumn(error)) {
+      console.warn('study_logs の統合セッション列が未作成のため、列なしで保存します（add_combined_sessions.sql を実行してください）');
+      combinedColumnsMissing = true;
+      payloads = strip(payloads);
+      ({ error } = await supabase.from('study_logs').insert(payloads));
+    }
+    let droppedZero = false;
+    if (error && isDurationCheckError(error) && payloads.some(p => !(p.duration_minutes > 0))) {
+      console.warn('study_logs が 0分の行を受け付けないため、手を付けなかった科目を外して保存します（add_combined_sessions.sql を実行してください）');
+      droppedZero = true;
+      ({ error } = await supabase.from('study_logs').insert(payloads.filter(p => p.duration_minutes > 0)));
+    }
+    if (error) {
+      console.error('Supabase save error:', error);
+      showToast(IC.x + ' 保存に失敗しました: ' + error.message);
+      return false;
+    }
+    invalidateCache('study_logs'); _planSyncAt = 0;
+    const results = applyQb();
+    await refreshTodaySnapshot();
+    toastDone(results, droppedZero ? '（0分の科目は保存できませんでした）' : '');
+    return true;
+  } catch (err) {
+    console.error('saveCombinedStudyLogs exception:', err);
+    showToast(IC.x + ' エラーが発生しました');
+    return false;
+  }
+}
+
+// ---- Check: 統合セッションの配分と実績 ----
+// 統合セッションの行（0分の行も含む生のログ）を、セッション単位と科目単位に束ねる。
+function buildCombinedSessionStats(rawLogs) {
+  const bySession = {};
+  (rawLogs || []).forEach(l => {
+    if (!l || !l.combined_session_id || l.planned_minutes == null) return;
+    (bySession[l.combined_session_id] = bySession[l.combined_session_id] || []).push(l);
+  });
+  const sessions = Object.entries(bySession).map(([id, rows]) => {
+    rows.sort((a, b) => (a.segment_order || 0) - (b.segment_order || 0));
+    const planned = rows.reduce((s, r) => s + (Number(r.planned_minutes) || 0), 0);
+    const actual = rows.reduce((s, r) => s + (Number(r.duration_minutes) || 0), 0);
+    const starts = rows.filter(r => Number(r.duration_minutes) > 0).map(r => new Date(r.started_at).getTime());
+    const at = starts.length ? Math.min(...starts) : new Date(rows[0].started_at).getTime();
+    return { id, at, planned, actual, diff: actual - planned, subjects: rows.length,
+             untouched: rows.filter(r => !(Number(r.duration_minutes) > 0)).length, rows };
+  }).sort((a, b) => b.at - a.at);
+
+  const subj = {};
+  sessions.forEach(s => s.rows.forEach(r => {
+    const sid = subjectIdOfName(r.subject_name) || r.subject_name;
+    const b = (subj[sid] = subj[sid] || { subjectId: sid, count: 0, planned: 0, actual: 0, over: 0, untouched: 0, solved: 0, solvedMin: 0 });
+    const pl = Number(r.planned_minutes) || 0, ac = Number(r.duration_minutes) || 0;
+    b.count++; b.planned += pl; b.actual += ac;
+    if (ac > pl) b.over++;
+    if (!(ac > 0)) b.untouched++;
+    const q = Number(r.questions_solved);
+    if (q > 0 && ac > 0) { b.solved += q; b.solvedMin += ac; }
+  }));
+  const bySubject = Object.values(subj).map(b => Object.assign(b, {
+    diff: b.actual - b.planned,
+    diffPct: b.planned > 0 ? (b.actual - b.planned) / b.planned * 100 : null,
+    minPerQ: b.solved > 0 ? b.solvedMin / b.solved : null
+  })).sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff));
+
+  const planned = sessions.reduce((s, x) => s + x.planned, 0);
+  const actual = sessions.reduce((s, x) => s + x.actual, 0);
+  const segCount = sessions.reduce((s, x) => s + x.subjects, 0);
+  const overSeg = bySubject.reduce((s, b) => s + b.over, 0);
+  const untouched = sessions.reduce((s, x) => s + x.untouched, 0);
+  const worst = bySubject.filter(b => b.count >= 2 && b.diffPct !== null && b.diffPct > 0)
+    .sort((a, b) => b.diffPct - a.diffPct)[0] || null;
+  return {
+    hasData: sessions.length > 0,
+    sessions, bySubject, planned, actual,
+    diffPct: planned > 0 ? (actual - planned) / planned * 100 : null,
+    overRate: segCount ? overSeg / segCount * 100 : null,
+    untouchedRate: segCount ? untouched / segCount * 100 : null,
+    worst
+  };
+}
+
+function fmtSignedMin(m) {
+  const r = Math.round(m);
+  return (r > 0 ? '+' : r < 0 ? '−' : '±') + formatMinutes(Math.abs(r));
+}
+
+function insightsCombinedHTML(d) {
+  const c = d.combined;
+  if (!c) return '';
+  return `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.14s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${IC.timer}</div>
+      <div><div class="section-title">統合セッション：配分と実績</div><div class="section-subtitle">複数科目モードで配った時間どおりに進んだか</div></div>
+    </div>
+    ${!c.hasData ? `
+      <div class="data-collecting-msg">学習記録の「複数科目」モードで記録すると、ここに配分と実績の差が出ます。</div>
+    ` : `
+      <div class="rhythm-stat-grid">
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.timer} 配分に対する実績</div>
+          <div class="rhythm-stat-value">${c.diffPct === null ? '--' : (c.diffPct >= 0 ? '+' : '') + c.diffPct.toFixed(0) + '%'}</div>
+          <div class="rhythm-stat-change change-neutral">${formatMinutes(c.actual)} / ${formatMinutes(c.planned)}（${c.sessions.length}回）</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${insightIcons.target} 配分を超えた科目</div>
+          <div class="rhythm-stat-value">${c.overRate === null ? '--' : c.overRate.toFixed(0) + '%'}</div>
+          <div class="rhythm-stat-change change-neutral">科目ごとの枠のうち</div>
+        </div>
+        <div class="rhythm-stat-item">
+          <div class="rhythm-stat-label">${IC.book} 手を付けなかった科目</div>
+          <div class="rhythm-stat-value">${c.untouchedRate === null ? '--' : c.untouchedRate.toFixed(0) + '%'}</div>
+          <div class="rhythm-stat-change ${c.untouchedRate > 0 ? 'change-warning' : 'change-positive'}">${c.untouchedRate > 0 ? '後ろの科目が押し出されています' : 'すべての科目に着手できています'}</div>
+        </div>
+      </div>
+      ${c.worst ? `
+        <div class="break-verdict">
+          <span class="break-verdict-mark">${IC.warn}</span>
+          <div><strong>${esc(subjectNameOf(c.worst.subjectId))}</strong>は配分より平均 ${c.worst.diffPct.toFixed(0)}% 長くかかっています。次回はこの科目の問題数を減らすか、1問あたりの時間を見直してください。</div>
+        </div>
+      ` : ''}
+      <div class="break-table">
+        <div class="break-row break-row-head break-row-wide">
+          <div>科目</div><div style="text-align:right">回数</div><div style="text-align:right">配分</div><div style="text-align:right">実績</div><div style="text-align:right">差</div>
+        </div>
+        ${c.bySubject.map(b => `
+          <div class="break-row break-row-wide ${b.diff > 0 ? '' : 'is-best'}">
+            <div class="break-row-label">${esc(subjectNameOf(b.subjectId))}${b.minPerQ !== null ? `<span class="break-row-share">1問 ${b.minPerQ.toFixed(1)}分</span>` : ''}</div>
+            <div class="break-row-num">${b.count}回${b.untouched ? `<span class="break-row-share">未着手${b.untouched}</span>` : ''}</div>
+            <div class="break-row-num">${formatMinutes(b.planned)}</div>
+            <div class="break-row-num">${formatMinutes(b.actual)}</div>
+            <div class="break-row-num">${fmtSignedMin(b.diff)}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-table" style="margin-top:12px">
+        <div class="break-row break-row-head break-row-wide">
+          <div>最近のセッション</div><div style="text-align:right">科目</div><div style="text-align:right">配分</div><div style="text-align:right">実績</div><div style="text-align:right">差</div>
+        </div>
+        ${c.sessions.slice(0, 8).map(s => `
+          <div class="break-row break-row-wide">
+            <div class="break-row-label">${new Date(s.at).toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short' })}</div>
+            <div class="break-row-num">${s.subjects}科目</div>
+            <div class="break-row-num">${formatMinutes(s.planned)}</div>
+            <div class="break-row-num">${formatMinutes(s.actual)}</div>
+            <div class="break-row-num">${fmtSignedMin(s.diff)}</div>
+          </div>
+        `).join('')}
+      </div>
+      <div class="break-note">統合セッションの各科目は通常の学習記録としても集計されています（科目別の時間・正答率・1問あたりの時間に反映済み）。手を付けなかった科目の 0分 の記録は、この表にだけ出ます。期間などの絞り込みはこの表には効きません。</div>
+    `}
+  </div>`;
 }
 
 // ==================== AUTH UI ====================
@@ -4306,6 +5080,8 @@ async function renderStudy(){
   // 今日のノルマ。プランの同期はページ描画より重いので、すでに同期済みのときだけ
   // ここで一緒に描き、まだなら描画後に差し込む（ページの表示を待たせない）
   const studyPlanSync = cachedPlanSync();
+  // 複数科目モードの推奨時間に使う1問あたりの分（全期間の実測）
+  if (isMulti) _multiUnitCost = { unit: buildUnitCost(logs), bySubject: buildUnitCostBySubject(logs) };
 
   removeConfirmOverlays();
   ct.innerHTML=`<div class="page-header"><h1 class="page-title">学習記録</h1><p class="page-subtitle">集中して勉強時間を記録しよう</p></div>
@@ -4314,14 +5090,15 @@ async function renderStudy(){
       <div class="stopwatch-card card animate-slide-up" style="position:relative; overflow:hidden;">
         <!-- Mode Switcher -->
         <div class="timer-mode-switcher" style="display:flex; justify-content:center; gap:8px; margin-bottom:var(--space-md); background:var(--color-bg-elevated); padding:4px; border-radius:var(--radius-md);">
-          <button class="mode-tab ${!isCountdown && !isPomodoro && !isSimulation?'active':''}" id="mode-up">ストップウォッチ</button>
+          <button class="mode-tab ${!isCountdown && !isPomodoro && !isSimulation && !isMulti?'active':''}" id="mode-up">ストップウォッチ</button>
           <button class="mode-tab ${isCountdown && !isPomodoro && !isSimulation?'active':''}" id="mode-down">タイマー</button>
           <button class="mode-tab ${isPomodoro?'active':''}" id="mode-pomodoro">ポモドーロ</button>
           <button class="mode-tab ${isSimulation?'active':''}" id="mode-simulation">本番模試</button>
+          <button class="mode-tab ${isMulti?'active':''}" id="mode-multi">複数科目</button>
         </div>
 
         <svg width="0" height="0"><defs><linearGradient id="timerGradient" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" style="stop-color:var(--color-primary)"/><stop offset="100%" style="stop-color:var(--color-accent)"/></linearGradient></defs></svg>
-        <div class="stopwatch-subject-selector">
+        ${isMulti ? multiPanelHTML() : `<div class="stopwatch-subject-selector">
           <select id="study-subject">
             <option value="">-- 科目を選択 --</option>
             ${subjectCategories.map(c=>`<optgroup label="${c.name}">${c.subjects.map(s=>`<option value="${s.id}" ${selectedSubjectId===s.id?'selected':''}>${s.name}</option>`).join('')}</optgroup>`).join('')}
@@ -4330,7 +5107,7 @@ async function renderStudy(){
         </div>
         <div id="study-subject-custom-row" style="display:${selectedSubjectId==='custom'?'block':'none'}; margin-bottom:var(--space-md);">
           <input type="text" id="study-subject-custom" placeholder="具体的な学習内容..." value="${selectedSubjectCustom}" style="width:100%;max-width:300px;text-align:center;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-primary);padding:5px;" />
-        </div>
+        </div>`}
         
         <!-- Action Buttons -->
         <div class="action-buttons-container" style="position:absolute; top:16px; right:16px; display:flex; gap:8px; z-index:10; background:color-mix(in srgb, var(--color-text-secondary) 10%, transparent); padding:4px; border-radius:24px; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px);">
@@ -4377,7 +5154,7 @@ async function renderStudy(){
               <circle class="ring-bg" cx="150" cy="150" r="140"/>
               <circle class="ring-progress" id="timer-ring" cx="150" cy="150" r="140" style="stroke:${isCountdown?'var(--color-accent-pink)':'var(--color-primary)'}"/>
             </svg>
-            <div class="stopwatch-time" id="timer-display">${fmtSW(isCountdown ? (isRunning ? countdownSeconds : (countdownSeconds || 1500)) : elapsedSeconds)}</div>
+            <div class="stopwatch-time" id="timer-display">${isMulti ? multiDisplayHTML() : fmtSW(isCountdown ? (isRunning ? countdownSeconds : (countdownSeconds || 1500)) : elapsedSeconds)}</div>
           </div>
         </div>
 
@@ -4390,11 +5167,11 @@ async function renderStudy(){
           <button id="btn-pip" style="background:none;border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-secondary);padding:4px 12px;font-size:0.8rem;cursor:pointer;" title="ミニタイマーをフローティング表示">${pipActive ? 'PiP 閉じる' : 'PiP'}</button>
           <button id="btn-pip-color" style="background:none;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:4px 8px;font-size:0.9rem;cursor:pointer;" title="PiPの色を変更">${getPipTheme().label}</button>
         </div>` : ''}
-        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning? (isPomodoro && pomodoroPhase === 'break' ? '<span class="status-dot"></span>休憩中...' : isSimulation ? (simulationPhase === 'break' ? `<span class="status-dot"></span>休憩中... (次: ブロック${simulationBlockCurrent})` : `<span class="status-dot"></span>ブロック${simulationBlockCurrent}/${simulationBlockTotal} 挑戦中...`) : '<span class="status-dot"></span>集中記録中...') : '準備ができたら開始しましょう'}</div>
+        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning && isMulti && multiSession && multiSession.id ? `<span class="status-dot"></span>${multiStatusText()}` : isMulti && multiSession && multiSession.id ? `一時停止中・${multiStatusText()}` : isRunning? (isPomodoro && pomodoroPhase === 'break' ? '<span class="status-dot"></span>休憩中...' : isSimulation ? (simulationPhase === 'break' ? `<span class="status-dot"></span>休憩中... (次: ブロック${simulationBlockCurrent})` : `<span class="status-dot"></span>ブロック${simulationBlockCurrent}/${simulationBlockTotal} 挑戦中...`) : '<span class="status-dot"></span>集中記録中...') : '準備ができたら開始しましょう'}</div>
         <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="メモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-primary);padding:5px;" maxlength="100"/></div>
 
-        <!-- Confirmation Overlay -->
-        ${isConfirmingLog ? `
+        <!-- Confirmation Overlay（複数科目モードは showMultiConfirmOverlay が出す） -->
+        ${isConfirmingLog && !isMulti ? `
           <div class="timer-overlay animate-fade-in">
             <div class="confirm-card animate-slide-up">
               <div class="celebration-icon" style="margin-bottom:var(--space-md);"><span style="font-size:2rem;color:var(--color-accent-teal)">${IC.check}</span></div>
@@ -4663,6 +5440,7 @@ async function renderStudy(){
     }
   }
   if(isRunning){ring.style.strokeDasharray=circ;startSW();}
+  else if(isMulti){ring.style.strokeDasharray=circ;}
   else if(isCountdown ? countdownSeconds > 0 : elapsedSeconds > 0){
     ring.style.strokeDasharray=circ;
     upd(isCountdown ? countdownSeconds : elapsedSeconds);
@@ -4675,10 +5453,18 @@ async function renderStudy(){
       btnT.className='stopwatch-btn stopwatch-btn-start';
       btnT.textContent='▶';
       status.className='stopwatch-status';
-      status.textContent='一時停止中';
+      status.innerHTML = isMulti && multiSession && multiSession.id ? `一時停止中・${multiStatusText()}` : '一時停止中';
     } else {
       if(isCountdown && countdownSeconds === 0) {
         showToast(' 時間をセットしてください');
+        return;
+      }
+      if(isMulti && !(multiSession && multiSession.id)) {
+        const err = multiStart();
+        if(err) { showToast(IC.x + ' ' + err); return; }
+        initAudio();
+        startSW();
+        renderStudy(); // 設定パネルを進捗表示に切り替える
         return;
       }
       initAudio();
@@ -4686,7 +5472,7 @@ async function renderStudy(){
       btnT.className='stopwatch-btn stopwatch-btn-pause';
       btnT.textContent='⏸';
       status.className='stopwatch-status recording';
-      status.innerHTML='<span class="status-dot"></span>記録中...';
+      status.innerHTML = isMulti && multiSession && multiSession.id ? `<span class="status-dot"></span>${multiStatusText()}` : '<span class="status-dot"></span>記録中...';
       if(isCountdown && !isRunning) renderStudy(); // Re-render to hide settings
     }
   });
@@ -4744,6 +5530,8 @@ async function renderStudy(){
   // Mode Tabs
   document.getElementById('mode-up')?.addEventListener('click', () => {
     if(isRunning) return;
+    if(multiLocked()) { showToast(' 複数科目のセッション中です。記録するかリセットしてから切り替えてください'); return; }
+    isMulti = false;
     isCountdown = false;
     isPomodoro = false;
     isSimulation = false;
@@ -4751,6 +5539,8 @@ async function renderStudy(){
   });
   document.getElementById('mode-down')?.addEventListener('click', () => {
     if(isRunning) return;
+    if(multiLocked()) { showToast(' 複数科目のセッション中です。記録するかリセットしてから切り替えてください'); return; }
+    isMulti = false;
     isCountdown = true;
     isPomodoro = false;
     isSimulation = false;
@@ -4763,6 +5553,8 @@ async function renderStudy(){
   });
   document.getElementById('mode-pomodoro')?.addEventListener('click', () => {
     if(isRunning) return;
+    if(multiLocked()) { showToast(' 複数科目のセッション中です。記録するかリセットしてから切り替えてください'); return; }
+    isMulti = false;
     isCountdown = true;
     isPomodoro = true;
     isSimulation = false;
@@ -4777,6 +5569,8 @@ async function renderStudy(){
   });
   document.getElementById('mode-simulation')?.addEventListener('click', () => {
     if(isRunning) return;
+    if(multiLocked()) { showToast(' 複数科目のセッション中です。記録するかリセットしてから切り替えてください'); return; }
+    isMulti = false;
     isCountdown = true;
     isPomodoro = false;
     isSimulation = true;
@@ -4791,6 +5585,29 @@ async function renderStudy(){
     initialCountdownSeconds = simulationStudyMin * 60;
     renderStudy();
   });
+
+  document.getElementById('mode-multi')?.addEventListener('click', () => {
+    if(isRunning || isMulti) return;
+    if(elapsedSeconds > 0 || cumulativeStudySeconds > 0) { showToast(' 記録中のセッションを記録するかリセットしてから切り替えてください'); return; }
+    isMulti = true;
+    isCountdown = false;
+    isPomodoro = false;
+    isSimulation = false;
+    const ms = ensureMultiSession();
+    // はじめては今日のノルマ（なければ選択中の科目）を下書きにする
+    if(!ms.segments.length) {
+      const quota = multiQuotaRows(cachedPlanSync());
+      if(quota.length) ms.segments = quota.map(r => newMultiSegment(r.subjectId, r.questions));
+      else ms.segments = [newMultiSegment(selectedSubjectId && selectedSubjectId !== 'custom' ? selectedSubjectId : '', selectedSubjectId && selectedSubjectId !== 'custom' ? multiSuggestedQuestions(selectedSubjectId) : '')];
+    }
+    saveTimerState();
+    renderStudy();
+  });
+  if(isMulti) {
+    wireMultiPanel();
+    updateMultiDisplay();
+    if(isConfirmingLog && multiSession && multiSession.id) showMultiConfirmOverlay();
+  }
 
   // Presets
   document.querySelectorAll('.preset-btn').forEach(btn => {
@@ -9371,6 +10188,8 @@ async function renderInsights(){
     fetchStudyLogs()
   ]);
   const logs=applyInsightFilters(allLogs);
+  // 統合セッションの配分と実績は、手を付けなかった科目（0分の行）も含めて見る
+  const combined = buildCombinedSessionStats(await fetchStudyLogsAll());
   const logicalToday=getLogicalDate(new Date());
 
   // --- Collect unique subjects & locations from ALL logs for filter options ---
@@ -10001,7 +10820,7 @@ async function renderInsights(){
   // --- Build HTML ---
   // 各セクションはこの d だけを見る。集計結果をここで1つにまとめて渡す。
   const d = {
-    DONUT_COLORS, IDEAL_SLEEP_HOURS, acc, accTrend, allLocations, allNighter, allNighterCount,
+    DONUT_COLORS, IDEAL_SLEEP_HOURS, acc, accTrend, combined, allLocations, allNighter, allNighterCount,
     avgFocus, avgSessionMin, backlog, backlogDated, balanceAlertHtml, bestEnv, bestSleepSlot,
     breakStats, chronoColor, chronoIconSvg, chronoName, chronoTotal30, comeback,
     cooldownWarning, dailyAvgChange, donutR, donutSVG, donutTotal, dowCounts, dowMinutes,
@@ -11318,6 +12137,7 @@ function insightsMethodHTML(d) {
       <div class="break-note">長いセッションは休憩を挟んでいれば実質は分割されているので、「セッション内の休憩」のカードと合わせて読んでください。母数が足りない区分（${QB_MIN_SESSIONS}件・${QB_MIN_SOLVED}問未満）は薄く表示し、判定からも外しています。</div>
     `}
   </div>
+  ${insightsCombinedHTML(d)}
   ${insightGroupCloseHTML}
 `;
 }
@@ -16465,6 +17285,21 @@ async function markRetest(key, correct) {
 // 記録の設定にする。学習記録ページではその場で反映し、ダッシュボードからは学習記録ページへ移る。
 function applyPlanToRecording({ subject, unit, edition }) {
   if (!subject) return false;
+  // 複数科目モードの設定中は、問題集のノルマをその科目の行として足す
+  if (isMulti && !multiLocked() && unit === 'q') {
+    const ms = ensureMultiSession();
+    const q = multiSuggestedQuestions(subject);
+    const hit = ms.segments.find(s => s.subjectId === subject);
+    if (hit) hit.questions = q;
+    else {
+      const blank = ms.segments.find(s => !s.subjectId);
+      if (blank) { blank.subjectId = subject; blank.questions = q; }
+      else ms.segments.push(newMultiSegment(subject, q));
+    }
+    saveTimerState();
+    refreshMultiPanel();
+    return 'multi';
+  }
   const known = subjectCategories.some(c => c.subjects.some(s => s.id === subject));
   selectedSubjectId = known ? subject : 'custom';
   if (!known) selectedSubjectCustom = subjectNameOf(subject);
@@ -16518,7 +17353,9 @@ function wireTodayPlanRows(root) {
     const ok = applyPlanToRecording({ subject: row.dataset.planSubject, unit: row.dataset.planUnit, edition: row.dataset.planEdition });
     if (!ok) return;
     const act = ACTIVITY_MAP[selectedActivity];
-    showToast(`${IC.check} ${esc(subjectNameOf(row.dataset.planSubject))}${act ? `（${act.l}）` : ''}を記録に設定しました`);
+    showToast(ok === 'multi'
+      ? `${IC.check} ${esc(subjectNameOf(row.dataset.planSubject))}を複数科目に入れました`
+      : `${IC.check} ${esc(subjectNameOf(row.dataset.planSubject))}${act ? `（${act.l}）` : ''}を記録に設定しました`);
     if (currentRoute !== '/study') { navigate('/study'); return; }
     // スマホではタイマーが画面外にあることが多いので、見える位置まで戻す
     const timer = document.querySelector('.stopwatch-card');
