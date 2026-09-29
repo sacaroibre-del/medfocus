@@ -183,6 +183,14 @@ const mins = arr => arr.map(x => x.plannedMin);
   ok('インサイトのカードが出る', html.includes('統合セッション：配分と実績') && html.includes('最近のセッション'));
   ok('データが無いときの案内', W.insightsCombinedHTML({ combined: W.buildCombinedSessionStats([]) }).includes('複数科目'));
 
+  // ---- 科目名と問題形式 ----
+  const lbl = html => { const d = document.createElement('div'); d.innerHTML = html;
+    return [d.querySelector('.multi-name').textContent, d.querySelector('.multi-fmt') ? d.querySelector('.multi-fmt').textContent : null]; };
+  eq('多肢選択は元の科目名と形式に分ける', lbl(W.multiSubjectLabelHTML('4A1F')), [W.subjectDisplayName('1F'), '多肢選択']);
+  eq('4連問も分ける', lbl(W.multiSubjectLabelHTML('4B2C')), ['2C 循環器', '4連問']);
+  eq('一般問題', lbl(W.multiSubjectLabelHTML('2C')), ['2C 循環器', '一般']);
+  eq('問題集でない科目は形式を出さない', lbl(W.multiSubjectLabelHTML('anki')), ['Anki', null]);
+
   // ---- 学習ページ ----
   W.__noDB();
   G(`resetSW(); isMulti = true; multiSession = { id: null, totalMin: 60, notified: false, segments: [newMultiSegment('2A', 10), newMultiSegment('2C', 20)] };`);
@@ -208,7 +216,9 @@ const mins = arr => arr.map(x => x.plannedMin);
   document.getElementById('btn-toggle').click();
   await new Promise(r => setTimeout(r, 0));
   ok('開始するとIDが振られる', !!G('multiSession.id'));
-  eq('配分の一覧', [...document.querySelectorAll('#multi-panel .multi-seg')].map(e => e.textContent.replace(/\s+/g, ' ').trim()), ['2A 消化管 40問 40分', '2C 循環器 20問 20分']);
+  eq('配分の一覧（科目名と問題形式）', [...document.querySelectorAll('#multi-panel .multi-seg')].map(e =>
+    [e.querySelector('.multi-name').textContent, e.querySelector('.multi-fmt').textContent, e.querySelector('.multi-seg-q').textContent, e.querySelector('.multi-seg-time').textContent]),
+    [['2A 消化管', '一般', '40問', '40分'], ['2C 循環器', '一般', '20問', '20分']]);
   ok('前後の科目ボタンは無い', !document.getElementById('multi-prev') && !document.getElementById('multi-next'));
   document.getElementById('mode-up').click();
   ok('セッション中はほかのモードへ移れない', G('isMulti') === true);
