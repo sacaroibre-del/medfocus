@@ -563,5 +563,67 @@ const TODAY = '2026-09-14';
   ok('カレンダー: 休みの日は「休」', /休<\/div>/.test(W.calendarGoalHTML(cells['2026-09-16'])));
 })();
 
+// ---------- バランス配分（講義動画が残っていないとき） ----------
+(() => {
+  // 6科目 × 2周目・3周目。優先度は 2P が最上位。1問2分・1日300分
+  const subs = ['2P', '2T', '2U', '2B', '3D', '2C'];
+  const entries = [];
+  subs.forEach(sid => [2, 3].forEach(round => entries.push({
+    plan: { id: sid + '-' + round, subject_id: sid, unit: 'q', target_round: round, total_volume: 60 },
+    remaining: 60, minPerUnit: 2, gapDays: 3
+  })));
+  const res = W.buildSequencedPlanSchedules({
+    entries, todayKey: TODAY, goalMinutesOf: () => 300, balance: true
+  });
+  const byDay = {};
+  Object.entries(res.byPlan).forEach(([id, r]) => r.items.forEach(it => {
+    (byDay[it.dateKey] = byDay[it.dateKey] || []).push({ id, sid: id.split('-')[0], n: it.targetAmount });
+  }));
+  const days = Object.keys(byDay).sort();
+
+  ok('バランス: 全部置ききる', Object.values(res.byPlan).every(r => r.unplaced === 0), res.byPlan);
+  ok('バランス: 1日に1科目が目標の35%を大きく超えない',
+     Object.values(byDay).every(list => list.every(x => x.n * 2 <= 300 * 0.35 * 1.25 + 2)), byDay);
+  ok('バランス: 初日に3科目以上が並ぶ', new Set(byDay[TODAY].map(x => x.sid)).size >= 3, byDay[TODAY]);
+  // 科目がまだ多いうちは、初日と翌日で科目が入れ替わる
+  const d1 = new Set(byDay[TODAY].map(x => x.sid));
+  const d2 = (byDay[W.shiftDateKey(TODAY, 1)] || []).map(x => x.sid);
+  eq('バランス: 初日にやった科目は翌日に来ない', d2.filter(s => d1.has(s)), []);
+  // 残りの科目が少なくなっても、3日続けて同じ科目にはしない
+  const triple = [];
+  days.forEach(k => {
+    const n1 = byDay[W.shiftDateKey(k, 1)], n2 = byDay[W.shiftDateKey(k, 2)];
+    if (!n1 || !n2) return;
+    byDay[k].forEach(x => {
+      if (n1.some(y => y.sid === x.sid) && n2.some(y => y.sid === x.sid)) triple.push([k, x.sid]);
+    });
+  });
+  eq('バランス: 同じ科目が3日続かない', triple, []);
+  // 3周目は2周目を終えてから間隔（3日）を空ける
+  const late = subs.filter(sid => {
+    const fin = res.byPlan[sid + '-2'].finishKey;
+    const start = res.byPlan[sid + '-3'].items[0].dateKey;
+    return W.diffDateKeys(start, fin) < 3;
+  });
+  eq('バランス: 3周目は2周目の完了から3日以上あける', late, []);
+  eq('バランス: 優先度の高い科目が初日の先頭', byDay[TODAY][0].sid, '2P');
+
+  // 最後に解いた日を渡すと、昨日やった科目は今日の先頭に来ない
+  const res2 = W.buildSequencedPlanSchedules({
+    entries, todayKey: TODAY, goalMinutesOf: () => 300, balance: true,
+    lastTouchedByGroup: { '2p': W.shiftDateKey(TODAY, -1) }
+  });
+  const today2 = Object.entries(res2.byPlan)
+    .filter(([, r]) => r.items.some(it => it.dateKey === TODAY)).map(([id]) => id.split('-')[0]);
+  ok('バランス: 昨日やった科目は今日に置かない', !today2.includes('2P'), today2);
+
+  // balance を渡さなければ従来どおり（上位の科目が1日を取る）
+  const legacy = W.buildSequencedPlanSchedules({ entries, todayKey: TODAY, goalMinutesOf: () => 300 });
+  eq('バランス: 渡さなければ従来の並べ方', legacy.byPlan['2P-2'].items[0].targetAmount, 60);
+
+  eq('記憶曲線の重み: 直後は0・間隔で満額・空くほど上がる',
+     [0, 3, 12, null].map(d => Number(W.planBalanceSpacingWeight(d).toFixed(2))), [0, 1, 1.5, 1]);
+})();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) { console.log('\n--- failures ---\n' + failures.join('\n')); process.exit(1); }

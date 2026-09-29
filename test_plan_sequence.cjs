@@ -824,8 +824,16 @@ const prio = (o) => W.buildSubjectPriority(Object.assign({ unitCost: COST, today
   W.planGoalMinutesOf = () => 180;
   const res = W.buildPlanSequence(state, '2026-09-06', { video: 40, q: 2 }, null, 0);
   W.planGoalMinutesOf = goalWas;
-  ok('見終わった動画の科目のQBはまとめて置かれる',
-     res && res.byPlan['qb'].items.length === 1, res && res.byPlan['qb'].items);
+  // 講義動画が1本も残っていなければバランス配分になる。見終わった科目のQBでも
+  // 1日にまとめず（150問＝300分を1日に積まない）、他の科目と並べて日ごとに分ける
+  ok('動画が残っていなければ、見終わった科目のQBも1日にまとめない',
+     res && res.byPlan['qb'].items.length > 1
+     && res.byPlan['qb'].items.every(it => it.targetAmount * 2 <= 180),
+     res && res.byPlan['qb'].items);
+  ok('動画が残っていなければ、初日から2科目が並ぶ',
+     res && res.byPlan['qb'].items[0].dateKey === '2026-09-06'
+     && res.byPlan['solo'].items[0].dateKey === '2026-09-06',
+     res && [res.byPlan['qb'].items[0], res.byPlan['solo'].items[0]]);
   ok('動画を持たない科目のQBは枠なりに分割される',
      res && res.byPlan['solo'].items.length > 1, res && res.byPlan['solo'].items);
 })();

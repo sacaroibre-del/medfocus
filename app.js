@@ -14121,6 +14121,34 @@ function planDailyCapacity(plan) {
 
 const PLAN_SEQUENCE_MAX_DAYS = 730;   // 暴走よけ（約2年）
 
+// ---------- バランス配分（講義動画が残っていないとき） ----------
+// 動画を見終わったあとは「動画 → 翌日にその科目のQBを全部」という前提が崩れる。
+// その並べ方のままだと、優先度の高い数科目が1日を丸ごと取り、同じ科目の
+// 2周目・3周目が連日で回ってくる。そこで日ごとに並べ直して散らす。
+//   - 苦手:     科目の優先度（buildSubjectPriority）の順位。上位ほど重い
+//   - 記憶曲線: その科目を最後に解いてからの日数。直後は下げ、revisitDays を過ぎたら
+//               満額、さらに空くほど（忘れかけるほど）少しずつ上げる
+//   - バランス: 1科目が1日に使えるのは目標時間の shareOfDay まで。同じ科目は1日1回
+// 順位を素のスコアで掛けないのは、スコアの桁が科目で大きく違い、上位科目が
+// 昨日やった直後でも毎日勝ってしまうため。順位を 0.5〜1.0 に丸めて掛ける。
+const PLAN_BALANCE = {
+  shareOfDay: 0.35,     // 1科目が1日に使える目標時間の割合
+  revisitDays: 3,       // 同じ科目に戻ってくるまでの目安（日）
+  overdueBoostMax: 0.5, // 空きすぎた科目への上乗せの上限
+  rankFloor: 0.5,       // 優先度が最下位の科目の重み（最上位は 1.0）
+  finishSlack: 0.25     // 残りが1日ぶんのこの割合以下なら、その日に終わらせる
+};
+
+// 最後に解いてから days 日の重み。null（一度も解いていない）は満額。
+function planBalanceSpacingWeight(days) {
+  const cfg = PLAN_BALANCE;
+  if (days === null || days === undefined) return 1;
+  const d = Math.max(0, Number(days) || 0);
+  const R = cfg.revisitDays;
+  if (d < R) return d / R;
+  return 1 + Math.min(1, (d - R) / (3 * R)) * cfg.overdueBoostMax;
+}
+
 // 順番詰めの本体。
 // input: {
 //   entries: [{ plan, remaining, startKey, minPerUnit, dailyCap, excludeWeekdays }] （優先順位順）
@@ -14227,6 +14255,30 @@ function buildSequencedPlanSchedules(input) {
   };
 
   const warnings = [];
+  const balance = !!o.balance;
+  // バランス配分: 科目ごとの順位の重みと、最後に解いた日（実績 → 配った日で更新）
+  const rankWeight = {};
+  const lastPlaced = {};
+  if (balance) {
+    const groups = [];
+    queue.forEach(e => { if (groups.indexOf(e.groupKey) < 0) groups.push(e.groupKey); });
+    groups.forEach((g, i) => {
+      rankWeight[g] = groups.length > 1
+        ? 1 - (1 - PLAN_BALANCE.rankFloor) * (i / (groups.length - 1)) : 1;
+    });
+    Object.entries(o.lastTouchedByGroup || {}).forEach(([g, k]) => {
+      if (k) lastPlaced[String(g).toLowerCase()] = String(k).slice(0, 10);
+    });
+  }
+  const balancedOrder = dayKey => queue
+    .map((e, i) => {
+      const last = lastPlaced[e.groupKey];
+      const days = last ? diffDateKeys(dayKey, last) : null;
+      return { e, i, w: (rankWeight[e.groupKey] || PLAN_BALANCE.rankFloor) * planBalanceSpacingWeight(days) };
+    })
+    .sort((a, b) => b.w - a.w || a.i - b.i)
+    .map(x => x.e);
+
   let dayKey = todayKey;
   for (let d = 0; d < PLAN_SEQUENCE_MAX_DAYS && queue.some(e => e.left > 0); d++) {
     const date = parseDateKey(dayKey);
@@ -14237,6 +14289,51 @@ function buildSequencedPlanSchedules(input) {
     const fresh = dayKey !== todayKey || spentTodayMin <= 0;   // まだ手つかずの日か
     let budget = Math.max(0, dayBudget - (dayKey === todayKey ? spentTodayMin : 0));
     let videoGroupToday = null;   // その日に進める講義動画の科目（1科目まで）
+    if (balance) {
+      // 1巡目は同じ科目を1日1回まで、1科目は目標時間の shareOfDay まで。
+      // 余った時間だけ2巡目で埋める。2巡目は上限を外し、その日に置いた教材の続きも積む
+      // （残りの科目が少なくなったときに、日を空けて期間を延ばさないため）
+      const order = balancedOrder(dayKey);
+      const placedGroups = new Set(), placedEntries = new Set();
+      for (let pass = 0; pass < 2 && budget > 0; pass++) {
+        for (const e of order) {
+          if (budget <= 0) break;
+          if (e.left <= 0) continue;
+          if (pass === 1 && placedEntries.has(e)) {
+            let more = Math.floor(budget / e.minPerUnit);
+            if (e.dailyCap) more = Math.min(more, e.dailyCap - e.items[e.items.length - 1].targetAmount);
+            more = Math.min(more, e.left);
+            if (more <= 0) continue;
+            e.items[e.items.length - 1].targetAmount += more;
+            e.left -= more;
+            if (e.left === 0) e.finishKey = dayKey;
+            budget -= more * e.minPerUnit;
+            continue;
+          }
+          if (placedEntries.has(e)) continue;
+          if (pass === 0 && placedGroups.has(e.groupKey)) continue;
+          if (e.startKey && dayKey < e.startKey) continue;
+          if ((e.excludeWeekdays || []).indexOf(dow) >= 0) continue;
+          if (waitingForVideo(e, dayKey)) continue;
+          if (waitingForPrevRound(e, dayKey)) continue;
+          const share = Math.max(1, Math.floor(dayBudget * PLAN_BALANCE.shareOfDay / e.minPerUnit));
+          let take = Math.min(e.left, share);
+          if (e.left - take <= share * PLAN_BALANCE.finishSlack) take = e.left;   // 端数を翌日に残さない
+          if (e.dailyCap) take = Math.min(take, e.dailyCap);
+          // 残り時間を超えない。まだ手つかずの日だけ、1単位は置く（1単位が長い教材のため）
+          take = Math.min(take, Math.max(fresh && placedEntries.size === 0 ? 1 : 0, Math.floor(budget / e.minPerUnit)));
+          if (take <= 0) continue;
+          e.items.push({ dateKey: dayKey, targetAmount: take });
+          e.left -= take;
+          if (e.left === 0) e.finishKey = dayKey;
+          budget -= take * e.minPerUnit;
+          placedGroups.add(e.groupKey); placedEntries.add(e);
+          lastPlaced[e.groupKey] = dayKey;
+        }
+      }
+      dayKey = shiftDateKey(dayKey, 1);
+      continue;
+    }
     for (const e of queue) {
       if (budget <= 0) break;        // 休養日、または今日ぶんをもう勉強し終えている
       if (e.left <= 0) continue;
@@ -16021,8 +16118,16 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
   const countdowns = o.countdowns || [];
   const bufferDays = o.bufferDays;
   const goalMinutesToday = planGoalMinutesOf(todayKey);
-  const activeCount = (state || []).filter(st =>
-    st.canAuto && Math.max(0, (Number(st.plan.total_volume) || 0) - planDoneAmount(st.mine)) > 0).length;
+  const activeStates = (state || []).filter(st =>
+    st.canAuto && Math.max(0, (Number(st.plan.total_volume) || 0) - planDoneAmount(st.mine)) > 0);
+  // 講義動画が1本も残っていなければ、日ごとに散らすバランス配分にする
+  const balance = !activeStates.some(st => st.plan.unit === 'video');
+  // 均等割りの分母。バランス配分では科目単位で数える。プラン単位だと、まだ始められない
+  // 3周目なども数に入り、1プランあたりの時間が数分まで縮む。すると「締切に入らない」と
+  // 判定されて周回の間隔が1日に潰れ、2周目の翌日に3周目が来てしまう。
+  const activeCount = balance
+    ? new Set(activeStates.map(st => planGroupKey(st.plan))).size
+    : activeStates.length;
   const entries = [];
   const videoDoneAt = {};   // 科目 → その科目の講義動画を見終わった日
   const roundDoneAt = {};   // 教材|周 → その周を終えた日（次の周は翌日から）
@@ -16125,13 +16230,21 @@ function buildPlanSequence(state, todayKey, unitCost, subjectPriority, spentToda
     }
   });
 
+  // 最後に解いた日（学習ログ由来）。バランス配分の記憶曲線の起点に使う
+  const lastTouchedByGroup = {};
+  Object.values(by || {}).forEach(r => {
+    if (r && r.id && r.lastKey) lastTouchedByGroup[String(r.id).toLowerCase()] = r.lastKey;
+  });
+
   return buildSequencedPlanSchedules({
     entries: planPriorityOrder(entries.map(e => e.plan), {
-      scoreOf, todayKey, inProgress, deadlineFirst,
+      // バランス配分では「途中の科目を先に終わらせる」を使わない。
+      // それがあると同じ科目が毎日先頭に来て、散らす意味がなくなる
+      scoreOf, todayKey, inProgress: balance ? null : inProgress, deadlineFirst,
       remainMinOf: g => remainByGroup[g] || 0
     }).map(p => entries.find(e => e.plan.id === p.id)),
     todayKey, goalMinutesOf: planGoalMinutesOf, videoDoneAt, roundDoneAt, videoGroups, spentTodayMin,
-    bufferDays
+    bufferDays, balance, lastTouchedByGroup
   });
 }
 
