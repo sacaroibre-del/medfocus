@@ -728,6 +728,39 @@ function subjectsOfCategory(catId){
   return cat ? cat.subjects.map(s => ({ ...s })) : [];
 }
 
+// ==================== 問題形式 ====================
+// 「科目」と「問題形式」は独立した2つの軸。形式は専用の列を持たず、科目IDから導く。
+// vol.4 の科目ID（'4B2C'）は形式と元の科目を欠けずに持っているので、列を足して
+// 二重に持つと食い違いの元になる。既存の記録（qb_progress / study_logs /
+// qb_question_records）を書き換えずに済むのもこのため。
+//   vol.1〜3 の科目     → 一般問題（'general'）
+//   vol.4 のセクション  → そのセクションの key（'4A' 多肢選択 / '4B' 4連問）
+//   それ以外（Anki・模試復習・自由入力） → null ＝ 未分類
+// 形式を増やすときは QB_SECTIONS に1行足せばここにも並ぶ。
+const QUESTION_FORMAT_GENERAL = 'general';
+const QUESTION_FORMAT_UNCLASSIFIED = 'unclassified';
+const QUESTION_FORMATS = [
+  { key: QUESTION_FORMAT_GENERAL, label: '一般問題', short: '一般', color: '#45B7D1' }
+].concat(QB_SECTIONS.map(sec => ({ key: sec.key, label: sec.name.replace(/^vol\.\d+\s*/, ''), short: sec.short, color: sec.color })));
+const QUESTION_FORMAT_UNCLASSIFIED_DEF = { key: QUESTION_FORMAT_UNCLASSIFIED, label: '未分類', short: '未分類', color: '#94a3b8' };
+const QB_BASE_SUBJECT_IDS = {};
+subjectCategories.filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
+  .forEach(c => c.subjects.forEach(s => { QB_BASE_SUBJECT_IDS[s.id.toLowerCase()] = true; }));
+
+// 科目ID・表示名 → 形式の key。分からなければ null。
+function questionFormatOf(key){
+  if (!key) return null;
+  const sec = qbSectionOf(key);
+  if (sec) return sec.key;
+  const id = subjectIdOfName(key);
+  return id && QB_BASE_SUBJECT_IDS[id.toLowerCase()] ? QUESTION_FORMAT_GENERAL : null;
+}
+function questionFormatDef(fmt){
+  return QUESTION_FORMATS.find(f => f.key === fmt) || QUESTION_FORMAT_UNCLASSIFIED_DEF;
+}
+// 科目ID → 表示名（'2C' → '2C 循環器'）。知らないIDはそのまま返す。
+function subjectDisplayName(id){ return id ? normalizeSubjectName(String(id)) : '未設定'; }
+
 // ==================== 活動の一括設定 ====================
 // 活動の種類は学習ログの編集ダイアログで1件ずつしか直せず、機能を足す前の
 // ログが未分類のまま大量に残る。未分類のままだと活動を軸にした分析
@@ -7669,52 +7702,135 @@ function accColor(a) {
 // 注意: correct は既定値が 0 のため、done>0 かつ correct===0 の周回は
 // 「正答数が未入力」とみなして集計から外す。本当に正答率0%の周回はまず無く、
 // 混ぜると全科目が0%になって分析が壊れるため。
-function buildQBAccuracyStats(qb) {
-  const idToName = {};
-  subjectCategories.forEach(c => c.subjects.forEach(s => { idToName[s.id] = s.name; }));
+//
+// 集計の単位は「科目×形式」のセル（＝qb_progress の1教材）。科目別・形式別・
+// 科目×形式はどれもセルを足し上げて作るので、どの軸で見ても合計は一致する。
+// 4連問は小問単位で数える（1セット＝4問。本の総数484問と同じ単位）。
 
-  const subjects = [];
+// qb_progress → セルの配列。周ごとの実績と、正答数が未入力だった周を持つ。
+function qbAccuracyCells(qb) {
+  return Object.entries(qb || {}).map(([sid, rounds]) => {
+    const cell = {
+      sid, base: baseSubjectIdOf(sid) || sid,
+      format: questionFormatOf(sid) || QUESTION_FORMAT_UNCLASSIFIED,
+      done: 0, correct: 0, byRound: [], unfilledRounds: 0, unfilledDone: 0
+    };
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const d = (r && r.done) || 0, c = (r && r.correct) || 0;
+      if (d <= 0) return;
+      if (c <= 0) { cell.unfilledRounds++; cell.unfilledDone += d; return; }
+      cell.done += d; cell.correct += c;
+      cell.byRound.push({ round: rk, done: d, correct: c });
+    });
+    cell.byRound.sort((a, b) => parseInt(a.round) - parseInt(b.round));
+    return cell;
+  });
+}
+
+const QB_ACC_AXES = [
+  { v: 'subject', l: '科目別' },
+  { v: 'format',  l: '形式別' },
+  { v: 'cross',   l: '科目×形式' }
+];
+const QB_ACC_AXIS_KEY = 'medfocus_acc_axis';
+function getQbAccAxis() {
+  try {
+    const v = localStorage.getItem(QB_ACC_AXIS_KEY);
+    return QB_ACC_AXES.some(a => a.v === v) ? v : 'subject';
+  } catch (e) { return 'subject'; }
+}
+function setQbAccAxis(v) { try { localStorage.setItem(QB_ACC_AXIS_KEY, v); } catch (e) {} }
+
+// axis: 'subject'（既定。形式にかかわらず元の科目へ合算）/ 'format' / 'cross'
+// subjects の各行は、軸にかかわらず parts（形式ごとの内訳）と gain（周回の伸び）を持つ。
+function buildQBAccuracyStats(qb, axis = 'subject') {
+  const cells = qbAccuracyCells(qb);
+  const groupOf = cell => {
+    const f = questionFormatDef(cell.format);
+    if (axis === 'format') return { key: cell.format, name: f.label };
+    const subj = subjectDisplayName(cell.base);
+    if (axis === 'cross') return { key: cell.base + '|' + cell.format, name: subj + '｜' + f.short };
+    return { key: cell.base, name: subj };
+  };
+
+  const groups = {};
   const roundAgg = {};
   let totalDone = 0, totalCorrect = 0;
   let unfilledRounds = 0, unfilledDone = 0;
   const unfilledSubjects = new Set();
 
-  Object.entries(qb || {}).forEach(([sid, rounds]) => {
-    let done = 0, correct = 0;
-    const byRound = [];
-    Object.entries(rounds || {}).forEach(([rk, r]) => {
-      const d = r.done || 0, c = r.correct || 0;
-      if (d <= 0) return;
-      if (c <= 0) {
-        unfilledRounds++; unfilledDone += d;
-        unfilledSubjects.add(idToName[sid] || sid);
-        return;
-      }
-      done += d; correct += c;
-      byRound.push({ round: rk, done: d, correct: c, acc: (c / d) * 100 });
-      if (!roundAgg[rk]) roundAgg[rk] = { done: 0, correct: 0, subjects: 0 };
-      roundAgg[rk].done += d; roundAgg[rk].correct += c; roundAgg[rk].subjects++;
+  cells.forEach(cell => {
+    unfilledRounds += cell.unfilledRounds; unfilledDone += cell.unfilledDone;
+    // 未入力の案内は教材の名前で出す（「4連問 2C 循環器」の正答数を入れる、と分かるように）
+    if (cell.unfilledRounds > 0) unfilledSubjects.add(subjectDisplayName(cell.sid));
+    if (cell.done <= 0) return;
+    const gk = groupOf(cell);
+    const g = (groups[gk.key] = groups[gk.key] || {
+      id: gk.key, name: gk.name, base: axis === 'format' ? null : cell.base,
+      format: axis === 'subject' ? null : cell.format,
+      done: 0, correct: 0, rounds: {}, parts: {}, cells: []
     });
-    if (done > 0) {
-      byRound.sort((a, b) => parseInt(a.round) - parseInt(b.round));
-      subjects.push({ id: sid, name: idToName[sid] || sid, done, correct,
-                      acc: (correct / done) * 100, byRound });
-      totalDone += done; totalCorrect += correct;
-    }
+    g.done += cell.done; g.correct += cell.correct; g.cells.push(cell);
+    const pt = (g.parts[cell.format] = g.parts[cell.format] || { format: cell.format, done: 0, correct: 0 });
+    pt.done += cell.done; pt.correct += cell.correct;
+    cell.byRound.forEach(r => {
+      const gr = (g.rounds[r.round] = g.rounds[r.round] || { done: 0, correct: 0 });
+      gr.done += r.done; gr.correct += r.correct;
+      const ra = (roundAgg[r.round] = roundAgg[r.round] || { done: 0, correct: 0, groups: new Set() });
+      ra.done += r.done; ra.correct += r.correct; ra.groups.add(gk.key);
+    });
+    totalDone += cell.done; totalCorrect += cell.correct;
+  });
+
+  const formatOrder = QUESTION_FORMATS.map(f => f.key).concat(QUESTION_FORMAT_UNCLASSIFIED);
+  const subjects = Object.values(groups).map(g => {
+    const byRound = Object.entries(g.rounds)
+      .map(([rk, v]) => ({ round: rk, done: v.done, correct: v.correct, acc: (v.correct / v.done) * 100 }))
+      .sort((a, b) => parseInt(a.round) - parseInt(b.round));
+    const parts = Object.values(g.parts)
+      .sort((a, b) => formatOrder.indexOf(a.format) - formatOrder.indexOf(b.format))
+      .map(p => {
+        const f = questionFormatDef(p.format);
+        return { format: p.format, label: f.label, short: f.short, color: f.color,
+                 done: p.done, correct: p.correct, acc: (p.correct / p.done) * 100 };
+      });
+    return { id: g.id, name: g.name, base: g.base, format: g.format, done: g.done, correct: g.correct,
+             acc: (g.correct / g.done) * 100, byRound, parts, gain: pairedRoundGain(g.cells) };
   });
 
   const rounds = Object.entries(roundAgg)
     .map(([rk, v]) => ({ round: rk, done: v.done, correct: v.correct,
-                         acc: (v.correct / v.done) * 100, subjects: v.subjects }))
+                         acc: (v.correct / v.done) * 100, subjects: v.groups.size }))
     .sort((a, b) => parseInt(a.round) - parseInt(b.round));
 
   return {
-    subjects, rounds, totalDone, totalCorrect,
+    axis, subjects, rounds, totalDone, totalCorrect,
     totalAcc: totalDone > 0 ? (totalCorrect / totalDone) * 100 : null,
     unfilledRounds, unfilledDone, unfilledSubjects: [...unfilledSubjects],
     ranked: subjects.filter(s => s.done >= ACC_MIN_SAMPLE).sort((a, b) => a.acc - b.acc),
     thin:   subjects.filter(s => s.done <  ACC_MIN_SAMPLE).sort((a, b) => b.done - a.done)
   };
+}
+
+// 周回の伸び（最初の周 → 最後の周）を、まとめたセルから出す。
+// 周の番号は教材ごとに進み方が違う（一般問題は2周目、4連問はまだ1周目、など）。
+// 周ごとに合算してから比べると、2周目に一般問題だけ・1周目に全形式が入り、
+// 伸びではなく「形式の混ざり方の差」を測ってしまう。そこで2周以上ある教材だけを
+// 使い、それぞれの最初と最後の周を足し合わせる。
+function pairedRoundGain(cells) {
+  const from = { done: 0, correct: 0, round: null }, to = { done: 0, correct: 0, round: null };
+  (cells || []).forEach(c => {
+    if (!c.byRound || c.byRound.length < 2) return;
+    const f = c.byRound[0], l = c.byRound[c.byRound.length - 1];
+    from.done += f.done; from.correct += f.correct;
+    to.done += l.done; to.correct += l.correct;
+    if (from.round === null || parseInt(f.round) < parseInt(from.round)) from.round = f.round;
+    if (to.round === null || parseInt(l.round) > parseInt(to.round)) to.round = l.round;
+  });
+  if (!(from.done > 0) || !(to.done > 0)) return null;
+  from.acc = from.correct / from.done * 100;
+  to.acc = to.correct / to.done * 100;
+  return { from, to, gain: to.acc - from.acc };
 }
 
 // ==================== Phase 2: 学習パイプラインと未回収在庫 ====================
@@ -9005,8 +9121,22 @@ function buildTimeBudget(exams, ioBaseline, allLogs, logicalToday) {
 // 「周回別の伸び」は周回軸なので、カレンダー軸で上がっているか／頭打ちかを別に見る。
 const ACC_TREND_WEEKS = 8;
 
-function buildAccuracyTrend(logs, logicalToday, weeks = ACC_TREND_WEEKS) {
-  const items = qbSessionsOf(logs);
+// 推移の形式の絞り込み。'all' か QUESTION_FORMATS の key。
+// 科目での絞り込みは、ページ上部の科目フィルタ（studySubjectName で vol.4 を元の科目へ
+// 寄せている）がそのまま効くので、ここでは形式だけを持つ。
+const ACC_TREND_FORMAT_KEY = 'medfocus_acc_trend_format';
+function getAccTrendFormat() {
+  try {
+    const v = localStorage.getItem(ACC_TREND_FORMAT_KEY);
+    return QUESTION_FORMATS.some(f => f.key === v) ? v : 'all';
+  } catch (e) { return 'all'; }
+}
+function setAccTrendFormat(v) { try { localStorage.setItem(ACC_TREND_FORMAT_KEY, v); } catch (e) {} }
+
+// format: 'all'（既定）または形式の key。その形式の問題を解いたセッションだけで推移を出す。
+function buildAccuracyTrend(logs, logicalToday, weeks = ACC_TREND_WEEKS, format = 'all') {
+  const items = qbSessionsOf(logs)
+    .filter(x => format === 'all' || questionFormatOf(x.log.subject_name) === format);
   const buckets = [];
   for (let i = weeks - 1; i >= 0; i--) {
     const end = new Date(logicalToday); end.setDate(end.getDate() - i * 7);
@@ -9052,16 +9182,26 @@ function buildSubjectBudget(qbProgress, unit, targetRound) {
   const idToName = {};
   subjectCategories.forEach(c => c.subjects.forEach(x => { idToName[x.id] = x.name; }));
 
-  const rows = [];
-  Object.entries(qbProgress || {}).forEach(([sid, rounds]) => {
+  // 4連問・多肢選択は元の科目へ畳む（4連問の2Cは循環器の一部）。
+  // 残りは教材ごとに出して足し、正答率は解答数で重みづけした通算にする。
+  const bySubject = {};
+  Object.entries(qbProgress || {}).forEach(([rawId, rounds]) => {
     const p = subjectPlan(rounds, targetRound);
-    if (!p || p.remaining <= 0) return;
-    const remainMin = p.remaining * unit.minPerQuestion;
-    const wrongRate = p.accuracy === null ? null : (100 - p.accuracy) / 100;
+    if (!p) return;
+    const sid = baseSubjectIdOf(rawId) || rawId;
+    const b = (bySubject[sid] = bySubject[sid] || { remaining: 0, solved: 0, correct: 0 });
+    b.remaining += p.remaining; b.solved += p.solved; b.correct += p.correct;
+  });
+  const rows = [];
+  Object.entries(bySubject).forEach(([sid, b]) => {
+    if (b.remaining <= 0) return;
+    const remainMin = b.remaining * unit.minPerQuestion;
+    const accuracy = b.solved > 0 ? b.correct / b.solved * 100 : null;
+    const wrongRate = accuracy === null ? null : (100 - accuracy) / 100;
     rows.push({
       id: sid, name: idToName[sid] || sid,
-      remaining: p.remaining, remainMin,
-      accuracy: p.accuracy, solved: p.solved,
+      remaining: b.remaining, remainMin,
+      accuracy, solved: b.solved,
       // 正答率が未入力の科目は影響度を出せないので末尾に回す
       impact: wrongRate === null ? null : remainMin * wrongRate
     });
@@ -9203,7 +9343,8 @@ function buildRoundGainByGap(qbProgress, reviewStats) {
     const a1 = roundAccuracy(rounds, 1), a2 = roundAccuracy(rounds, 2);
     if (a1 === null || a2 === null) return;
     const name = idToName[sid] || sid;
-    const gap = gapByName[name];
+    // 触った日の間隔は学習ログ側の科目名（vol.4 は元の科目へ寄せた名前）で引く
+    const gap = gapByName[studySubjectName(sid)];
     if (gap === undefined) return;
     rows.push({ id: sid, name, acc1: a1, acc2: a2, gain: a2 - a1, gap });
   });
@@ -9312,10 +9453,11 @@ const PLANNING_CONFIG = {
 // 「その科目を触った日の間隔の中央値」で代用する（近似であることは画面に出す）。
 
 // そのユーザーの模試から、指定日より後の最初の1件を返す。
+// 模試は科目の単位で測るので、vol.4 の教材（'4B2C'）も元の科目（'2C'）の模試を引く。
 function firstMockAfter(mocks, subjectId, afterKey) {
-  const sid = String(subjectId || '').toLowerCase();
+  const sid = String(baseSubjectIdOf(subjectId) || subjectId || '').toLowerCase();
   return (mocks || [])
-    .filter(m => m && String(m.subject_id || '').toLowerCase() === sid
+    .filter(m => m && String(baseSubjectIdOf(m.subject_id) || m.subject_id || '').toLowerCase() === sid
                  && String(m.taken_on || '').slice(0, 10) > afterKey
                  && mockExamAccuracy(m) !== null)
     .sort((a, b) => String(a.taken_on).localeCompare(String(b.taken_on)))[0] || null;
@@ -9356,7 +9498,8 @@ function buildLaterRoundGain(qbProgress, reviewStats, mockExams) {
         const d = diffDateKeys(doneNext, doneK);
         if (Number.isFinite(d) && d >= 0) { gap = d; gapExact = true; }
       }
-      if (gap === null) gap = gapByName[name];
+      // 学習ログ側の科目名（vol.4 は元の科目へ寄せた名前）で引く
+      if (gap === null) gap = gapByName[studySubjectName(sid)];
       if (gap === undefined || gap === null) return;
 
       // 後の時点。周回 k+2 があればそれ、無ければ k+1 を終えたあとの模試
@@ -10742,7 +10885,11 @@ async function renderInsights(){
   // ===== Phase 1: QB正答率分析 =====
   // 正答率は qb_progress の現在値（＝過去すべての累積）から出すので、
   // 期間フィルタとは独立に、初日からの全データが対象になる。
-  const acc = buildQBAccuracyStats(getQBProgress());
+  // acc は常に科目の合算（形式にかかわらず元の科目へ足す）。散布図・周回の伸びなど、
+  // 科目で突き合わせる分析はこちらを使う。accView は正答率カードの表示の切り替え用。
+  const accAxis = getQbAccAxis();
+  const acc = buildQBAccuracyStats(getQBProgress(), 'subject');
+  const accView = accAxis === 'format' ? buildQBAccuracyStats(getQBProgress(), 'format') : acc;
 
   // 科目ごとの累積学習時間。散布図の x 軸に使う。
   // qb は科目ID（"2C"）、study_logs は表示名（"2C 循環器"）なので名前側に寄せて突き合わせる。
@@ -10763,12 +10910,10 @@ async function renderInsights(){
     .sort((a, b) => a.y - b.y);
 
   // 周回別の伸び（同一科目で2周目以降の記録がある分だけ）
+  // 伸びは2周以上ある教材どうしで比べる（pairedRoundGain を参照）
   const roundGains = acc.subjects
-    .filter(s => s.byRound.length >= 2)
-    .map(s => {
-      const first = s.byRound[0], last = s.byRound[s.byRound.length - 1];
-      return { name: s.name, from: first, to: last, gain: last.acc - first.acc };
-    })
+    .filter(s => s.gain)
+    .map(s => ({ name: s.name, from: s.gain.from, to: s.gain.to, gain: s.gain.gain }))
     .sort((a, b) => b.gain - a.gain);
 
   const hasAccData = acc.ranked.length > 0 || acc.subjects.length > 0;
@@ -10793,7 +10938,8 @@ async function renderInsights(){
   const ioTargetRound = getPacerTargetRound();
   const ioBaseline = buildIOBaseline(unitCost, pipeline.rows, getQBProgress(), ioTargetRound, getIOVideoPlan(), getIOVideoSkip());
   const timeBudget = buildTimeBudget(examCountdowns, ioBaseline, allLogs, logicalToday);
-  const accTrend = buildAccuracyTrend(logs, logicalToday);
+  const accTrendFormat = getAccTrendFormat();
+  const accTrend = buildAccuracyTrend(logs, logicalToday, ACC_TREND_WEEKS, accTrendFormat);
   const subjectBudget = buildSubjectBudget(getQBProgress(), unitCost, ioTargetRound);
   const comeback = buildComebackStats(allLogs);
   const videoLag = buildVideoQbLag(logs, logicalToday);
@@ -10816,7 +10962,7 @@ async function renderInsights(){
   // --- Build HTML ---
   // 各セクションはこの d だけを見る。集計結果をここで1つにまとめて渡す。
   const d = {
-    DONUT_COLORS, IDEAL_SLEEP_HOURS, acc, accTrend, combined, allLocations, allNighter, allNighterCount,
+    DONUT_COLORS, IDEAL_SLEEP_HOURS, acc, accAxis, accTrend, accTrendFormat, accView, combined, allLocations, allNighter, allNighterCount,
     avgFocus, avgSessionMin, backlog, backlogDated, balanceAlertHtml, bestEnv, bestSleepSlot,
     breakStats, chronoColor, chronoIconSvg, chronoName, chronoTotal30, comeback,
     cooldownWarning, dailyAvgChange, donutR, donutSVG, donutTotal, dowCounts, dowMinutes,
@@ -11281,8 +11427,53 @@ function insightsQbHTML(d) {
 }
 
 // 正答率の現在地：弱点科目、投下時間との関係、周回ごとの伸び
+// 正答率の1行。sub = 科目×形式の内訳行（字下げして小さく出す）
+function accRankRowHTML(name, s, opts = {}) {
+  const thin = s.done < ACC_MIN_SAMPLE;
+  const dot = opts.color ? `<i class="acc-fmt-dot" style="background:${opts.color}"></i>` : '';
+  return `
+    <div class="acc-rank-row${opts.sub ? ' acc-rank-sub' : ''}${thin && opts.muteThin ? ' is-thin' : ''}">
+      <div class="acc-rank-name" title="${esc(name)}">${dot}${esc(name)}</div>
+      <div class="acc-rank-bar"><div style="width:${Math.max(2, s.acc)}%;background:${accColor(s.acc)}"></div></div>
+      <div class="acc-rank-pct" style="color:${accColor(s.acc)}">${s.acc.toFixed(0)}%</div>
+      <div class="acc-rank-n">${s.correct}/${s.done}${opts.note ? `<span class="acc-rank-note">${opts.note}</span>` : ''}</div>
+    </div>`;
+}
+
+// 4連問は小問で数えている。セット数を添えて、1セット4問の重さが分かるようにする。
+function linkedSetNote(format, done) {
+  const sec = QB_SECTIONS.find(x => x.key === format);
+  return sec && sec.short === '4連問' ? `約${Math.round(done / 4)}セット` : '';
+}
+
+function accAxisBodyHTML(d) {
+  const { acc, accAxis, accView } = d;
+  if (accAxis === 'format') {
+    const rows = accView.subjects.slice().sort((a, b) => a.acc - b.acc);
+    return `
+      <div class="acc-rank-head">形式ごとの正答率（低い順・${ACC_MIN_SAMPLE}問未満は薄く表示）</div>
+      <div class="acc-rank-list">
+        ${rows.map(s => accRankRowHTML(s.name, s, { color: questionFormatDef(s.format).color, muteThin: true,
+                                                     note: linkedSetNote(s.format, s.done) })).join('')}
+      </div>
+      <div class="acc-thin-note">形式ごとの合計は ${accView.totalCorrect.toLocaleString()}/${accView.totalDone.toLocaleString()}問で、科目別の合計と同じです。4連問は1セット＝4問として小問で数えています。</div>`;
+  }
+  if (!acc.ranked.length) return `<div class="data-collecting-msg">${ACC_MIN_SAMPLE}問以上を解いた科目がまだありません。</div>`;
+  const cross = accAxis === 'cross';
+  return `
+    <div class="acc-rank-head">${cross
+      ? `科目ごとの正答率と、その形式別の内訳（科目は${ACC_MIN_SAMPLE}問以上・内訳は${ACC_MIN_SAMPLE}問未満を薄く表示）`
+      : `正答率の低い順（${ACC_MIN_SAMPLE}問以上を解いた科目・4連問と多肢選択も元の科目に合算）`}</div>
+    <div class="acc-rank-list">
+      ${acc.ranked.map(s => accRankRowHTML(s.name, s) + (cross
+        ? s.parts.map(p => accRankRowHTML(p.short, p, { sub: true, color: p.color, muteThin: true,
+                                                         note: linkedSetNote(p.format, p.done) })).join('')
+        : '')).join('')}
+    </div>`;
+}
+
 function insightsQbAccuracyHTML(d) {
-  const { acc, hasAccData, medAcc, medHours, reviewMethod, roundGains, scatterPoints } = d;
+  const { acc, accAxis, hasAccData, medAcc, medHours, reviewMethod, roundGains, scatterPoints } = d;
   return `
   <!-- Section D: QB正答率と弱点科目 -->
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.11s">
@@ -11324,21 +11515,13 @@ function insightsQbAccuracyHTML(d) {
         </div>
       ` : ''}
 
-      ${acc.ranked.length > 0 ? `
-        <div class="acc-rank-head">正答率の低い順（${ACC_MIN_SAMPLE}問以上を解いた科目）</div>
-        <div class="acc-rank-list">
-          ${acc.ranked.map(s => `
-            <div class="acc-rank-row">
-              <div class="acc-rank-name" title="${s.name}">${s.name}</div>
-              <div class="acc-rank-bar"><div style="width:${Math.max(2, s.acc)}%;background:${accColor(s.acc)}"></div></div>
-              <div class="acc-rank-pct" style="color:${accColor(s.acc)}">${s.acc.toFixed(0)}%</div>
-              <div class="acc-rank-n">${s.correct}/${s.done}</div>
-            </div>
-          `).join('')}
-        </div>
-      ` : `<div class="data-collecting-msg">${ACC_MIN_SAMPLE}問以上を解いた科目がまだありません。</div>`}
+      <div class="filter-chips acc-axis-chips" id="acc-axis-chips" role="group" aria-label="集計の軸">
+        ${QB_ACC_AXES.map(a => `<button type="button" class="filter-chip${accAxis === a.v ? ' active' : ''}" data-axis="${a.v}">${a.l}</button>`).join('')}
+      </div>
 
-      ${acc.thin.length > 0 ? `
+      ${accAxisBodyHTML(d)}
+
+      ${accAxis !== 'format' && acc.thin.length > 0 ? `
         <div class="acc-thin-note">データ不足（${ACC_MIN_SAMPLE}問未満のため順位づけから除外）: ${acc.thin.map(s => `${s.name}(${s.done}問)`).join('、')}</div>
       ` : ''}
     `}
@@ -11698,15 +11881,21 @@ function insightsQbPipelineHTML(d) {
 
 // 伸びと配分：正答率の推移、どの科目にあと何時間
 function insightsQbProgressHTML(d) {
-  const { acc, accTrend, subjectBudget } = d;
+  const { acc, accTrend, accTrendFormat, subjectBudget } = d;
+  const trendFmtLabel = accTrendFormat === 'all' ? '' : questionFormatDef(accTrendFormat).label;
   return `
   <!-- Section O: 正答率の推移 -->
-  ${accTrend.hasData ? `
+  ${accTrend.hasData || accTrendFormat !== 'all' ? `
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.126s">
     <div class="section-header">
       <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
       <div><div class="section-title">正答率の推移</div><div class="section-subtitle">週ごとの通算正答率。上がっているか、頭打ちか</div></div>
     </div>
+    <div class="filter-chips acc-axis-chips" id="acc-trend-format-chips" role="group" aria-label="問題形式">
+      ${[{ key: 'all', short: 'すべて' }].concat(QUESTION_FORMATS).map(f =>
+        `<button type="button" class="filter-chip${accTrendFormat === f.key ? ' active' : ''}" data-format="${f.key}">${f.short}</button>`).join('')}
+    </div>
+    ${!accTrend.hasData ? `<div class="data-collecting-msg">この期間の${trendFmtLabel}は、推移を出せるだけの記録がまだありません（${QB_MIN_SOLVED}問以上の週が2つ必要です）。</div>` : ''}
     ${accTrend.trend ? `
       <div class="break-verdict ${accTrend.trend.diff >= 3 ? '' : 'break-verdict-muted'}">
         ${accTrend.trend.diff >= 3 ? `<span class="break-verdict-mark">${IC.check}</span>` : ''}
@@ -11728,7 +11917,7 @@ function insightsQbProgressHTML(d) {
         </div>
       `).join('')}
     </div>
-    <div class="break-note">各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
+    <div class="break-note">${trendFmtLabel ? `${trendFmtLabel}のセッションだけで出しています。` : ''}科目で絞るときは、ページ上部の科目フィルタを使ってください（4連問・多肢選択も元の科目に含まれます）。各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
   </div>
   ` : ''}
 
@@ -12808,6 +12997,20 @@ function wireInsightFilters(ct, d) {
   // --- Event: Reset ---
   document.getElementById('filter-reset')?.addEventListener('click', () => {
     resetInsightFilters();
+    renderInsights();
+  });
+  // --- Event: 正答率の集計の軸（科目別 / 形式別 / 科目×形式） ---
+  document.getElementById('acc-axis-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-axis]');
+    if (!chip) return;
+    setQbAccAxis(chip.dataset.axis);
+    renderInsights();
+  });
+  // --- Event: 正答率の推移の形式 ---
+  document.getElementById('acc-trend-format-chips')?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-format]');
+    if (!chip) return;
+    setAccTrendFormat(chip.dataset.format);
     renderInsights();
   });
   // --- Event: 見る予定の講義動画本数 ---

@@ -2066,6 +2066,14 @@ body.zen-mode .multi-panel { display:none; }
 .acc-rank-bar > div { height: 100%; border-radius: 4px; }
 .acc-rank-pct { font-weight: 800; min-width: 38px; text-align: right; }
 .acc-rank-n { font-size: 0.7rem; color: var(--color-text-tertiary); min-width: 62px; text-align: right; }
+.acc-rank-note { display: block; font-size: 0.64rem; }
+/* 科目×形式の内訳行。親の科目の下に字下げして小さく出す */
+.acc-rank-sub { font-size: 0.74rem; color: var(--color-text-secondary); margin-top: -2px; }
+.acc-rank-sub .acc-rank-name { padding-left: 14px; }
+.acc-rank-sub .acc-rank-bar { height: 5px; }
+.acc-rank-row.is-thin { opacity: 0.5; }
+.acc-fmt-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: 1px; }
+.acc-axis-chips { margin-bottom: 12px; }
 
 .acc-thin-note {
   margin-top: 12px;
@@ -2151,6 +2159,8 @@ body.zen-mode .multi-panel { display:none; }
 
 @media (max-width: 600px) {
   .acc-rank-row { grid-template-columns: minmax(70px, 1.2fr) 2fr auto; font-size: 0.76rem; }
+  .acc-rank-sub .acc-rank-name { padding-left: 6px; }
+  .acc-fmt-dot { margin-right: 4px; }
   .acc-rank-n { display: none; }
   .acc-scatter-wrap { height: 260px; }
 }
