@@ -2876,6 +2876,16 @@ function multiStatusText() {
   return `${ms.segments.length}科目・配分 ${formatMinutes(plan)}${over ? '・超過' : ''}`;
 }
 
+// 科目名と問題形式を分けて出す（「多肢選択 1F 呼吸器」→「1F 呼吸器」＋「多肢選択」のバッジ）。
+// 狭い欄で名前の後ろが切れると、vol.4 の科目はどれも「多肢選択 …」で見分けがつかないため。
+function multiSubjectLabelHTML(id) {
+  const fmt = questionFormatOf(id);
+  const name = fmt ? subjectDisplayName(baseSubjectIdOf(id) || id) : subjectNameOf(id);
+  const def = fmt ? questionFormatDef(fmt) : null;
+  return `<span class="multi-name">${esc(name)}</span>`
+    + (def ? `<span class="multi-fmt" style="--fmt:${esc(def.color)}">${esc(def.short)}</span>` : '');
+}
+
 function multiSubjectOptions(selected) {
   const known = subjectCategories.some(c => c.subjects.some(s => s.id === selected));
   return `<option value="">-- 科目 --</option>`
@@ -2890,7 +2900,7 @@ function multiPanelHTML() {
     // 科目はシャッフルで解くので、進行中は配分の一覧を見せるだけ
     const rows = ms.segments.map(s => `
       <div class="multi-seg">
-        <span class="multi-seg-name">${esc(subjectNameOf(s.subjectId))}</span>
+        <span class="multi-seg-name">${multiSubjectLabelHTML(s.subjectId)}</span>
         <span class="multi-seg-q">${s.questions}問</span>
         <span class="multi-seg-time">${formatMinutes(s.plannedMin)}</span>
       </div>`).join('');
@@ -3069,7 +3079,7 @@ function showMultiConfirmOverlay() {
           <div class="multi-confirm-table">
             <div class="multi-confirm-row multi-confirm-head"><div>科目</div><div>配分</div><div>解いた</div><div>正解</div><div>実績(分)</div></div>
             ${ms.segments.map((s, i) => `<div class="multi-confirm-row" data-multi-confirm="${i}">
-                <div class="multi-confirm-name">${esc(subjectNameOf(s.subjectId))}<span>${s.questions}問予定</span></div>
+                <div class="multi-confirm-name">${multiSubjectLabelHTML(s.subjectId)}<span class="multi-confirm-sub">${s.questions}問予定</span></div>
                 <div class="multi-confirm-plan">${s.plannedMin}分</div>
                 <div><input type="number" class="mc-solved" min="0" inputmode="numeric" value="${s.questions}" /></div>
                 <div><input type="number" class="mc-correct" min="0" inputmode="numeric" placeholder="-" /></div>

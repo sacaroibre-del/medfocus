@@ -851,7 +851,7 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .multi-recommend { font-size:0.8rem; color:var(--color-text-secondary); text-align:center; min-height:1em; }
 .multi-recommend .btn { padding:2px 10px; font-size:0.75rem; margin-left:4px; }
 .multi-seg { display:flex; align-items:baseline; gap:8px; padding:6px 10px; border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:0.85rem; }
-.multi-seg-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--color-text-primary); }
+.multi-seg-name { flex:1; min-width:0; font-weight:600; color:var(--color-text-primary); display:flex; flex-wrap:wrap; align-items:center; gap:4px 6px; }
 .multi-seg-q { color:var(--color-text-tertiary); font-size:0.75rem; }
 .multi-seg-time { color:var(--color-text-secondary); font-variant-numeric:tabular-nums; font-size:0.8rem; }
 .stopwatch-time.is-overtime { color:var(--color-accent-pink); }
@@ -859,8 +859,12 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .multi-confirm-row { display:grid; grid-template-columns:minmax(0,1.6fr) 44px repeat(3, minmax(0,1fr)); gap:6px; align-items:center; font-size:0.85rem; }
 .multi-confirm-head { font-size:0.72rem; color:var(--color-text-tertiary); }
 .multi-confirm-row input { width:100%; min-width:0; text-align:center; padding:6px 4px; }
-.multi-confirm-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
-.multi-confirm-name span { display:block; font-size:0.7rem; font-weight:400; color:var(--color-text-tertiary); }
+.multi-confirm-name { min-width:0; font-weight:600; display:flex; flex-wrap:wrap; align-items:center; gap:2px 6px; line-height:1.3; }
+.multi-confirm-sub { flex-basis:100%; font-size:0.7rem; font-weight:400; color:var(--color-text-tertiary); }
+/* 科目名は切らずに折り返す。問題形式はバッジで添える */
+.multi-name { overflow-wrap:anywhere; }
+.multi-fmt { font-size:0.68rem; font-weight:600; line-height:1; padding:3px 6px; border-radius:var(--radius-full); white-space:nowrap;
+  color:var(--fmt); background:color-mix(in srgb, var(--fmt) 16%, transparent); border:1px solid color-mix(in srgb, var(--fmt) 40%, transparent); }
 .multi-confirm-plan { color:var(--color-text-secondary); font-variant-numeric:tabular-nums; }
 body.zen-mode .multi-panel { display:none; }
 
