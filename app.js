@@ -2329,7 +2329,6 @@ function startSW(){
   if(sessionBreaks.length > 0 && !sessionBreaks[sessionBreaks.length-1].end) {
     sessionBreaks[sessionBreaks.length-1].end = new Date().toISOString();
   }
-  multiOnStart(new Date().toISOString());
   isRunning=true;
   timerStartTime = Date.now();
   baseElapsed = elapsedSeconds;
@@ -2484,7 +2483,6 @@ function finishSession(manualStop = false) {
 
   // 複数科目モードは科目ごとの記録フォームを出す
   if (isMulti && multiSession && multiSession.id) {
-    multiCommit();
     pendingLogDuration = Math.floor(cumulativeStudySeconds / 60);
     isConfirmingLog = true;
     saveTimerState();
@@ -2692,7 +2690,6 @@ function pauseSW(){
     if(isCountdown) countdownSeconds = Math.max(0, baseCountdown - delta);
     // Record break start
     sessionBreaks.push({ start: new Date().toISOString(), end: null });
-    multiOnPause(new Date().toISOString());
   }
   isRunning=false;
   if(timerInterval){ clearInterval(timerInterval); timerInterval=null; }
@@ -2729,14 +2726,14 @@ function generateUID() {
 }
 
 // ==================== 複数科目統合セッション ====================
-// 複数の科目を1セッションで解く。合計時間を問題数の比で科目に配り、科目ごとの実績時間を
-// 測って、終わったら科目ごとに1行ずつ study_logs に入れる（combined_session_id で束ねる）。
+// 複数の科目を1セッションで解く。合計時間を問題数の比で科目に配り、終わったら科目ごとに
+// 1行ずつ study_logs に入れる（combined_session_id で束ねる）。
+// 問題は科目をまたいでシャッフルで解くので、科目ごとの時間は測らない。タイマーは全体で1本の
+// ストップウォッチとして動かし、終了時に実際の合計時間を解いた問題数の比で科目に割り振る。
 // 活動は問題演習(qb)に固定。手を付けなかった科目も 0分 の行として残し、配分との差を後で見られるようにする。
-// タイマー本体はストップウォッチとして動かし、科目の実績は elapsedSeconds の差分で積む
-// （一時停止中は elapsedSeconds が進まないので、休憩は自然に実績から外れる）。
 const MULTI_MIN_PER_Q_KEY = 'medfocus_multi_min_per_q';
 let isMulti = false;
-let multiSession = null;  // { id, totalMin, current, segBase, segments:[{subjectId, questions, plannedMin, actualSec, startedAt, endedAt, breaks, notified}] }
+let multiSession = null;  // { id, totalMin, notified, segments:[{subjectId, questions, plannedMin}] }
 
 // 合計時間を問題数の比で配る。端数は切り捨て、余りは問題数が最多の科目（同数なら先の科目）に足す。
 // 問題数が0以下の科目には配らない。入力の並びと同じ長さの配列を返す。
@@ -2778,7 +2775,7 @@ function setMultiMinPerQOverride(v) {
 }
 
 function newMultiDraft() {
-  return { id: null, totalMin: 60, current: 0, segBase: 0, segments: [] };
+  return { id: null, totalMin: 60, notified: false, segments: [] };
 }
 function ensureMultiSession() {
   if (!multiSession || !Array.isArray(multiSession.segments)) multiSession = newMultiDraft();
@@ -2786,7 +2783,7 @@ function ensureMultiSession() {
 }
 function newMultiSegment(subjectId, questions) {
   return { subjectId: subjectId || '', questions: questions === '' || questions == null ? '' : Math.max(0, parseInt(questions, 10) || 0),
-           plannedMin: 0, actualSec: 0, startedAt: null, endedAt: null, breaks: [], notified: false };
+           plannedMin: 0 };
 }
 // 始めたあと（記録・リセットまで）は、ほかのモードへ移れない
 function multiLocked() { return !!(isMulti && multiSession && multiSession.id); }
@@ -2795,32 +2792,6 @@ function multiUuid() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
   const h = () => Math.floor(Math.random() * 0x10000).toString(16).padStart(4, '0');
   return `${h()}${h()}-${h()}-4${h().slice(1)}-${(8 + Math.floor(Math.random() * 4)).toString(16)}${h().slice(1)}-${h()}${h()}${h()}`;
-}
-
-// いまの科目で経過中のぶんも含めた実績（秒）
-function multiLiveSec(i) {
-  const ms = multiSession;
-  if (!ms || !ms.segments[i]) return 0;
-  const seg = ms.segments[i];
-  const live = (ms.id && i === ms.current) ? Math.max(0, elapsedSeconds - (ms.segBase || 0)) : 0;
-  return (seg.actualSec || 0) + live;
-}
-// 経過中のぶんを、いまの科目の実績へ確定させる。何度呼んでも二重には積まない
-function multiCommit() {
-  const ms = multiSession;
-  if (!ms || !ms.id || !ms.segments[ms.current]) return;
-  ms.segments[ms.current].actualSec = multiLiveSec(ms.current);
-  ms.segBase = elapsedSeconds;
-}
-function multiSwitchTo(i) {
-  const ms = multiSession;
-  if (!ms || !ms.id || i < 0 || i >= ms.segments.length || i === ms.current) return;
-  multiCommit();
-  const now = new Date().toISOString();
-  ms.segments[ms.current].endedAt = now;
-  ms.current = i;
-  if (!ms.segments[i].startedAt) ms.segments[i].startedAt = now;
-  saveTimerState();
 }
 
 // 設定を検証して配分を確定させ、セッションを始められる状態にする。問題があれば文言を返す
@@ -2836,8 +2807,7 @@ function multiStart() {
   ms.segments = alloc.map(s => Object.assign(newMultiSegment(s.subjectId, s.questions), { plannedMin: s.plannedMin }));
   ms.totalMin = totalMin;
   ms.id = multiUuid();
-  ms.current = 0;
-  ms.segBase = elapsedSeconds;
+  ms.notified = false;
   return null;
 }
 
@@ -2845,27 +2815,8 @@ function multiStart() {
 function multiResetRuntime() {
   if (!multiSession) return;
   multiSession.id = null;
-  multiSession.current = 0;
-  multiSession.segBase = 0;
+  multiSession.notified = false;
   multiSession.segments = multiSession.segments.map(s => newMultiSegment(s.subjectId, s.questions));
-}
-
-// startSW / pauseSW から呼ぶ。休憩は止めたときにいた科目に付ける
-function multiOnStart(nowIso) {
-  const ms = multiSession;
-  if (!isMulti || !ms || !ms.id) return;
-  const cur = ms.segments[ms.current];
-  if (cur && !cur.startedAt) cur.startedAt = nowIso;
-  ms.segments.forEach(s => {
-    const last = s.breaks && s.breaks[s.breaks.length - 1];
-    if (last && !last.end) last.end = nowIso;
-  });
-}
-function multiOnPause(nowIso) {
-  const ms = multiSession;
-  if (!isMulti || !ms || !ms.id) return;
-  const cur = ms.segments[ms.current];
-  if (cur) (cur.breaks = cur.breaks || []).push({ start: nowIso, end: null });
 }
 
 // 今日のノルマ（問題集のプラン）から、科目ごとの今日の残り問題数を拾う
@@ -2909,18 +2860,20 @@ function multiMinPerQ(subjectId) {
   return minutesPerQuestionFor(subjectId, u.unit, u.bySubject);
 }
 
-// いまの科目の経過時間をカウントアップで出す（配分との比はリングと進捗バーで見る）
+// 全体の経過時間をカウントアップで出す（配分との比はリングで見る）
 function multiDisplayHTML() {
   const ms = ensureMultiSession();
-  if (!ms.id) return fmtSW(0);
-  return fmtSW(Math.floor(multiLiveSec(ms.current)));
+  return fmtSW(ms.id ? elapsedSeconds : 0);
+}
+function multiPlannedTotal(ms) {
+  return (ms && ms.segments || []).reduce((s, x) => s + (Number(x.plannedMin) || 0), 0);
 }
 function multiStatusText() {
   const ms = multiSession;
   if (!ms || !ms.id) return '';
-  const seg = ms.segments[ms.current];
-  const over = multiLiveSec(ms.current) > seg.plannedMin * 60;
-  return `${esc(subjectNameOf(seg.subjectId))}（${ms.current + 1}/${ms.segments.length}）・配分 ${formatMinutes(seg.plannedMin)}${over ? '・超過' : ''}`;
+  const plan = multiPlannedTotal(ms);
+  const over = plan > 0 && elapsedSeconds > plan * 60;
+  return `${ms.segments.length}科目・配分 ${formatMinutes(plan)}${over ? '・超過' : ''}`;
 }
 
 function multiSubjectOptions(selected) {
@@ -2934,25 +2887,14 @@ function multiSubjectOptions(selected) {
 function multiPanelHTML() {
   const ms = ensureMultiSession();
   if (ms.id) {
-    const rows = ms.segments.map((s, i) => {
-      const live = multiLiveSec(i), plan = s.plannedMin * 60;
-      const pct = plan > 0 ? Math.min(100, live / plan * 100) : 0;
-      return `<div class="multi-seg ${i === ms.current ? 'is-current' : ''} ${plan > 0 && live > plan ? 'is-over' : ''}" data-multi-seg="${i}" role="button" tabindex="0">
-        <div class="multi-seg-head">
-          <span class="multi-seg-name">${esc(subjectNameOf(s.subjectId))}</span>
-          <span class="multi-seg-q">${s.questions}問</span>
-          <span class="multi-seg-time"><span class="multi-seg-actual">${formatMinutes(Math.floor(live / 60))}</span> / ${formatMinutes(s.plannedMin)}</span>
-        </div>
-        <div class="multi-seg-bar"><div class="multi-seg-fill" style="width:${pct.toFixed(1)}%"></div></div>
-      </div>`;
-    }).join('');
-    return `<div class="multi-panel" id="multi-panel">
-      <div class="multi-list">${rows}</div>
-      <div class="multi-nav">
-        <button type="button" class="btn btn-secondary btn-sm" id="multi-prev" ${ms.current === 0 ? 'disabled' : ''}>◀ 前の科目</button>
-        <button type="button" class="btn btn-secondary btn-sm" id="multi-next" ${ms.current >= ms.segments.length - 1 ? 'disabled' : ''}>次の科目 ▶</button>
-      </div>
-    </div>`;
+    // 科目はシャッフルで解くので、進行中は配分の一覧を見せるだけ
+    const rows = ms.segments.map(s => `
+      <div class="multi-seg">
+        <span class="multi-seg-name">${esc(subjectNameOf(s.subjectId))}</span>
+        <span class="multi-seg-q">${s.questions}問</span>
+        <span class="multi-seg-time">${formatMinutes(s.plannedMin)}</span>
+      </div>`).join('');
+    return `<div class="multi-panel" id="multi-panel"><div class="multi-list">${rows}</div></div>`;
   }
   const quota = multiQuotaRows(cachedPlanSync());
   const override = getMultiMinPerQOverride();
@@ -3011,16 +2953,7 @@ function wireMultiPanel() {
   const panel = document.getElementById('multi-panel');
   if (!panel) return;
   const ms = ensureMultiSession();
-  if (ms.id) {
-    document.getElementById('multi-prev')?.addEventListener('click', () => { multiSwitchTo(ms.current - 1); refreshMultiPanel(); });
-    document.getElementById('multi-next')?.addEventListener('click', () => { multiSwitchTo(ms.current + 1); refreshMultiPanel(); });
-    panel.querySelectorAll('[data-multi-seg]').forEach(el => {
-      const go = () => { multiSwitchTo(+el.dataset.multiSeg); refreshMultiPanel(); };
-      el.addEventListener('click', go);
-      el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
-    });
-    return;
-  }
+  if (ms.id) return;
   panel.querySelectorAll('[data-multi-row]').forEach(row => {
     const i = +row.dataset.multiRow;
     row.querySelector('.multi-subject').addEventListener('change', e => {
@@ -3068,7 +3001,7 @@ function wireMultiPanel() {
   updateMultiPreview();
 }
 
-// タイマーの表示・リング・科目ごとの進捗を書き換える（毎tick）
+// タイマーの表示・リング・状態欄を書き換える（毎tick）
 function updateMultiDisplay() {
   const ms = multiSession;
   if (!isMulti || !ms) return;
@@ -3077,14 +3010,14 @@ function updateMultiDisplay() {
   const ring = document.getElementById('timer-ring');
   if (!ms.id) {
     if (ring) ring.style.strokeDashoffset = 2 * Math.PI * 140;
+    if (disp) disp.classList.remove('is-overtime');
     return;
   }
-  const seg = ms.segments[ms.current];
-  const live = multiLiveSec(ms.current), plan = seg.plannedMin * 60;
-  const over = plan > 0 && live > plan;
+  const plan = multiPlannedTotal(ms) * 60;
+  const over = plan > 0 && elapsedSeconds > plan;
   if (ring) {
     const circ = 2 * Math.PI * 140;
-    const p = plan > 0 ? Math.min(1, live / plan) : 1;
+    const p = plan > 0 ? Math.min(1, elapsedSeconds / plan) : 1;
     ring.style.strokeDasharray = circ;
     ring.style.strokeDashoffset = circ - p * circ;
     ring.style.stroke = over ? 'var(--color-accent-pink)' : 'var(--color-primary)';
@@ -3095,28 +3028,18 @@ function updateMultiDisplay() {
     const html = `<span class="status-dot"></span>${multiStatusText()}`;
     if (st.innerHTML !== html) st.innerHTML = html;
   }
-  document.querySelectorAll('[data-multi-seg]').forEach(el => {
-    const i = +el.dataset.multiSeg, s = ms.segments[i];
-    if (!s) return;
-    const l = multiLiveSec(i), pl = s.plannedMin * 60;
-    const a = el.querySelector('.multi-seg-actual');
-    if (a) { const t = formatMinutes(Math.floor(l / 60)); if (a.textContent !== t) a.textContent = t; }
-    const fill = el.querySelector('.multi-seg-fill');
-    if (fill) fill.style.width = (pl > 0 ? Math.min(100, l / pl * 100) : 0).toFixed(1) + '%';
-    el.classList.toggle('is-over', pl > 0 && l > pl);
-  });
 }
 
-// 配分時間に届いたら1回だけ知らせる。次の科目へは自動では移らない
+// 合計の配分時間に届いたら1回だけ知らせる
 function multiTick() {
   const ms = multiSession;
   if (!isMulti || !ms || !ms.id) return;
-  const seg = ms.segments[ms.current];
-  if (seg && !seg.notified && seg.plannedMin > 0 && multiLiveSec(ms.current) >= seg.plannedMin * 60) {
-    seg.notified = true;
+  const plan = multiPlannedTotal(ms);
+  if (!ms.notified && plan > 0 && elapsedSeconds >= plan * 60) {
+    ms.notified = true;
     saveTimerState();
     playBeep();
-    showToast(IC.timer + ` ${subjectNameOf(seg.subjectId)} の配分時間（${formatMinutes(seg.plannedMin)}）になりました`);
+    showToast(IC.timer + ` 配分時間（${formatMinutes(plan)}）になりました`);
   }
   updateMultiDisplay();
 }
@@ -3138,19 +3061,20 @@ function showMultiConfirmOverlay() {
       <p style="color:var(--color-text-secondary); margin-bottom:var(--space-lg); font-size:0.9rem;">${ms.segments.length}科目・配分 ${formatMinutes(plannedTotal)} の記録です</p>
       <div class="confirm-form" style="width:100%; display:flex; flex-direction:column; gap:16px; text-align:left;">
         <div class="field">
-          <label>科目ごとの実績（手を付けなかった科目は 0分 で残ります）</label>
+          <label>合計の実績 (分)</label>
+          <input type="number" id="mc-total" min="0" inputmode="numeric" value="${Math.round(elapsedSeconds / 60)}" style="width:100%; font-size:1.2rem; font-weight:700; text-align:center;" />
+        </div>
+        <div class="field">
+          <label>科目ごとの実績（合計を解いた問題数の比で割り振ります。0問の科目は 0分 で残ります）</label>
           <div class="multi-confirm-table">
-            <div class="multi-confirm-row multi-confirm-head"><div>科目</div><div>配分</div><div>実績(分)</div><div>解いた</div><div>正解</div></div>
-            ${ms.segments.map((s, i) => {
-              const touched = s.actualSec > 0;
-              return `<div class="multi-confirm-row" data-multi-confirm="${i}">
+            <div class="multi-confirm-row multi-confirm-head"><div>科目</div><div>配分</div><div>解いた</div><div>正解</div><div>実績(分)</div></div>
+            ${ms.segments.map((s, i) => `<div class="multi-confirm-row" data-multi-confirm="${i}">
                 <div class="multi-confirm-name">${esc(subjectNameOf(s.subjectId))}<span>${s.questions}問予定</span></div>
                 <div class="multi-confirm-plan">${s.plannedMin}分</div>
-                <div><input type="number" class="mc-min" min="0" inputmode="numeric" value="${Math.round(s.actualSec / 60)}" /></div>
-                <div><input type="number" class="mc-solved" min="0" inputmode="numeric" value="${touched ? s.questions : 0}" /></div>
+                <div><input type="number" class="mc-solved" min="0" inputmode="numeric" value="${s.questions}" /></div>
                 <div><input type="number" class="mc-correct" min="0" inputmode="numeric" placeholder="-" /></div>
-              </div>`;
-            }).join('')}
+                <div><input type="number" class="mc-min" min="0" inputmode="numeric" /></div>
+              </div>`).join('')}
           </div>
         </div>
         <div class="field">
@@ -3184,6 +3108,7 @@ function showMultiConfirmOverlay() {
       </div>
     </div>`;
   mountConfirmOverlay(overlay);
+  wireMultiConfirmSplit(overlay);
 
   overlay.querySelectorAll('.purpose-btn').forEach(b => b.addEventListener('click', ev => {
     overlay.querySelectorAll('.purpose-btn').forEach(x => x.classList.replace('btn-primary', 'btn-secondary'));
@@ -3203,7 +3128,8 @@ function showMultiConfirmOverlay() {
       selectedLocation = overlay.querySelector('#multi-confirm-location').value;
       selectedFocusLevel = parseFloat(overlay.querySelector('#multi-confirm-focus').value);
       saveTimerState();
-      const ok = await saveCombinedStudyLogs(ms.id, buildCombinedRows(ms, read.rows, new Date().toISOString()), {
+      const endedAt = new Date().toISOString();
+      const ok = await saveCombinedStudyLogs(ms.id, buildCombinedRows(ms, read.rows, sessionStartedAt || endedAt, endedAt, sessionBreaks), {
         memo: overlay.querySelector('#multi-confirm-memo').value.trim(),
         focusLevel: selectedFocusLevel, location: selectedLocation, purpose: selectedPurpose
       });
@@ -3214,6 +3140,35 @@ function showMultiConfirmOverlay() {
     }
     btn.disabled = false; btn.textContent = '記録を保存'; btn.style.opacity = '1';
   });
+}
+
+// 合計の実績を、解いた問題数の比で科目に割り振る（配分と同じ端数処理）。
+// 手で直した科目はそのままにし、残りの時間をほかの科目で分ける。
+function splitCombinedActual(totalMin, rows) {
+  const fixed = rows.reduce((s, r) => s + (r.manual ? Math.max(0, r.minutes || 0) : 0), 0);
+  const auto = rows.map(r => ({ questions: r.manual ? 0 : r.solved }));
+  const alloc = allocateCombinedMinutes(Math.max(0, totalMin - fixed), auto);
+  return rows.map((r, i) => r.manual ? r.minutes : alloc[i].plannedMin);
+}
+function wireMultiConfirmSplit(root) {
+  const totalEl = root.querySelector('#mc-total');
+  const rowEls = [...root.querySelectorAll('[data-multi-confirm]')];
+  const redistribute = () => {
+    const rows = rowEls.map(el => {
+      const m = el.querySelector('.mc-min');
+      return { solved: Math.max(0, parseInt(el.querySelector('.mc-solved').value, 10) || 0),
+               manual: m.dataset.manual === '1', minutes: parseInt(m.value, 10) || 0 };
+    });
+    splitCombinedActual(parseInt(totalEl.value, 10) || 0, rows).forEach((v, i) => {
+      if (!rows[i].manual) rowEls[i].querySelector('.mc-min').value = v;
+    });
+  };
+  rowEls.forEach(el => {
+    el.querySelector('.mc-solved').addEventListener('input', redistribute);
+    el.querySelector('.mc-min').addEventListener('input', e => { e.target.dataset.manual = '1'; redistribute(); });
+  });
+  totalEl.addEventListener('input', redistribute);
+  redistribute();
 }
 
 function readMultiConfirm(root) {
@@ -3235,21 +3190,24 @@ function readMultiConfirm(root) {
 }
 
 // セッションの状態と確認フォームの入力から、保存する行を組み立てる。
-// 手を付けなかった科目（startedAt なし）は終了時刻に 0分 で置く。
-function buildCombinedRows(ms, inputs, endedIso) {
-  const cur = ms.segments[ms.current];
+// 科目はシャッフルで解いたので、どの行もセッションの開始・終了をそのまま持つ
+// （行どうしが重なるので、休憩の分析では科目の境目を休憩と数えない）。
+// 手を付けなかった科目は終了時刻に 0分 で置く。一時停止は二重に数えないよう、最初の行にだけ付ける。
+function buildCombinedRows(ms, inputs, startIso, endIso, breaks) {
+  // 終了時に開いたままの一時停止は、勉強のあとなので休憩に数えない
+  const closed = (breaks || []).filter(b => b && b.start && b.end);
+  let breaksGiven = false;
   return inputs.map(inp => {
     const s = ms.segments[inp.index];
-    const start = s.startedAt || endedIso;
-    // いまの科目と、途中で離れていない科目の終了は、セッションの終了時刻にする
-    const end = (s === cur || !s.endedAt) ? endedIso : s.endedAt;
+    const touched = inp.minutes > 0;
+    const mine = touched && !breaksGiven ? closed : [];
+    if (touched) breaksGiven = true;
     return {
       subjectId: s.subjectId, order: inp.index,
       plannedMin: s.plannedMin, plannedQuestions: Number(s.questions) || 0,
       minutes: inp.minutes, solved: inp.solved, correct: inp.correct,
-      startedAt: start, endedAt: end < start ? start : end,
-      // 終了時に開いたままの一時停止は、勉強のあとなので休憩に数えない
-      breaks: (s.breaks || []).filter(b => b.start && b.end)
+      startedAt: touched ? startIso : endIso, endedAt: endIso,
+      breaks: mine
     };
   });
 }

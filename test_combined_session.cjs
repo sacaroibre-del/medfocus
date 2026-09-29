@@ -1,6 +1,6 @@
 // 複数科目統合セッションのテスト。
 //   node test_combined_session.cjs
-// 時間配分・科目の切り替えと実績の積み方・保存する行・配分と実績の集計・
+// 時間配分・合計の実績の割り振り・保存する行・配分と実績の集計・
 // 学習ページでの設定パネルと記録フォームを確かめる。
 const fs = require('fs');
 const { JSDOM } = require('jsdom');
@@ -64,9 +64,9 @@ const mins = arr => arr.map(x => x.plannedMin);
   W.setMultiMinPerQOverride(NaN);
   eq('設定を消すと実測（無ければ仮の単価）', W.multiMinPerQ('2A'), 2);
 
-  // ---- 開始・切り替え・実績の積み方 ----
+  // ---- 開始 ----
   G(`isMulti = true; elapsedSeconds = 0;
-     multiSession = { id: null, totalMin: 90, current: 0, segBase: 0,
+     multiSession = { id: null, totalMin: 90, notified: false,
        segments: [newMultiSegment('2A', 20), newMultiSegment('2C', 40), newMultiSegment('', 5), newMultiSegment('2D', 0)] };`);
   eq('科目未選択・0問は開始時に外れる', W.multiStart(), null);
   const ms = G('multiSession');
@@ -75,42 +75,35 @@ const mins = arr => arr.map(x => x.plannedMin);
   ok('IDが振られる', typeof ms.id === 'string' && ms.id.length >= 32, ms.id);
   ok('開始後はモード切り替えを止める', W.multiLocked());
 
-  G(`multiOnStart('2026-09-28T01:00:00.000Z'); elapsedSeconds = 300;`);
-  eq('経過中の実績', W.multiLiveSec(0), 300);
-  G(`multiSwitchTo(1)`);
-  eq('切り替えで前の科目に確定', G('multiSession.segments[0].actualSec'), 300);
-  ok('次の科目の開始時刻が入る', !!G('multiSession.segments[1].startedAt'));
-  G(`elapsedSeconds = 500; multiOnPause('2026-09-28T01:09:00.000Z'); multiOnStart('2026-09-28T01:12:00.000Z');`);
-  eq('休憩は止めたときの科目に付く', G('multiSession.segments[1].breaks.length'), 1);
-  ok('再開で休憩が閉じる', !!G('multiSession.segments[1].breaks[0].end'));
-  G(`multiSwitchTo(0); elapsedSeconds = 600;`);
-  eq('前の科目へ戻ると続きから積む', W.multiLiveSec(0), 400);
-  eq('離れた科目は止まる', W.multiLiveSec(1), 200);
-  G(`multiCommit(); multiCommit();`);
-  eq('確定を2回呼んでも二重に積まない', [G('multiSession.segments[0].actualSec'), G('multiSession.segments[1].actualSec')], [400, 200]);
-  G(`multiSwitchTo(5); multiSwitchTo(-1);`);
-  eq('範囲外には移らない', G('multiSession.current'), 0);
+  // 合計の配分に届いたら1回だけ知らせる
+  G(`elapsedSeconds = 89 * 60;`); W.multiTick();
+  ok('配分前は知らせない', G('multiSession.notified') === false);
+  G(`elapsedSeconds = 90 * 60;`); W.multiTick();
+  ok('合計の配分に届いたら知らせる', G('multiSession.notified') === true);
+  ok('状態欄に科目数と配分', W.multiStatusText() === '2科目・配分 1時間30分', W.multiStatusText());
+  G(`elapsedSeconds = 91 * 60;`);
+  ok('超えたら状態欄に超過', /超過/.test(W.multiStatusText()));
 
-  // 配分に届いたら1回だけ知らせる
-  G(`multiSession.segments[0].plannedMin = 5; multiSession.segments[0].notified = false;`);
-  W.multiTick();
-  ok('配分超過で通知済みになる', G('multiSession.segments[0].notified') === true);
+  // ---- 合計の実績の割り振り ----
+  eq('解いた数の比で割り振る', W.splitCombinedActual(60, [{ solved: 10 }, { solved: 20 }]), [20, 40]);
+  eq('0問の科目は0分', W.splitCombinedActual(45, [{ solved: 0 }, { solved: 30 }]), [0, 45]);
+  eq('手で直した科目は残し、残りを分ける', W.splitCombinedActual(60, [{ solved: 10, manual: true, minutes: 30 }, { solved: 10 }, { solved: 20 }]), [30, 10, 20]);
+  eq('手で直した分が合計を超えたら残りは0', W.splitCombinedActual(20, [{ solved: 10, manual: true, minutes: 30 }, { solved: 10 }]), [30, 0]);
 
   // ---- 保存する行 ----
-  // 科目を離れた時刻は実際の現在時刻で入るので、終了はそれより後にする
-  const END = new Date(Date.now() + 3600e3).toISOString();
+  const START = '2026-09-28T01:00:00.000Z', END = '2026-09-28T02:30:00.000Z';
   G(`multiSession.segments.push(Object.assign(newMultiSegment('2E', 10), { plannedMin: 15 }));`);
+  const brk = [{ start: '2026-09-28T01:30:00.000Z', end: '2026-09-28T01:40:00.000Z' }, { start: '2026-09-28T02:30:00.000Z', end: null }];
   const rows = W.buildCombinedRows(G('multiSession'), [
-    { index: 0, minutes: 7, solved: 20, correct: 15 },
-    { index: 1, minutes: 3, solved: 5, correct: 4 },
-    { index: 2, minutes: 0, solved: 0, correct: 0 }
-  ], END);
-  eq('行の並びと科目', rows.map(r => [r.subjectId, r.order, r.minutes]), [['2A', 0, 7], ['2C', 1, 3], ['2E', 2, 0]]);
-  eq('いまの科目の終了はセッションの終了', rows[0].endedAt, END);
-  ok('離れた科目の終了は離れた時刻', rows[1].endedAt < END, rows[1].endedAt);
-  eq('手を付けなかった科目は終了時刻に0分で置く', [rows[2].startedAt, rows[2].endedAt, rows[2].minutes], [END, END, 0]);
+    { index: 0, minutes: 0, solved: 0, correct: 0 },
+    { index: 1, minutes: 50, solved: 20, correct: 15 },
+    { index: 2, minutes: 30, solved: 10, correct: 8 }
+  ], START, END, brk);
+  eq('行の並びと科目', rows.map(r => [r.subjectId, r.order, r.minutes]), [['2A', 0, 0], ['2C', 1, 50], ['2E', 2, 30]]);
+  eq('解いた科目はセッションの開始・終了を持つ', [rows[1].startedAt, rows[1].endedAt, rows[2].startedAt, rows[2].endedAt], [START, END, START, END]);
+  eq('手を付けなかった科目は終了時刻に0分で置く', [rows[0].startedAt, rows[0].endedAt], [END, END]);
   eq('予定問題数', rows.map(r => r.plannedQuestions), [20, 40, 10]);
-  eq('閉じた休憩だけ残す', rows[1].breaks.length, 1);
+  eq('一時停止は最初の解いた行にだけ・閉じたものだけ', rows.map(r => r.breaks.length), [0, 1, 0]);
 
   // ---- Supabase への保存 ----
   const inserted = [];
@@ -142,15 +135,15 @@ const mins = arr => arr.map(x => x.plannedMin);
   eq('1回で3行', inserted.length, 3);
   eq('全行が同じ統合ID', [...new Set(inserted.map(p => p.combined_session_id))], [sid]);
   eq('活動は問題演習', [...new Set(inserted.map(p => p.activity))], ['qb']);
-  eq('配分・予定問題数・順番', inserted.map(p => [p.planned_minutes, p.planned_questions, p.segment_order]), [[5, 20, 0], [60, 40, 1], [15, 10, 2]]);
+  eq('配分・予定問題数・順番', inserted.map(p => [p.planned_minutes, p.planned_questions, p.segment_order]), [[30, 20, 0], [60, 40, 1], [15, 10, 2]]);
   eq('実績と解いた数', inserted.map(p => [p.subject_name, p.duration_minutes, p.questions_solved, p.questions_correct]),
-    [['2A', 7, 20, 15], ['2C', 3, 5, 4], ['2E', 0, 0, 0]]);
+    [['2A', 0, 0, 0], ['2C', 50, 20, 15], ['2E', 30, 10, 8]]);
   eq('共通の項目', [inserted[0].memo, inserted[0].location, inserted[0].focus_level, inserted[0].study_purpose], ['まとめて', '図書館', 3, 'cbt']);
-  ok('休憩はその科目の行だけ', !inserted[0].breaks && typeof inserted[1].breaks === 'string');
+  ok('一時停止は1行にだけ', !inserted[0].breaks && typeof inserted[1].breaks === 'string' && !inserted[2].breaks);
 
   inserted.length = 0; failMode = 'duration';
   ok('0分を拒まれたら0分の行を外して保存', await W.saveCombinedStudyLogs(sid, rows, common));
-  eq('0分の行を外した', inserted.map(p => p.subject_name), ['2A', '2C']);
+  eq('0分の行を外した', inserted.map(p => p.subject_name), ['2C', '2E']);
 
   inserted.length = 0; failMode = 'column';
   ok('列が無ければ列なしで保存', await W.saveCombinedStudyLogs(sid, rows, common));
@@ -192,7 +185,7 @@ const mins = arr => arr.map(x => x.plannedMin);
 
   // ---- 学習ページ ----
   W.__noDB();
-  G(`resetSW(); isMulti = true; multiSession = { id: null, totalMin: 60, current: 0, segBase: 0, segments: [newMultiSegment('2A', 10), newMultiSegment('2C', 20)] };`);
+  G(`resetSW(); isMulti = true; multiSession = { id: null, totalMin: 60, notified: false, segments: [newMultiSegment('2A', 10), newMultiSegment('2C', 20)] };`);
   eq('リセット後は下書きが残る', G('multiSession.segments.map(s => s.subjectId)'), ['2A', '2C']);
   await W.renderStudy();
   ok('複数科目のタブが選ばれている', document.getElementById('mode-multi')?.classList.contains('active'));
@@ -211,39 +204,49 @@ const mins = arr => arr.map(x => x.plannedMin);
   document.querySelector('[data-multi-remove="2"]').click();
   eq('科目を外す', document.querySelectorAll('#multi-panel [data-multi-row]').length, 2);
 
-  // 開始 → 進捗表示
+  // 開始 → 配分の一覧（シャッフルで解くので、科目の切り替えは無い）
   document.getElementById('btn-toggle').click();
   await new Promise(r => setTimeout(r, 0));
   ok('開始するとIDが振られる', !!G('multiSession.id'));
-  eq('進捗の行', document.querySelectorAll('[data-multi-seg]').length, 2);
-  ok('今の科目が強調される', document.querySelector('[data-multi-seg="0"]').classList.contains('is-current'));
-  document.getElementById('multi-next').click();
-  ok('次の科目へ', G('multiSession.current') === 1 && document.querySelector('[data-multi-seg="1"]').classList.contains('is-current'));
+  eq('配分の一覧', [...document.querySelectorAll('#multi-panel .multi-seg')].map(e => e.textContent.replace(/\s+/g, ' ').trim()), ['2A 消化管 40問 40分', '2C 循環器 20問 20分']);
+  ok('前後の科目ボタンは無い', !document.getElementById('multi-prev') && !document.getElementById('multi-next'));
   document.getElementById('mode-up').click();
   ok('セッション中はほかのモードへ移れない', G('isMulti') === true);
 
-  // 終了 → 記録フォーム
   // 動いているタイマーは時計から経過を取り直すので、止めてから経過を入れる
-  G(`pauseSW(); elapsedSeconds = 125;`);
+  G(`pauseSW(); elapsedSeconds = 30 * 60 + 5;`);
   W.updateMultiDisplay();
-  eq('いまの科目の経過をカウントアップで出す', document.getElementById('timer-display').textContent, '02:05');
-  ok('状態欄に配分を出す', /配分 20分/.test(W.multiStatusText()), W.multiStatusText());
-  G(`multiSession.segments[1].plannedMin = 1;`);
+  eq('全体の経過をカウントアップで出す', document.getElementById('timer-display').textContent, '30:05');
+  ok('配分内は超過の色にしない', !document.getElementById('timer-display').classList.contains('is-overtime'));
+  G(`elapsedSeconds = 61 * 60;`);
   W.updateMultiDisplay();
-  ok('配分を超えたら表示を超過の色にする', document.getElementById('timer-display').classList.contains('is-overtime'));
-  G(`multiSession.segments[1].plannedMin = 20;`);
+  ok('合計の配分を超えたら超過の色', document.getElementById('timer-display').classList.contains('is-overtime'));
+  G(`elapsedSeconds = 30 * 60 + 5;`);
+
+  // 終了 → 記録フォーム
   G(`finishSession(true)`);
   const ov = document.getElementById('multi-finish-overlay');
+  const minsOf = () => [...ov.querySelectorAll('.mc-min')].map(e => e.value);
+  const setVal = (sel, v) => { const el = ov.querySelector(sel); el.value = v; el.dispatchEvent(new W.Event('input')); };
   ok('科目ごとの記録フォームが出る', !!ov);
   eq('フォームの行', ov.querySelectorAll('[data-multi-confirm]').length, 2);
-  eq('手を付けなかった科目は0分・0問', [ov.querySelector('[data-multi-confirm="0"] .mc-min').value, ov.querySelector('[data-multi-confirm="0"] .mc-solved').value], ['0', '0']);
-  eq('実績の初期値（分に丸め）', ov.querySelector('[data-multi-confirm="1"] .mc-min').value, '2');
-  ov.querySelector('[data-multi-confirm="1"] .mc-correct').value = '99';
+  eq('合計の実績（分に丸め）', ov.querySelector('#mc-total').value, '30');
+  eq('解いた数の初期値は予定の問題数', [...ov.querySelectorAll('.mc-solved')].map(e => e.value), ['40', '20']);
+  eq('合計を解いた数の比で割り振る', minsOf(), ['20', '10']);
+  setVal('[data-multi-confirm="0"] .mc-solved', '0');
+  eq('0問にした科目は0分', minsOf(), ['0', '30']);
+  setVal('[data-multi-confirm="0"] .mc-solved', '10');
+  setVal('[data-multi-confirm="1"] .mc-min', '25');
+  eq('手で直した科目は残し、残りを割り振る', minsOf(), ['5', '25']);
+  setVal('#mc-total', '40');
+  eq('合計を直すと割り振り直す', minsOf(), ['15', '25']);
+  setVal('[data-multi-confirm="1"] .mc-correct', '99');
   eq('正解数が多すぎると止める', W.readMultiConfirm(ov).error, '正解数が問題数を超えています');
-  ov.querySelector('[data-multi-confirm="1"] .mc-correct').value = '10';
-  ov.querySelector('[data-multi-confirm="1"] .mc-min').value = '0';
+  setVal('[data-multi-confirm="1"] .mc-correct', '10');
+  setVal('[data-multi-confirm="0"] .mc-min', '0');
+  setVal('[data-multi-confirm="1"] .mc-min', '0');
   eq('全部0分なら止める', W.readMultiConfirm(ov).error, '実績時間が1分以上の科目がありません');
-  ov.querySelector('[data-multi-confirm="1"] .mc-min').value = '2';
+  setVal('[data-multi-confirm="1"] .mc-min', '25');
   ok('正しい入力は通る', !W.readMultiConfirm(ov).error);
 
   // 描き直しても記録フォームは出直す（リロード相当）
