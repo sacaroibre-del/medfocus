@@ -844,22 +844,16 @@ body.zen-mode .stopwatch-status { color: rgba(255,255,255,0.5); font-size: 1.2re
 .multi-alloc { font-size:0.8rem; color:var(--color-text-secondary); text-align:right; font-variant-numeric:tabular-nums; }
 .multi-remove { background:none; border:none; color:var(--color-text-tertiary); cursor:pointer; font-size:0.9rem; padding:4px; }
 .multi-remove:hover { color:var(--color-accent-pink); }
-.multi-add-row, .multi-nav { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+.multi-add-row { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
 .multi-total-row { display:flex; gap:12px; justify-content:center; flex-wrap:wrap; font-size:0.85rem; color:var(--color-text-secondary); }
 .multi-total-row label { display:flex; align-items:center; gap:6px; }
 .multi-total-row input { width:72px; text-align:center; }
 .multi-recommend { font-size:0.8rem; color:var(--color-text-secondary); text-align:center; min-height:1em; }
 .multi-recommend .btn { padding:2px 10px; font-size:0.75rem; margin-left:4px; }
-.multi-seg { padding:8px 10px; border:1px solid var(--color-border); border-radius:var(--radius-sm); cursor:pointer; transition:border-color var(--transition-fast); }
-.multi-seg.is-current { border-color:var(--color-primary); background:color-mix(in srgb, var(--color-primary) 8%, transparent); }
-.multi-seg-head { display:flex; align-items:baseline; gap:8px; font-size:0.85rem; }
+.multi-seg { display:flex; align-items:baseline; gap:8px; padding:6px 10px; border:1px solid var(--color-border); border-radius:var(--radius-sm); font-size:0.85rem; }
 .multi-seg-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; color:var(--color-text-primary); }
 .multi-seg-q { color:var(--color-text-tertiary); font-size:0.75rem; }
 .multi-seg-time { color:var(--color-text-secondary); font-variant-numeric:tabular-nums; font-size:0.8rem; }
-.multi-seg-bar { height:4px; margin-top:6px; background:var(--color-bg-elevated); border-radius:2px; overflow:hidden; }
-.multi-seg-fill { height:100%; background:var(--color-primary); transition:width .3s; }
-.multi-seg.is-over .multi-seg-fill { background:var(--color-accent-pink); }
-.multi-seg.is-over .multi-seg-time { color:var(--color-accent-pink); }
 .stopwatch-time.is-overtime { color:var(--color-accent-pink); }
 .multi-confirm-table { display:flex; flex-direction:column; gap:6px; margin-top:4px; }
 .multi-confirm-row { display:grid; grid-template-columns:minmax(0,1.6fr) 44px repeat(3, minmax(0,1fr)); gap:6px; align-items:center; font-size:0.85rem; }
