@@ -197,6 +197,7 @@ const mins = arr => arr.map(x => x.plannedMin);
   await W.renderStudy();
   ok('複数科目のタブが選ばれている', document.getElementById('mode-multi')?.classList.contains('active'));
   ok('通常の科目セレクタは出さない', !document.getElementById('study-subject'));
+  eq('開始前は 00:00 から', document.getElementById('timer-display').textContent, '00:00');
   eq('設定パネルに科目の行', document.querySelectorAll('#multi-panel [data-multi-row]').length, 2);
   eq('配分のプレビュー', [...document.querySelectorAll('[data-multi-alloc]')].map(e => e.textContent), ['20分', '40分']);
   ok('推奨時間が出る', /推奨/.test(document.getElementById('multi-recommend').textContent));
@@ -224,6 +225,13 @@ const mins = arr => arr.map(x => x.plannedMin);
   // 終了 → 記録フォーム
   // 動いているタイマーは時計から経過を取り直すので、止めてから経過を入れる
   G(`pauseSW(); elapsedSeconds = 125;`);
+  W.updateMultiDisplay();
+  eq('いまの科目の経過をカウントアップで出す', document.getElementById('timer-display').textContent, '02:05');
+  ok('状態欄に配分を出す', /配分 20分/.test(W.multiStatusText()), W.multiStatusText());
+  G(`multiSession.segments[1].plannedMin = 1;`);
+  W.updateMultiDisplay();
+  ok('配分を超えたら表示を超過の色にする', document.getElementById('timer-display').classList.contains('is-overtime'));
+  G(`multiSession.segments[1].plannedMin = 20;`);
   G(`finishSession(true)`);
   const ov = document.getElementById('multi-finish-overlay');
   ok('科目ごとの記録フォームが出る', !!ov);
