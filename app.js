@@ -2314,7 +2314,7 @@ function startSW(){
     }
     if(elapsedSeconds % 5 === 0) saveTimerState();
     if(isMulti) {
-      // 複数科目モードは科目ごとの残り時間を出す
+      // 複数科目モードはいまの科目の経過時間を出す
       multiTick();
       updatePip();
       updateTabTitle();
@@ -2876,22 +2876,18 @@ function multiMinPerQ(subjectId) {
   return minutesPerQuestionFor(subjectId, u.unit, u.bySubject);
 }
 
-function fmtMultiSec(sec) {
-  const over = sec < 0;
-  return (over ? '+' : '') + fmtSW(Math.abs(Math.round(sec)));
-}
+// いまの科目の経過時間をカウントアップで出す（配分との比はリングと進捗バーで見る）
 function multiDisplayHTML() {
   const ms = ensureMultiSession();
-  if (!ms.id) return fmtSW((parseInt(ms.totalMin, 10) || 0) * 60);
-  const seg = ms.segments[ms.current];
-  return fmtMultiSec(seg.plannedMin * 60 - multiLiveSec(ms.current));
+  if (!ms.id) return fmtSW(0);
+  return fmtSW(Math.floor(multiLiveSec(ms.current)));
 }
 function multiStatusText() {
   const ms = multiSession;
   if (!ms || !ms.id) return '';
   const seg = ms.segments[ms.current];
   const over = multiLiveSec(ms.current) > seg.plannedMin * 60;
-  return `${esc(subjectNameOf(seg.subjectId))}（${ms.current + 1}/${ms.segments.length}）${over ? '・配分超過' : ''}`;
+  return `${esc(subjectNameOf(seg.subjectId))}（${ms.current + 1}/${ms.segments.length}）・配分 ${formatMinutes(seg.plannedMin)}${over ? '・超過' : ''}`;
 }
 
 function multiSubjectOptions(selected) {
