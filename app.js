@@ -655,11 +655,49 @@ const subjectCategories = [
 // questionTotal はそのセクション全体の問題数。科目ごとの内訳は本を見ながら手で入れるので、
 // 「登録済みが全体の何問ぶんか」を出して入れ忘れに気づけるようにするために持つ。
 // baseCategories はそのセクションが持つ範囲。省いたら vol.1〜3 すべて。
+//
+// vol.5 以降は vol.1〜3 の並びをなぞらないので、科目を subjects に直接書く。
+//   subjects[].total  本に載っている問題数。分かっているので最初の1周目に入れる（手で入れなくてよい）
+//   base              そのセクションの科目の時間を寄せる元の科目。無ければ科目に時間を残す
+//   format            問題形式の key。複数のセクションが同じ形式なら揃える（省いたら key）
+//   formatName        形式の表示名（省いたら name から vol.N を落としたもの）
 const QB_SECTIONS = [
   { key:'4A', catId:'cat-vol4-multi',  name:'vol.4 多肢選択問題', short:'多肢選択', color:'#F5B041', questionTotal:360 },
   // 4連問には基礎医学（vol.1 の 1A〜1J）の範囲が無いので作らない
   { key:'4B', catId:'cat-vol4-linked', name:'vol.4 4連問',        short:'4連問',    color:'#E59866', questionTotal:484,
-    baseCategories:['cat-vol2','cat-vol3'] }
+    baseCategories:['cat-vol2','cat-vol3'] },
+  // 追加問題は科目をまたいだブロック（30問×4・20問×2）。元の科目が1つに決まらないので
+  // base を持たず、時間もブロックに残す。
+  { key:'5A', catId:'cat-vol5-extra', name:'vol.5 追加問題', short:'追加問題', color:'#BB8FCE',
+    subjects:[
+      {id:'5A1',name:'5A ブロック1',total:30},{id:'5A2',name:'5A ブロック2',total:30},
+      {id:'5A3',name:'5A ブロック3',total:30},{id:'5A4',name:'5A ブロック4',total:30},
+      {id:'5A5',name:'5A ブロック5',total:20},{id:'5A6',name:'5A ブロック6',total:20}
+    ] },
+  // 基礎医学強化（vol.6〜8）は vol.1 の1科目を章ごとに掘り下げた問題集。
+  // 3冊とも同じ形式なので形式は 'BM' で共有し、時間は vol.1 の元の科目へ寄せる。
+  { key:'6', format:'BM', formatName:'基礎医学強化', catId:'cat-vol6', name:'vol.6 細胞生物学',
+    short:'基礎強化', color:'#76D7C4', base:'1A',
+    subjects:[
+      {id:'6A',name:'6A 細胞の基本',total:4},{id:'6B',name:'6B 細胞の構造と機能',total:26}
+    ] },
+  { key:'7', format:'BM', formatName:'基礎医学強化', catId:'cat-vol7', name:'vol.7 分子生物学',
+    short:'基礎強化', color:'#76D7C4', base:'1E',
+    subjects:[
+      {id:'7A',name:'7A 遺伝子・DNA・染色体',total:5},{id:'7B',name:'7B 複製と修復',total:16},
+      {id:'7C',name:'7C 遺伝子発現とタンパク質合成',total:27},{id:'7D',name:'7D 染色体',total:15},
+      {id:'7E',name:'7E 遺伝子',total:17},{id:'7F',name:'7F 細胞周期と細胞分裂',total:16},
+      {id:'7G',name:'7G 遺伝の仕組み',total:18},{id:'7H',name:'7H ゲノム解析・編集',total:15}
+    ] },
+  { key:'8', format:'BM', formatName:'基礎医学強化', catId:'cat-vol8', name:'vol.8 生化学',
+    short:'基礎強化', color:'#76D7C4', base:'1D',
+    subjects:[
+      {id:'8A',name:'8A 代謝',total:3},{id:'8B',name:'8B 糖質',total:43},
+      {id:'8C',name:'8C 脂質',total:35},{id:'8D',name:'8D タンパク質・アミノ酸',total:14},
+      {id:'8E',name:'8E ヘム・ポルフィリン',total:6},{id:'8F',name:'8F ヌクレオチド',total:5},
+      {id:'8G',name:'8G 栄養・エネルギー代謝',total:18},{id:'8H',name:'8H ビタミン・ミネラル',total:29},
+      {id:'8I',name:'8I 酸化ストレス',total:6},{id:'8J',name:'8J 酵素',total:21}
+    ] }
 ];
 // vol.4 の科目は vol.1〜3 の科目から機械的に作る（本の並びが同じなので手で持たない）。
 const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
@@ -667,23 +705,44 @@ const QB_SECTION_BASE_CATEGORIES = ['cat-vol1','cat-vol2','cat-vol3'];
 // 学習ログの subject_name には科目IDと表示名のどちらも入りうるので両方を鍵にする。
 const QB_SECTION_BY_KEY = {};
 const QB_SECTION_BASE_ID = {};
+// 形式のバッジと並べて出す科目名（'4B2C' → '2C 循環器'、'7C' → '7C 遺伝子発現と…'）。
+const QB_SECTION_LABEL = {};
+// 本に載っている科目ごとの問題数（科目ID 小文字 → 問題数）。
+const QB_MASTER_TOTALS = {};
 (function buildQbSectionSubjects(){
   const subjectsOf = cats => subjectCategories
     .filter(c => cats.indexOf(c.id) >= 0)
     .reduce((acc, c) => acc.concat(c.subjects), []);
   QB_SECTIONS.forEach(sec => {
-    const base = subjectsOf(sec.baseCategories || QB_SECTION_BASE_CATEGORIES);
-    const subjects = base.map(s => ({ id: sec.key + s.id, name: sec.short + ' ' + s.name }));
-    subjects.forEach((sub, i) => {
-      [sub.id, sub.name].forEach(k => {
-        QB_SECTION_BY_KEY[k.toLowerCase()] = sec;
-        QB_SECTION_BASE_ID[k.toLowerCase()] = base[i].id;
+    let subjects;
+    if (sec.subjects) {
+      subjects = sec.subjects.map(s => ({ id: s.id, name: s.name }));
+      sec.subjects.forEach(s => {
+        const id = s.id.toLowerCase();
+        [s.id, s.name].forEach(k => {
+          QB_SECTION_BY_KEY[k.toLowerCase()] = sec;
+          if (sec.base) QB_SECTION_BASE_ID[k.toLowerCase()] = sec.base;
+        });
+        QB_SECTION_LABEL[id] = s.name;
+        if (s.total > 0) QB_MASTER_TOTALS[id] = s.total;
       });
-    });
+    } else {
+      const base = subjectsOf(sec.baseCategories || QB_SECTION_BASE_CATEGORIES);
+      subjects = base.map(s => ({ id: sec.key + s.id, name: sec.short + ' ' + s.name }));
+      subjects.forEach((sub, i) => {
+        [sub.id, sub.name].forEach(k => {
+          QB_SECTION_BY_KEY[k.toLowerCase()] = sec;
+          QB_SECTION_BASE_ID[k.toLowerCase()] = base[i].id;
+        });
+        QB_SECTION_LABEL[sub.id.toLowerCase()] = base[i].name;
+      });
+    }
+    const questionTotal = sec.questionTotal ||
+      (sec.subjects ? sec.subjects.reduce((n, s) => n + (s.total || 0), 0) : null);
     // qbOnly: 講義動画を持たない（問題集なので教材進捗トラッカーでは QB の行だけ出す）
     // masterTotal: 本に載っている全問題数。登録済みの総数と比べて出す
     subjectCategories.push({ id: sec.catId, name: sec.name, color: sec.color,
-                             qbOnly: true, masterTotal: sec.questionTotal, subjects });
+                             qbOnly: true, masterTotal: questionTotal, subjects });
   });
 })();
 // vol.4 の後ろに置く。一覧の末尾（自由入力の直前）に出したいので、科目リストの
@@ -722,6 +781,16 @@ function studySubjectName(v){
 }
 // 講義動画を持たない科目（vol.4 は問題集なので動画が無い）。
 function isQbOnlySubject(id){ return !!qbSectionOf(id); }
+// 形式のバッジと並べて出す科目名。vol.4 は元の科目名、vol.5 以降は章・ブロックの名前。
+function qbSectionLabelOf(key){
+  const id = subjectIdOfName(key);
+  return id ? (QB_SECTION_LABEL[id.toLowerCase()] || null) : null;
+}
+// 本に載っているその科目の問題数。分からなければ 0（総数は手で入れる）。
+function qbMasterTotalOf(key){
+  const id = subjectIdOfName(key);
+  return id ? (QB_MASTER_TOTALS[id.toLowerCase()] || 0) : 0;
+}
 // カテゴリID → その配下の科目一覧（コピー）。
 function subjectsOfCategory(catId){
   const cat = subjectCategories.find(c => c.id === catId);
@@ -741,7 +810,10 @@ const QUESTION_FORMAT_GENERAL = 'general';
 const QUESTION_FORMAT_UNCLASSIFIED = 'unclassified';
 const QUESTION_FORMATS = [
   { key: QUESTION_FORMAT_GENERAL, label: '一般問題', short: '一般', color: '#45B7D1' }
-].concat(QB_SECTIONS.map(sec => ({ key: sec.key, label: sec.name.replace(/^vol\.\d+\s*/, ''), short: sec.short, color: sec.color })));
+].concat(QB_SECTIONS
+  .filter((sec, i) => QB_SECTIONS.findIndex(x => (x.format || x.key) === (sec.format || sec.key)) === i)
+  .map(sec => ({ key: sec.format || sec.key, label: sec.formatName || sec.name.replace(/^vol\.\d+\s*/, ''),
+                 short: sec.short, color: sec.color })));
 const QUESTION_FORMAT_UNCLASSIFIED_DEF = { key: QUESTION_FORMAT_UNCLASSIFIED, label: '未分類', short: '未分類', color: '#94a3b8' };
 const QB_BASE_SUBJECT_IDS = {};
 subjectCategories.filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
@@ -751,7 +823,7 @@ subjectCategories.filter(c => QB_SECTION_BASE_CATEGORIES.indexOf(c.id) >= 0)
 function questionFormatOf(key){
   if (!key) return null;
   const sec = qbSectionOf(key);
-  if (sec) return sec.key;
+  if (sec) return sec.format || sec.key;
   const id = subjectIdOfName(key);
   return id && QB_BASE_SUBJECT_IDS[id.toLowerCase()] ? QUESTION_FORMAT_GENERAL : null;
 }
@@ -1727,8 +1799,8 @@ function applyQbSessionToProgress(subjectId, solved, correct) {
   const rounds = { ...(qb[sid] || {}) };
   const keys = Object.keys(rounds).map(k => parseInt(k, 10))
                      .filter(Number.isFinite).sort((a, b) => a - b);
-  // 繰り越し先の総数は1周目の登録値を使う
-  const baseTotal = keys.length ? (rounds[String(keys[0])].total || 0) : 0;
+  // 繰り越し先の総数は1周目の登録値を使う。未登録なら本の問題数（分かる問題集だけ）
+  const baseTotal = (keys.length ? (rounds[String(keys[0])].total || 0) : 0) || qbMasterTotalOf(sid);
 
   // 総数が未登録でも、解いた数は残す。総数は本を見ながら入れるものなので、
   // 先に解き始めることがある（vol.4 はとくに）。ここで捨てると実績が消える。
@@ -2880,7 +2952,7 @@ function multiStatusText() {
 // 狭い欄で名前の後ろが切れると、vol.4 の科目はどれも「多肢選択 …」で見分けがつかないため。
 function multiSubjectLabelHTML(id) {
   const fmt = questionFormatOf(id);
-  const name = fmt ? subjectDisplayName(baseSubjectIdOf(id) || id) : subjectNameOf(id);
+  const name = (fmt && qbSectionLabelOf(id)) || subjectNameOf(id);
   const def = fmt ? questionFormatDef(fmt) : null;
   return `<span class="multi-name">${esc(name)}</span>`
     + (def ? `<span class="multi-fmt" style="--fmt:${esc(def.color)}">${esc(def.short)}</span>` : '');
@@ -6323,6 +6395,25 @@ function recordedRoundDoneAt(qb) {
   });
   return out;
 }
+// 本の問題数が分かっている科目（vol.5 以降）に1周目を入れる。
+// 一度も触っていない科目（キーごと無い）だけが対象。周を消した科目は空の {} が残るので
+// 入れ直さない（やらないと決めた科目が復活しないように）。
+function seedQbMasterRounds(qb) {
+  const out = Object.assign({}, qb || {});
+  const added = [];
+  Object.keys(QB_MASTER_TOTALS).forEach(lower => {
+    const id = subjectIdOfName(lower);
+    if (!id || out[id]) return;
+    out[id] = { '1': { done: 0, total: QB_MASTER_TOTALS[lower], correct: 0 } };
+    added.push(id);
+  });
+  return { qb: out, added };
+}
+function ensureQbMasterRounds() {
+  const seeded = seedQbMasterRounds(getQBProgress());
+  if (seeded.added.length) saveQBProgress(seeded.qb);
+  return seeded.added;
+}
 async function loadQBFromSupabase(){
   if(!supabase||!session||qbProgressLoaded)return;
   try{
@@ -6347,6 +6438,8 @@ async function loadQBFromSupabase(){
       }
     }
     qbProgressLoaded=true;
+    // リモートと合わせた後に入れる。先に入れると、別の端末で消した周が戻ってくる
+    ensureQbMasterRounds();
   }catch(e){console.warn('qb load error:',e);}
 }
 function saveQBProgress(data){
@@ -7389,7 +7482,7 @@ async function renderQBProgress(){
       const d=getQBProgress();if(!d[sub])d[sub]={};
       // 各周は同じ範囲を1周するので、総問題数は1周目から引き継ぐ。
       // 引き継がないと空欄になり、進捗と同じ数を入れてしまって常に100%になる。
-      d[sub][round]={done:0,total:baseTotalForSubject(d[sub]),correct:0};
+      d[sub][round]={done:0,total:baseTotalForSubject(d[sub])||qbMasterTotalOf(sub),correct:0};
       saveQBProgress(d);renderQBProgress();
     });
   });

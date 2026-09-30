@@ -279,6 +279,52 @@ ok('vol.4 は元の科目と違う色を持つ',
   window.localStorage.removeItem('medfocus_video_progress');
 })();
 
+// ---------- vol.5 追加問題・vol.6〜8 基礎医学強化 ----------
+(function extraAndBasicSections() {
+  const sum = ids => ids.reduce((n, c) => n + W.qbMasterTotalOf(c), 0);
+  eq('追加問題は6ブロック・160問',
+     [W.subjectsOfCategory('cat-vol5-extra').length, sum(W.subjectsOfCategory('cat-vol5-extra').map(s => s.id))],
+     [6, 160]);
+  eq('基礎医学強化の章の数（vol.6/7/8）',
+     ['cat-vol6', 'cat-vol7', 'cat-vol8'].map(c => W.subjectsOfCategory(c).length), [2, 8, 10]);
+  eq('基礎医学強化の問題数（vol.6/7/8）',
+     ['cat-vol6', 'cat-vol7', 'cat-vol8'].map(c => sum(W.subjectsOfCategory(c).map(s => s.id))), [30, 129, 180]);
+
+  // 時間は vol.1 の元の科目へ、追加問題はブロックに残す
+  eq('基礎医学強化の時間は vol.1 の科目へ',
+     ['6B', '7C', '8B'].map(id => W.studySubjectName(id)),
+     ['1A 細胞生物学', '1E 分子生物学', '1D 生化学']);
+  eq('表示名からでも寄せられる', W.baseSubjectIdOf('8J 酵素'), '1D');
+  eq('追加問題は元の科目を持たない', W.studySubjectName('5A3'), '5A ブロック3');
+
+  // 形式は3冊で1つ
+  eq('形式', ['6A', '7H', '8J', '5A1', '1A'].map(id => W.questionFormatOf(id)),
+     ['BM', 'BM', 'BM', '5A', 'general']);
+  eq('冊ごとの形式は作らない', ['6', '7', '8'].map(k => W.questionFormatDef(k).key),
+     ['unclassified', 'unclassified', 'unclassified']);
+  eq('基礎医学強化の形式名', W.questionFormatDef('BM').label, '基礎医学強化');
+  ok('講義動画は持たない', W.isQbOnlySubject('7C') && W.isQbOnlySubject('5A1'));
+
+  // 複数科目のラベルは章の名前を残す（1A に潰すと 6A と 6B が見分けられない）
+  ok('章の名前でラベルを出す', W.multiSubjectLabelHTML('6B').indexOf('6B 細胞の構造と機能') >= 0);
+  ok('vol.4 は元の科目名のまま', W.multiSubjectLabelHTML('4B2C').indexOf('2C 循環器') >= 0);
+
+  // 1周目を本の問題数で入れる。触ったことのある科目は変えない
+  const seeded = W.seedQbMasterRounds({ '6A': {}, '8B': { '1': { done: 10, total: 43, correct: 7 } } });
+  eq('未登録の科目に1周目が入る', seeded.qb['7C'], { '1': { done: 0, total: 27, correct: 0 } });
+  eq('周を消した科目は戻さない', seeded.qb['6A'], {});
+  eq('進めている科目は触らない', seeded.qb['8B']['1'].done, 10);
+  eq('入れた科目の数', seeded.added.length, 6 + 2 + 8 + 10 - 2);
+  eq('vol.4 は入れない（総数は手で入れる）', seeded.qb['4A1A'], undefined);
+
+  // 総数が未登録でも本の問題数で繰り越せる
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
+  const res = W.applyQbSessionToProgress('7D', 20, 15);
+  eq('本の問題数を分母にして2周目へ繰り越す',
+     res.changes.map(c => [c.round, c.to, c.total]), [['1', 15, 15], ['2', 5, 15]]);
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');
