@@ -286,7 +286,7 @@ const TODAY = '2026-09-14';
     tasks: [{ id: 'q', plan_id: 'p1', due_date: TODAY, kind: 'quota', target_amount: 10 }],
     countdowns: [{ id: 'c', name: '試験', exam_date: TODAY }],
     logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 30,
-             questions_solved: 12, started_at: TODAY + 'T09:00:00Z' }]
+             questions_solved: 12, started_at: TODAY + 'T09:00:00' }]
   }).weeks[0].find(c => c.dateKey === TODAY);
   eq('buildCalendarModel: 実績は最後に並ぶ',
      withLog.items.map(i => i.kind), ['exam', 'event', 'quota', 'log', 'log']);
@@ -300,15 +300,15 @@ const TODAY = '2026-09-14';
     logs: [
       // ノルマのある科目。1日に2回に分けて記録している
       { subject_name: '2C 循環器', activity: 'qb', duration_minutes: 30,
-        questions_solved: 12, questions_correct: 9, started_at: TODAY + 'T09:00:00Z' },
+        questions_solved: 12, questions_correct: 9, started_at: TODAY + 'T09:00:00' },
       { subject_name: '2C 循環器', activity: 'qb', duration_minutes: 20,
-        questions_solved: 8, questions_correct: 6, started_at: TODAY + 'T11:00:00Z' },
+        questions_solved: 8, questions_correct: 6, started_at: TODAY + 'T11:00:00' },
       // ノルマの無い科目を前倒しでやった分
       { subject_name: '2B 肝・胆・膵', activity: 'video', duration_minutes: 80,
-        videos_watched: 2, started_at: TODAY + 'T14:00:00Z' },
+        videos_watched: 2, started_at: TODAY + 'T14:00:00' },
       // 量の記録が無く時間だけのログ
       { subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25,
-        started_at: TODAY + 'T20:00:00Z' }
+        started_at: TODAY + 'T20:00:00' }
     ]
   }).weeks[0].find(c => c.dateKey === TODAY);
 
@@ -330,12 +330,12 @@ const TODAY = '2026-09-14';
   // 記録の無い項目は行を作らない
   eq('実績チップ: 暗記だけの日は合計とその他だけ',
      W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
-       logs: [{ subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25, started_at: TODAY + 'T20:00:00Z' }]
+       logs: [{ subject_name: '3D 公衆衛生', activity: 'anki', duration_minutes: 25, started_at: TODAY + 'T20:00:00' }]
      }).weeks[0].find(c => c.dateKey === TODAY).items.map(i => i.title), ['0.4h', 'その他0.4h']);
   eq('実績チップ: 問題演習だけの日は その他 の行を作らない',
      W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
        logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 252,
-                questions_solved: 150, questions_correct: 103, started_at: TODAY + 'T09:00:00Z' }]
+                questions_solved: 150, questions_correct: 103, started_at: TODAY + 'T09:00:00' }]
      }).weeks[0].find(c => c.dateKey === TODAY).items.map(i => i.title), ['4.2h', 'qb150問']);
 
   eq('calHoursText: ちょうどの時間は小数を出さない', W.calHoursText(240), '4h');
@@ -346,7 +346,7 @@ const TODAY = '2026-09-14';
   // 量も時間も無いログは出さない（読めるものが何も無いため）
   eq('実績チップ: 空のログは出さない',
      W.buildCalendarModel(TODAY, 'week', { todayKey: TODAY,
-       logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 0, started_at: TODAY + 'T09:00:00Z' }]
+       logs: [{ subject_name: '2C 循環器', activity: 'qb', duration_minutes: 0, started_at: TODAY + 'T09:00:00' }]
      }).weeks[0].find(c => c.dateKey === TODAY).items.length, 0);
 
   // 時刻付きの予定（講義など）は時刻順に並び、終日の予定はその後ろ
@@ -541,7 +541,7 @@ const TODAY = '2026-09-14';
     goalFor: key => (key in goals ? goals[key] : 180),
     goalOverrideFor: key => (key in goals ? goals[key] : null),
     logs: [{ subject_name: '2C 循環器', duration_minutes: 240,
-             started_at: '2026-09-15T09:00:00+09:00' }]
+             started_at: '2026-09-15T09:00:00' }]
   });
   const cells = {};
   model.weeks.flat().forEach(c => { cells[c.dateKey] = c; });
