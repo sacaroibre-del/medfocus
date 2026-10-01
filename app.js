@@ -11063,9 +11063,12 @@ async function renderInsights(){
 function insightsFilterPanelHTML(d) {
   const { allLocations, presetLabels } = d;
   return `
-  <div class="page-header">
-    <h1 class="page-title">インサイト</h1>
-    <p class="page-subtitle">学習データを分析して最適な勉強法を見つけよう</p>
+  <div class="page-header page-header-with-action">
+    <div>
+      <h1 class="page-title">インサイト</h1>
+      <p class="page-subtitle">学習データを分析して最適な勉強法を見つけよう</p>
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" id="btn-ai-export">AI分析用にエクスポート</button>
   </div>
 
   <!-- Filter Bar -->
@@ -13105,8 +13108,702 @@ function wireInsightFilters(ct, d) {
   });
   document.getElementById('insight-expand-all')?.addEventListener('click', () => setAllInsightGroups(true));
   document.getElementById('insight-collapse-all')?.addEventListener('click', () => setAllInsightGroups(false));
+  document.getElementById('btn-ai-export')?.addEventListener('click', () => openAiExportModal());
 }
 
+
+// ==================== AI分析用エクスポート ====================
+// 記録から「Opus に学習の優先順位を相談するためのプロンプト（Markdown）」を組み立てる。
+// 集計（buildAiExportData）と文面（formatAiExportMarkdown）は DOM に触らない純関数にして、
+// test_export_prompt.cjs からダミーデータで叩けるようにしてある。
+// 記録が無い項目は推測で埋めずに「未記録」と書く。Opus が不足に気づいて質問できるように。
+const AI_EXPORT_SETTINGS_KEY = 'medfocus_export_settings';
+const AI_EXPORT_DRAFT_KEY = 'medfocus_export_draft';
+const AI_EXPORT_NA = '未記録';
+const AI_EXPORT_WINDOW_DAYS = 14;
+// 科目表に出さない「科目」（教材の科目ではないもの）
+const AI_EXPORT_NON_SUBJECTS = { 'anki': true, 'mock-review': true };
+// アプリの間違いの種類 → テンプレートの呼び名。時間不足はアプリに無いので常に「未記録」
+const AI_EXPORT_ERROR_LABELS = [
+  ['unknown', '知識不足'], ['confuse', 'うろ覚え・混同'], ['misread', '読み違い']
+];
+const AI_EXPORT_DRAFT_FIELDS = ['condition', 'ankiDaily', 'ankiBacklog', 'ankiRetention', 'strong', 'weak', 'going'];
+
+// ---------- エクスポート設定（試験・目標・確保時間・予定・自信度） ----------
+// 頻繁に変わらないものだけ。profiles.export_settings に JSON 文字列で持ち、
+// localStorage はそのキャッシュ（列がまだ無い環境ではここだけで動く）。
+function defaultAiExportSettings() {
+  return { examId: '', goal: '', weekdayHours: '', holidayHours: '', constraints: '', confidence: {} };
+}
+function normalizeAiExportSettings(raw) {
+  const out = defaultAiExportSettings();
+  if (!raw || typeof raw !== 'object') return out;
+  ['examId', 'goal', 'constraints'].forEach(k => { if (typeof raw[k] === 'string') out[k] = raw[k]; });
+  ['weekdayHours', 'holidayHours'].forEach(k => {
+    if (raw[k] === '' || raw[k] === null || raw[k] === undefined) return;
+    const n = Number(raw[k]);
+    if (isFinite(n) && n >= 0 && n <= 24) out[k] = n;
+  });
+  Object.entries(raw.confidence || {}).forEach(([sid, v]) => {
+    const n = Number(v);
+    if (Number.isInteger(n) && n >= 1 && n <= 5) out.confidence[sid] = n;
+  });
+  return out;
+}
+function getAiExportSettings() {
+  try {
+    return normalizeAiExportSettings(JSON.parse(localStorage.getItem(AI_EXPORT_SETTINGS_KEY) || 'null'));
+  } catch (e) { return defaultAiExportSettings(); }
+}
+function saveAiExportSettings(settings) {
+  const clean = normalizeAiExportSettings(settings);
+  try { localStorage.setItem(AI_EXPORT_SETTINGS_KEY, JSON.stringify(clean)); } catch (e) {}
+  if (hasDB()) {
+    supabase.from('profiles').update({ export_settings: JSON.stringify(clean) }).eq('id', session.user.id)
+      .then(({ error }) => { if (error) console.warn('export settings sync error:', error.message); });
+  }
+  return clean;
+}
+// 毎回変わる自由記述の下書き。端末ごとの便利機能なので localStorage だけに置く
+function getAiExportDraft() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(AI_EXPORT_DRAFT_KEY) || '{}') || {};
+    const out = {};
+    AI_EXPORT_DRAFT_FIELDS.forEach(k => { out[k] = typeof raw[k] === 'string' ? raw[k] : ''; });
+    return out;
+  } catch (e) { return {}; }
+}
+function saveAiExportDraft(draft) {
+  try { localStorage.setItem(AI_EXPORT_DRAFT_KEY, JSON.stringify(draft || {})); } catch (e) {}
+}
+
+// 曜日別の目標時間（分）から確保時間の初期値を作る。0.5時間刻み
+function aiExportHoursFromGoals(goals) {
+  const g = Array.isArray(goals) && goals.length === 7 ? goals : DEFAULT_WEEKLY_GOALS;
+  const avg = idx => Math.round(idx.reduce((s, i) => s + (Number(g[i]) || 0), 0) / idx.length / 60 * 2) / 2;
+  return { weekdayHours: avg([1, 2, 3, 4, 5]), holidayHours: avg([0, 6]) };
+}
+
+// 設定で選んだ試験。未選択なら名前に CBT を含む直近の試験、無ければ直近の試験
+function pickAiExportExam(countdowns, examId, todayKey) {
+  const list = (countdowns || []).filter(c => c && c.exam_date);
+  if (examId) {
+    const hit = list.find(c => String(c.id) === String(examId));
+    if (hit) return hit;
+  }
+  const future = list.filter(c => String(c.exam_date).slice(0, 10) >= todayKey)
+    .sort((a, b) => String(a.exam_date).localeCompare(String(b.exam_date)));
+  return future.find(c => /cbt/i.test(c.name || '')) || future[0] || null;
+}
+
+// 科目表の行の鍵。vol.4・vol.6〜8 は元の科目（'4B2C' → '2C'）へ寄せる。
+// 知らない科目（自由入力）は名前のまま行にする
+function aiExportBaseId(key) {
+  if (!key) return null;
+  return baseSubjectIdOf(key) || String(key);
+}
+function aiExportPct(correct, done) {
+  return done > 0 ? Math.round(correct / done * 100) : null;
+}
+function aiExportDaysBetween(fromKey, toKey) {
+  const a = parseDateKey(fromKey), b = parseDateKey(toKey);
+  if (!a || !b) return null;
+  return Math.round((b - a) / 86400000);
+}
+function aiExportLogDay(l) {
+  return l && l.started_at ? toLocalDateKey(getLogicalDate(new Date(l.started_at))) : null;
+}
+function aiExportHours(min) {
+  return `${(Math.round((Number(min) || 0) / 6) / 10).toFixed(1)}時間`;
+}
+function aiExportClockToMin(v) {
+  const m = /^(\d{1,2}):(\d{2})/.exec(String(v || ''));
+  return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+}
+function aiExportMinToClock(min) {
+  const m = ((Math.round(min) % 1440) + 1440) % 1440;
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`;
+}
+
+// ---------- 集計 ----------
+// input: {
+//   todayKey: 'YYYY-MM-DD'（論理日）, settings, draft,
+//   countdowns, logs（study_logs）, qb（教材進捗）, questionRecords, mockExams,
+//   plans, planTasks, sleepLogs
+// }
+function buildAiExportData(input) {
+  const inp = input || {};
+  const todayKey = inp.todayKey;
+  const settings = normalizeAiExportSettings(inp.settings);
+  const draft = inp.draft || {};
+  const fromKey = shiftDateKey(todayKey, -(AI_EXPORT_WINDOW_DAYS - 1));
+  const inWindow = k => !!k && k >= fromKey && k <= todayKey;
+  const logs = (inp.logs || []).filter(l => l && Number(l.duration_minutes) >= 0);
+  const qb = inp.qb || {};
+  const records = inp.questionRecords || [];
+
+  // --- 試験 ---
+  const exam = pickAiExportExam(inp.countdowns, settings.examId, todayKey);
+  const examDate = exam ? String(exam.exam_date).slice(0, 10) : null;
+
+  // --- 科目表 ---
+  const rows = {};
+  const rowOf = id => rows[id] || (rows[id] = {
+    id, name: subjectNameOf(id), recorded: false,
+    r1Done: 0, r1Total: 0, maxRound: 0, done: 0, correct: 0, laterDone: 0, laterCorrect: 0,
+    recentSolved: 0, recentCorrect: 0, recentMin: 0, confRecorded: false, confHighWrong: 0
+  });
+  const formatStats = {};
+  Object.entries(qb).forEach(([sid, rounds]) => {
+    const base = aiExportBaseId(sid);
+    if (!base || AI_EXPORT_NON_SUBJECTS[base.toLowerCase()]) return;
+    const row = rowOf(base);
+    const fmt = questionFormatOf(sid) || QUESTION_FORMAT_UNCLASSIFIED;
+    const fs = formatStats[fmt] || (formatStats[fmt] = { done: 0, correct: 0 });
+    Object.entries(rounds || {}).forEach(([rk, r]) => {
+      const n = Number(rk);
+      if (!(n > 0) || !r) return;
+      const done = Math.max(0, Number(r.done) || 0);
+      const total = Math.max(0, Number(r.total) || 0);
+      const correct = Math.min(done, Math.max(0, Number(r.correct) || 0));
+      if (n === 1) { row.r1Done += done; row.r1Total += total; }
+      if (done > 0) { row.recorded = true; row.maxRound = Math.max(row.maxRound, n); }
+      row.done += done; row.correct += correct;
+      fs.done += done; fs.correct += correct;
+      if (n >= 2) { row.laterDone += done; row.laterCorrect += correct; }
+    });
+  });
+  logs.forEach(l => {
+    const base = aiExportBaseId(l.subject_name);
+    if (!base || AI_EXPORT_NON_SUBJECTS[base.toLowerCase()]) return;
+    const row = rowOf(base);
+    row.recorded = true;
+    if (!inWindow(aiExportLogDay(l))) return;
+    row.recentMin += Number(l.duration_minutes) || 0;
+    const solved = Number(l.questions_solved);
+    const correct = Number(l.questions_correct);
+    if (solved > 0 && l.questions_correct !== null && l.questions_correct !== undefined && isFinite(correct)) {
+      row.recentSolved += solved;
+      row.recentCorrect += Math.min(solved, correct);
+    }
+  });
+  records.forEach(r => {
+    const base = aiExportBaseId(r.subject_id);
+    if (!base || AI_EXPORT_NON_SUBJECTS[base.toLowerCase()]) return;
+    const row = rowOf(base);
+    row.recorded = true;
+    if (!inWindow(r.recorded_on ? String(r.recorded_on).slice(0, 10) : null)) return;
+    if (r.confidence) row.confRecorded = true;
+    if (!r.is_correct && r.confidence === 'high') row.confHighWrong++;
+  });
+  const subjects = Object.values(rows).filter(r => r.recorded).map(r => Object.assign(r, {
+    overallPct: aiExportPct(r.correct, r.done),
+    recentPct: aiExportPct(r.recentCorrect, r.recentSolved),
+    laterPct: aiExportPct(r.laterCorrect, r.laterDone),
+    confidence: settings.confidence[r.id] || null
+  })).sort((a, b) => {
+    // 全体正答率の低い順。正答率が出ない科目は後ろ
+    if (a.overallPct === null && b.overallPct !== null) return 1;
+    if (b.overallPct === null && a.overallPct !== null) return -1;
+    if (a.overallPct !== b.overallPct) return a.overallPct - b.overallPct;
+    return a.name.localeCompare(b.name, 'ja');
+  });
+
+  // --- 問題形式別の正答率 ---
+  const formats = QUESTION_FORMATS.map(f => {
+    const s = formatStats[f.key] || { done: 0, correct: 0 };
+    return { key: f.key, label: f.label, done: s.done, pct: aiExportPct(s.correct, s.done) };
+  });
+
+  // --- 週ごとの学習時間（直近4週。今日で終わる7日ずつ） ---
+  const subjectLabelOf = l => {
+    const base = aiExportBaseId(l.subject_name);
+    if (!base) return '科目なし';
+    if (l.activity === 'anki' && base.toLowerCase() === 'anki') return 'Anki';
+    return subjectNameOf(base);
+  };
+  const weeks = [3, 2, 1, 0].map(w => {
+    const end = shiftDateKey(todayKey, -7 * w);
+    const start = shiftDateKey(end, -6);
+    const bySubject = {};
+    let total = 0;
+    logs.forEach(l => {
+      const k = aiExportLogDay(l);
+      if (!k || k < start || k > end) return;
+      const min = Number(l.duration_minutes) || 0;
+      total += min;
+      const name = subjectLabelOf(l);
+      bySubject[name] = (bySubject[name] || 0) + min;
+    });
+    const sorted = Object.entries(bySubject).filter(([, m]) => m > 0).sort((a, b) => b[1] - a[1]);
+    return { start, end, total, top: sorted.slice(0, 5), rest: sorted.slice(5).reduce((s, [, m]) => s + m, 0) };
+  });
+
+  // --- Anki ---
+  const ankiLogs = logs.filter(l => inWindow(aiExportLogDay(l)) &&
+    (l.activity === 'anki' || String(aiExportBaseId(l.subject_name) || '').toLowerCase() === 'anki'));
+  const anki = {
+    daily: String(draft.ankiDaily || '').trim(),
+    backlog: String(draft.ankiBacklog || '').trim(),
+    retention: String(draft.ankiRetention || '').trim(),
+    recentMin: ankiLogs.reduce((s, l) => s + (Number(l.duration_minutes) || 0), 0),
+    recentDays: new Set(ankiLogs.map(aiExportLogDay)).size
+  };
+
+  // --- 模試（同じ日・同じタイトルの科目別の行を1回分にまとめる） ---
+  const mockGroups = {};
+  (inp.mockExams || []).forEach(m => {
+    if (!m || !m.taken_on) return;
+    const date = String(m.taken_on).slice(0, 10);
+    const key = date + '\u0000' + (m.title || '');
+    const g = mockGroups[key] || (mockGroups[key] = { date, title: m.title || '', correct: 0, total: 0, parts: [], memos: [] });
+    const c = Number(m.correct_questions) || 0, t = Number(m.total_questions) || 0;
+    g.correct += c; g.total += t;
+    g.parts.push({ name: subjectNameOf(m.subject_id), correct: c, total: t });
+    if (m.memo && String(m.memo).trim()) g.memos.push(String(m.memo).trim());
+  });
+  const mocks = Object.values(mockGroups).sort((a, b) => a.date.localeCompare(b.date));
+
+  // --- 繰り返し間違える問題（科目×問題番号。周回と再テストをまたいで数える） ---
+  const byQuestion = {};
+  records.forEach(r => {
+    if (!r || !r.subject_id || !(Number(r.question_no) > 0)) return;
+    const key = String(r.subject_id) + '#' + Number(r.question_no);
+    const q = byQuestion[key] || (byQuestion[key] = {
+      subjectId: String(r.subject_id), no: Number(r.question_no), attempts: 0, wrong: 0, last: ''
+    });
+    q.attempts++;
+    if (!r.is_correct) q.wrong++;
+    if (r.recorded_on && String(r.recorded_on) > q.last) q.last = String(r.recorded_on).slice(0, 10);
+    (Array.isArray(r.retest_log) ? r.retest_log : []).forEach(e => {
+      if (!e) return;
+      q.attempts++;
+      if (e.correct === false) q.wrong++;
+      if (e.date && String(e.date) > q.last) q.last = String(e.date).slice(0, 10);
+    });
+  });
+  const repeatedWrong = Object.values(byQuestion).filter(q => q.wrong >= 2)
+    .sort((a, b) => b.wrong - a.wrong || (b.wrong / b.attempts) - (a.wrong / a.attempts) ||
+                    b.last.localeCompare(a.last) || a.subjectId.localeCompare(b.subjectId) || a.no - b.no)
+    .slice(0, 10)
+    .map(q => Object.assign(q, { name: subjectNameOf(q.subjectId) }));
+
+  // --- 間違いの種類 ---
+  const wrongRecords = records.filter(r => r && !r.is_correct);
+  const errorCounts = {};
+  AI_EXPORT_ERROR_LABELS.forEach(([k]) => { errorCounts[k] = 0; });
+  let untyped = 0;
+  wrongRecords.forEach(r => {
+    if (r.error_type && errorCounts[r.error_type] !== undefined) errorCounts[r.error_type]++;
+    else untyped++;
+  });
+
+  // --- Check／Act の代わり：振り返りメモと逆算プランの達成 ---
+  const memos = logs
+    .filter(l => l.memo && String(l.memo).trim() && inWindow(aiExportLogDay(l)))
+    .sort((a, b) => String(b.started_at).localeCompare(String(a.started_at)))
+    .slice(0, 15)
+    .map(l => {
+      const text = String(l.memo).replace(/\s+/g, ' ').trim();
+      return { date: aiExportLogDay(l), subject: subjectLabelOf(l),
+               text: text.length > 120 ? text.slice(0, 120) + '…' : text };
+    });
+  const yesterdayKey = shiftDateKey(todayKey, -1);
+  const planById = {};
+  (inp.plans || []).forEach(p => { if (p && p.status !== 'archived') planById[p.id] = p; });
+  const planAgg = {};
+  (inp.planTasks || []).forEach(t => {
+    const plan = t && planById[t.plan_id];
+    const due = t && t.due_date ? String(t.due_date).slice(0, 10) : null;
+    if (!plan || !due || due < fromKey || due > yesterdayKey) return;
+    const a = planAgg[plan.id] || (planAgg[plan.id] = { title: plan.title, unit: plan.unit || 'q',
+                                                         target: 0, done: 0, msTotal: 0, msDone: 0 });
+    if (t.kind === 'milestone') {
+      a.msTotal++;
+      if (t.completed) a.msDone++;
+    } else {
+      const target = Math.max(0, Number(t.target_amount) || 0);
+      a.target += target;
+      a.done += Math.min(target, Math.max(0, Number(t.done_amount) || 0));
+    }
+  });
+  const planProgress = Object.values(planAgg).filter(a => a.target > 0 || a.msTotal > 0)
+    .sort((a, b) => String(a.title).localeCompare(String(b.title), 'ja'));
+
+  // --- 直近2週の集中度・睡眠 ---
+  const focusLogs = logs.filter(l => inWindow(aiExportLogDay(l)) && Number(l.focus_level) > 0);
+  const focusAvg = focusLogs.length
+    ? focusLogs.reduce((s, l) => s + Number(l.focus_level), 0) / focusLogs.length : null;
+  const sleepWin = (inp.sleepLogs || []).filter(s => s && inWindow(String(s.date || '').slice(0, 10)));
+  const wakes = sleepWin.map(s => aiExportClockToMin(s.wake_up)).filter(v => v !== null);
+  // 就寝は日付をまたぐので、正午より前は翌日の時刻として足し合わせる
+  const beds = sleepWin.map(s => aiExportClockToMin(s.bedtime)).filter(v => v !== null)
+    .map(v => (v < 720 ? v + 1440 : v));
+  const avg = list => list.length ? list.reduce((s, v) => s + v, 0) / list.length : null;
+
+  return {
+    todayKey, fromKey, settings, draft,
+    exam: examDate ? { name: exam.name || '', date: examDate, daysLeft: aiExportDaysBetween(todayKey, examDate) } : null,
+    // 学習ログが1件も無ければ、科目の学習時間は 0 ではなく未記録として出す
+    hasLogs: logs.length > 0,
+    subjects, formats, weeks, anki, mocks, repeatedWrong,
+    questionRecordCount: records.length,
+    errors: { counts: errorCounts, untyped, typedTotal: wrongRecords.length - untyped },
+    memos, planProgress,
+    focus: focusAvg === null ? null : { avg: focusAvg, count: focusLogs.length },
+    sleep: { wake: avg(wakes), bed: avg(beds), days: sleepWin.length }
+  };
+}
+
+// ---------- 文面 ----------
+function aiExportCell(v) { return String(v).replace(/\|/g, '｜').replace(/\s*\n\s*/g, ' '); }
+function aiExportOneLine(v) { return String(v || '').trim().split(/\s*\n\s*/).filter(Boolean).join('／'); }
+function aiExportPctText(pct, n, unit) {
+  return pct === null ? AI_EXPORT_NA : `${pct}%（${n}${unit || '問'}）`;
+}
+function aiExportMd(d) { return d ? `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}` : ''; }
+
+function formatAiExportMarkdown(data) {
+  const NA = AI_EXPORT_NA;
+  const s = data.settings;
+  const draft = data.draft || {};
+  const val = v => (v === '' || v === null || v === undefined ? NA : v);
+  const out = [];
+  const push = (...lines) => out.push(...lines);
+
+  push('# 依頼',
+    '私は医学部4年生で、CBTに向けて学習しています。以下の学習データを分析し、',
+    '残り期間で何を優先すべきかを一緒に考えてください。',
+    '',
+    '## 分析してほしいこと',
+    '1. 「点が伸びやすい領域」と「時間をかけても伸びにくい領域」の切り分け',
+    '2. 残り日数に対して現実的な優先順位（上位3〜5テーマ）と、その根拠',
+    '3. 今やめる・減らすべきこと',
+    '4. 直近1週間の日別プラン（時間配分つき）',
+    '5. データが「未記録」の項目や判断に足りない点があれば、推測で埋めずに質問してください',
+    '');
+
+  // 前提・制約
+  push('## 前提・制約');
+  push(data.exam
+    ? `- 試験：CBT／試験日 ${data.exam.date}（残り ${data.exam.daysLeft} 日）`
+    : `- 試験：CBT／試験日 ${NA}（残り ${NA}）`);
+  push(`- 目標：${val(aiExportOneLine(s.goal))}`);
+  push(`- 確保できる学習時間：平日 ${val(s.weekdayHours)} 時間／休日 ${val(s.holidayHours)} 時間`);
+  push(`- 試験までの予定・制約：${val(aiExportOneLine(s.constraints))}`);
+  const condition = aiExportOneLine(draft.condition);
+  if (condition) push(`- 体調・集中力の状態：${condition}`);
+  const auto = [];
+  if (data.focus) auto.push(`集中度 平均${data.focus.avg.toFixed(1)}/5（${data.focus.count}回）`);
+  if (data.sleep.wake !== null) auto.push(`起床 平均${aiExportMinToClock(data.sleep.wake)}`);
+  if (data.sleep.bed !== null) auto.push(`就寝 平均${aiExportMinToClock(data.sleep.bed)}`);
+  push(`- 直近2週の集中度・睡眠（アプリの記録）：${auto.length ? auto.join('、') : NA}`);
+  push('');
+
+  push('## 学習リソースと進め方',
+    '- 教材：QB（CBT）、Anki、Notion（科目別ノート）',
+    '- 普段の流れ：Anki → QB → 分からないところをAIで解説',
+    '');
+
+  // 科目別データ
+  push(`## 科目別データ（出力日：${data.todayKey}）`,
+    '| 科目 | QB解答数/総数 | 全体正答率 | 直近2週の正答率 | 2周目以降の正答率 | 学習時間(直近2週) | 自信度(1-5) | 自信ありで不正解(直近2週) |',
+    '|---|---|---|---|---|---|---|---|');
+  if (!data.subjects.length) {
+    push(`| ${NA} | ${NA} | ${NA} | ${NA} | ${NA} | ${NA} | ${NA} | ${NA} |`);
+  }
+  data.subjects.forEach(r => {
+    const round = r.maxRound > 0 ? `今${r.maxRound}周目` : '未着手';
+    const qbCell = r.r1Total > 0 ? `${r.r1Done}/${r.r1Total}（${round}）`
+      : r.r1Done > 0 ? `${r.r1Done}/${NA}（${round}）` : NA;
+    push('| ' + [
+      r.name, qbCell,
+      aiExportPctText(r.overallPct, r.done),
+      aiExportPctText(r.recentPct, r.recentSolved),
+      aiExportPctText(r.laterPct, r.laterDone),
+      data.hasLogs ? aiExportHours(r.recentMin) : NA,
+      r.confidence || NA,
+      r.confRecorded ? `${r.confHighWrong}問` : NA
+    ].map(aiExportCell).join(' | ') + ' |');
+  });
+  push('',
+    '- 問題形式別の正答率：' + data.formats.map(f => `${f.label} ${aiExportPctText(f.pct, f.done)}`).join('／'),
+    '- 注：QB解答数/総数は1周目の数。vol.4（多肢選択・4連問）と vol.6〜8（基礎医学強化）は元の科目に合算。' +
+      '括弧内は正答率の母数。直近2週の正答率は問題数を記録した学習ログのみから算出。',
+    '');
+
+  // 学習時間の推移
+  push('## 直近の学習時間の推移');
+  if (!data.weeks.some(w => w.total > 0)) push(`- ${NA}`);
+  else data.weeks.forEach(w => {
+    const parts = w.top.map(([n, m]) => `${n} ${aiExportHours(m)}`);
+    if (w.rest > 0) parts.push(`その他 ${aiExportHours(w.rest)}`);
+    push(`- ${aiExportMd(w.start)}〜${aiExportMd(w.end)}：計 ${aiExportHours(w.total)}` +
+         (parts.length ? `（${parts.join('、')}）` : ''));
+  });
+  push('');
+
+  // Anki
+  push('## Anki');
+  const a = data.anki;
+  const ankiTime = a.recentMin > 0
+    ? `直近2週 計${aiExportHours(a.recentMin)}（${a.recentDays}日）` : null;
+  if (a.daily || a.backlog || a.retention) {
+    push(`- 1日の復習枚数：${val(a.daily)}`,
+         `- 溜まり（未消化）：${val(a.backlog)}`,
+         `- 定着率：${val(a.retention)}`);
+    if (ankiTime) push(`- 学習時間（アプリの記録）：${ankiTime}`);
+  } else {
+    push(`- ${NA}` + (ankiTime ? `（学習時間のみ：${ankiTime}）` : ''));
+  }
+  push('');
+
+  // 模試
+  push('## 模試・過去の結果');
+  if (!data.mocks.length) push(`- ${NA}`);
+  data.mocks.forEach(m => {
+    const head = `- ${m.date}${m.title ? ' ' + aiExportOneLine(m.title) : ''}：` +
+      `${m.correct}/${m.total}（${aiExportPct(m.correct, m.total)}%）`;
+    const parts = m.parts.length > 1
+      ? '　内訳 ' + m.parts.map(p => `${p.name} ${p.correct}/${p.total}`).join('、')
+      : `　${m.parts[0].name}`;
+    push(head + parts + (m.memos.length ? `　メモ：${aiExportOneLine(m.memos.join('\n'))}` : ''));
+  });
+  push('');
+
+  // 間違いの傾向
+  push('## 間違いの傾向');
+  if (!data.questionRecordCount) {
+    push(`- 繰り返し間違えるテーマ（上位10）：${NA}`);
+  } else if (!data.repeatedWrong.length) {
+    push(`- 繰り返し間違えるテーマ（上位10）：2回以上間違えた問題はなし（問題番号の記録 ${data.questionRecordCount}件から集計）`);
+  } else {
+    push('- 繰り返し間違えるテーマ（上位10）：テーマ名は記録していないため、科目と問題番号で表示');
+    data.repeatedWrong.forEach(q => push(`  - ${q.name} Q${q.no}（${q.attempts}回中${q.wrong}回不正解）`));
+  }
+  const typed = data.errors.typedTotal;
+  if (!typed) {
+    push(`- 間違いの種類の内訳：${NA}`);
+  } else {
+    const parts = AI_EXPORT_ERROR_LABELS.map(([k, label]) => {
+      const n = data.errors.counts[k];
+      return `${label} ${Math.round(n / typed * 100)}%（${n}問）`;
+    });
+    parts.push(`時間不足 ${NA}`);
+    push(`- 間違いの種類の内訳：${parts.join('／')}` +
+         (data.errors.untyped ? `（種類を入れていない不正解 ${data.errors.untyped}問は除く）` : ''));
+  }
+  push('');
+
+  // Check／Act
+  push('## PDCAのCheck／Actの記録（直近2週）');
+  if (!data.memos.length && !data.planProgress.length) push(`- ${NA}`);
+  if (data.planProgress.length) {
+    push('- 逆算プランの達成（昨日まで）：');
+    data.planProgress.forEach(p => {
+      const unit = ({ q: '問', page: 'p', video: '本', count: '回' })[p.unit] || '';
+      const parts = [];
+      if (p.target > 0) parts.push(`${aiExportPct(p.done, p.target)}%（${p.done}/${p.target}${unit}）`);
+      if (p.msTotal > 0) parts.push(`マイルストーン ${p.msDone}/${p.msTotal}`);
+      push(`  - ${aiExportOneLine(p.title)}：${parts.join('、')}`);
+    });
+  }
+  if (data.memos.length) {
+    push('- 振り返りメモ（新しい順）：');
+    data.memos.forEach(m => push(`  - ${aiExportMd(m.date)} ${m.subject}：${m.text}`));
+  }
+  push('');
+
+  // 自己認識
+  push('## 自己認識');
+  const self = [
+    ['得意だと思っている科目', draft.strong],
+    ['不安な科目', draft.weak],
+    ['最近うまくいっていること／うまくいっていないこと', draft.going]
+  ].filter(([, v]) => aiExportOneLine(v));
+  if (!self.length) push(`- ${NA}`);
+  self.forEach(([label, v]) => push(`- ${label}：${aiExportOneLine(v)}`));
+
+  return out.join('\n') + '\n';
+}
+
+function buildAiExportMarkdown(input) {
+  return formatAiExportMarkdown(buildAiExportData(input));
+}
+
+// ---------- 画面 ----------
+async function openAiExportModal() {
+  if (document.querySelector('.ai-export-overlay')) return;
+  const [logs, records, mocks, plans, tasks, sleepLogs] = await Promise.all([
+    fetchStudyLogs().catch(() => []),
+    fetchQuestionRecords().catch(() => []),
+    fetchMockExams().catch(() => []),
+    fetchPlans().catch(() => []),
+    fetchPlanTasks().catch(() => []),
+    fetchSleepLogs().catch(() => []),
+    loadQBFromSupabase(),
+    fetchCountdowns()
+  ]);
+  const todayKey = toLocalDateKey(getLogicalDate(new Date()));
+  const settings = getAiExportSettings();
+  const draft = getAiExportDraft();
+  // 確保時間が未設定なら、曜日別の目標時間からの値を入れておく（保存はユーザーが触ったとき）
+  const goalHours = aiExportHoursFromGoals(getWeeklyGoals());
+  if (settings.weekdayHours === '') settings.weekdayHours = goalHours.weekdayHours;
+  if (settings.holidayHours === '') settings.holidayHours = goalHours.holidayHours;
+
+  const baseInput = { todayKey, countdowns: examCountdowns, logs, qb: getQBProgress(),
+                      questionRecords: records, mockExams: mocks, plans, planTasks: tasks, sleepLogs };
+  const subjects = buildAiExportData(Object.assign({}, baseInput, { settings, draft })).subjects;
+
+  const exams = (examCountdowns || []).filter(c => c && c.exam_date)
+    .slice().sort((x, y) => String(x.exam_date).localeCompare(String(y.exam_date)));
+  const field = (id, label, value, attrs) =>
+    `<label class="ai-export-field"><span>${label}</span><input id="${id}" value="${esc(value)}" ${attrs || ''}></label>`;
+  const area = (id, label, value, rows) =>
+    `<label class="ai-export-field"><span>${label}</span><textarea id="${id}" rows="${rows || 2}">${esc(value)}</textarea></label>`;
+
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in ai-export-overlay';
+  modal.style.zIndex = '2000';
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up ai-export-modal" role="dialog" aria-label="AI分析用にエクスポート">
+      <div class="modal-header">
+        <div class="modal-title">AI分析用にエクスポート</div>
+        <button class="modal-close" id="ai-export-close" aria-label="閉じる">✕</button>
+      </div>
+      <div class="modal-body">
+        <details class="ai-export-section" ${settings.goal ? '' : 'open'}>
+          <summary>エクスポート設定（保存されます）</summary>
+          <div class="ai-export-grid">
+            <label class="ai-export-field"><span>試験</span>
+              <select id="ai-exp-exam">
+                <option value="">自動（CBTを含む直近の試験）</option>
+                ${exams.map(c => `<option value="${esc(c.id)}" ${String(c.id) === settings.examId ? 'selected' : ''}>${esc(c.name || '試験')}（${esc(String(c.exam_date).slice(0, 10))}）</option>`).join('')}
+              </select>
+            </label>
+            ${field('ai-exp-goal', '目標', settings.goal, 'placeholder="例：本番で85%以上"')}
+            ${field('ai-exp-weekday', '平日の学習時間（時間）', settings.weekdayHours, 'type="number" min="0" max="24" step="0.5"')}
+            ${field('ai-exp-holiday', '休日の学習時間（時間）', settings.holidayHours, 'type="number" min="0" max="24" step="0.5"')}
+          </div>
+          ${area('ai-exp-constraints', '試験までの予定・制約', settings.constraints, 2)}
+          ${exams.length ? '' : '<p class="ai-export-hint">試験日はカウントダウンに登録した試験から取ります。まだ登録が無いので「未記録」になります。</p>'}
+        </details>
+
+        <details class="ai-export-section" open>
+          <summary>今回の入力（空欄の行は出力しません）</summary>
+          ${area('ai-exp-condition', '体調・集中力の状態', draft.condition)}
+          <div class="ai-export-grid">
+            ${field('ai-exp-anki-daily', 'Anki 1日の復習枚数', draft.ankiDaily, 'placeholder="例：200枚"')}
+            ${field('ai-exp-anki-backlog', 'Anki 溜まり', draft.ankiBacklog, 'placeholder="例：期限切れ350枚"')}
+            ${field('ai-exp-anki-retention', 'Anki 定着率', draft.ankiRetention, 'placeholder="例：88%"')}
+          </div>
+          ${field('ai-exp-strong', '得意だと思っている科目', draft.strong)}
+          ${field('ai-exp-weak', '不安な科目', draft.weak)}
+          ${area('ai-exp-going', '最近うまくいっていること／うまくいっていないこと', draft.going)}
+        </details>
+
+        <details class="ai-export-section">
+          <summary>科目ごとの自信度（1〜5・保存されます）</summary>
+          ${subjects.length ? `<div class="ai-export-conf">
+            ${subjects.map(r => `<label class="ai-export-conf-row"><span>${esc(r.name)}</span>
+              <select data-conf-subject="${esc(r.id)}">
+                <option value="">未記録</option>
+                ${[1, 2, 3, 4, 5].map(n => `<option value="${n}" ${settings.confidence[r.id] === n ? 'selected' : ''}>${n}</option>`).join('')}
+              </select></label>`).join('')}
+          </div>` : '<p class="ai-export-hint">記録のある科目がまだありません。</p>'}
+        </details>
+
+        <label class="ai-export-field"><span>プレビュー</span>
+          <textarea id="ai-exp-preview" class="ai-export-preview" readonly></textarea>
+        </label>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" id="ai-export-cancel">閉じる</button>
+        <div class="ai-export-actions">
+          <button class="btn btn-secondary" id="ai-export-download">.md保存</button>
+          <button class="btn btn-primary" id="ai-export-copy">コピー</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+
+  const $m = sel => modal.querySelector(sel);
+  const readSettings = () => {
+    const confidence = {};
+    modal.querySelectorAll('[data-conf-subject]').forEach(sel => {
+      if (sel.value) confidence[sel.dataset.confSubject] = Number(sel.value);
+    });
+    // 一覧に出ていない科目の自信度（今回は記録が無い科目）も消さずに残す
+    const kept = Object.assign({}, getAiExportSettings().confidence);
+    modal.querySelectorAll('[data-conf-subject]').forEach(sel => { delete kept[sel.dataset.confSubject]; });
+    return normalizeAiExportSettings({
+      examId: $m('#ai-exp-exam').value,
+      goal: $m('#ai-exp-goal').value.trim(),
+      weekdayHours: $m('#ai-exp-weekday').value,
+      holidayHours: $m('#ai-exp-holiday').value,
+      constraints: $m('#ai-exp-constraints').value.trim(),
+      confidence: Object.assign(kept, confidence)
+    });
+  };
+  const readDraft = () => ({
+    condition: $m('#ai-exp-condition').value,
+    ankiDaily: $m('#ai-exp-anki-daily').value,
+    ankiBacklog: $m('#ai-exp-anki-backlog').value,
+    ankiRetention: $m('#ai-exp-anki-retention').value,
+    strong: $m('#ai-exp-strong').value,
+    weak: $m('#ai-exp-weak').value,
+    going: $m('#ai-exp-going').value
+  });
+  const markdown = () => buildAiExportMarkdown(Object.assign({}, baseInput, { settings: readSettings(), draft: readDraft() }));
+  const refresh = () => { $m('#ai-exp-preview').value = markdown(); };
+  refresh();
+
+  const settingIds = ['#ai-exp-exam', '#ai-exp-goal', '#ai-exp-weekday', '#ai-exp-holiday', '#ai-exp-constraints'];
+  modal.addEventListener('input', e => {
+    if (e.target.closest('.ai-export-preview')) return;
+    saveAiExportDraft(readDraft());
+    refresh();
+  });
+  modal.addEventListener('change', e => {
+    // 設定は入力が確定したとき（フォーカスが外れたとき・選び直したとき）に保存する
+    if (settingIds.some(id => e.target.matches(id)) || e.target.matches('[data-conf-subject]')) {
+      saveAiExportSettings(readSettings());
+    }
+    refresh();
+  });
+
+  const close = () => modal.remove();
+  $m('#ai-export-close').onclick = close;
+  $m('#ai-export-cancel').onclick = close;
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+
+  $m('#ai-export-copy').onclick = async () => {
+    const text = markdown();
+    let copied = false;
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) { await navigator.clipboard.writeText(text); copied = true; }
+    } catch (e) {}
+    if (!copied) {
+      // クリップボード API が使えない環境向け（http で開いたときなど）
+      const ta = $m('#ai-exp-preview');
+      ta.value = text; ta.focus(); ta.select();
+      try { copied = document.execCommand('copy'); } catch (e) {}
+    }
+    showToast(copied ? `${IC.check} コピーしました` : `${IC.warn} コピーできませんでした。プレビューを選択してコピーしてください`);
+  };
+  $m('#ai-export-download').onclick = () => {
+    const blob = new Blob([markdown()], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `medfocus-ai-export-${todayKey}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+}
 
 // --- Settings ---
 function renderSettings(){
@@ -17985,6 +18682,13 @@ async function initApp(){
                   localStorage.setItem(WEEKLY_GOALS_KEY, JSON.stringify(parsed.current));
                   if (Array.isArray(parsed.history)) setWeeklyGoalsHistory(parsed.history);
                 }
+              } catch(e) {}
+            }
+            // AI分析用エクスポートの設定（列がまだ無い環境では undefined のまま）
+            if (profile.export_settings) {
+              try {
+                const parsed = JSON.parse(profile.export_settings);
+                localStorage.setItem(AI_EXPORT_SETTINGS_KEY, JSON.stringify(normalizeAiExportSettings(parsed)));
               } catch(e) {}
             }
             // Sync daily overrides from DB to localStorage
