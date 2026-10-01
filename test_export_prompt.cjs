@@ -140,11 +140,14 @@ eq('2C: 全体正答率（全周回・4連問込み）', [c2.overallPct, c2.done
 eq('2C: 直近2週の正答率はログの問題数から（9/15 は範囲外）', [c2.recentPct, c2.recentSolved], [62, 60]);
 eq('2C: 直近2週の学習時間（4連問の時間も元の科目へ）', c2.recentMin, 150);
 eq('2C: 1問あたりの時間（全期間）', Math.round(c2.minPerQ * 100) / 100, Math.round(230 / 90 * 100) / 100);
-eq('2C: 最終演習と前回との間隔（問題数を記録した日だけで数える）', [c2.daysSinceQb, c2.gapBeforeLast], [1, 1]);
+const gapsOf = r => r.gaps.map(g => [g.label, g.daysSince, g.gapBefore]);
+eq('2C: 最終演習と間隔は形式ごと（4連問の 9/30 は一般の間隔に混ぜない）', gapsOf(c2),
+   [['一般', 1, 16], ['4連問', 2, null]]);
 const d1 = data.subjects.find(r => r.id === '1D');
-eq('1D: 9/22(8B) → 9/28 で6日空いている（時間だけの 9/8 は数えない）', [d1.daysSinceQb, d1.gapBeforeLast], [4, 6]);
+eq('1D: 基礎医学強化(8B)の日は一般の最終演習に混ぜない（時間だけの 9/8 も数えない）', gapsOf(d1),
+   [['一般', 4, null], ['基礎強化', 10, null]]);
 const d3 = data.subjects.find(r => r.id === '3D');
-eq('3D: 解いた日が1日だけなら間隔は無い', [d3.daysSinceQb, d3.gapBeforeLast], [5, null]);
+eq('3D: 一般だけ・解いた日が1日なら間隔は無い', gapsOf(d3), [['一般', 5, null]]);
 eq('2C: 自信ありで不正解（直近2週）', [c2.confRecorded, c2.confHighWrong], [true, 1]);
 const v5 = data.subjects.find(r => r.id === 'set:5A');
 eq('vol.5 追加問題はブロックをまとめて1行', [v5.name, v5.r1Done, v5.r1Total, v5.overallPct],
@@ -205,7 +208,9 @@ ok('問題番号の記録が200件未満なら繰り返し間違いの行は出�
 ok('種類つきの不正解が20件未満なら内訳は出さない', !md.includes('間違いの種類の内訳：'));
 ok('両方省いたら「間違いの傾向」の見出しごと出さない', !md.includes('## 間違いの傾向'));
 ok('短いメモは出さない', !md.includes('OSCE：1'));
-ok('科目表に最終演習・前回との間隔', /^\| 1D 生化学 \|[^\n]*\| 4日前 \| 6日 \|/m.test(md), lineOf(md, '| 1D'));
+ok('形式が複数ある科目は形式名つきで並べる', /^\| 1D 生化学 \|[^\n]*\| 一般 4日前／基礎強化 10日前 \| - \|/m.test(md), lineOf(md, '| 1D'));
+ok('間隔は値のある形式だけ', /^\| 2C 循環器 \|[^\n]*\| 一般 1日前／4連問 2日前 \| 一般 16日 \|/m.test(md), lineOf(md, '| 2C'));
+ok('一般だけの科目は形式名を付けない', /^\| 3D 公衆衛生 \|[^\n]*\| 5日前 \| - \|/m.test(md), lineOf(md, '| 3D'));
 ok('分析の依頼に「間が空いたことによる忘却」との切り分けを入れる',
    md.includes('理解が足りないのか、最後に解いてから・前回から間が空いて忘れていただけなのか'));
 ok('間隔ごとの正答率は記録が足りなければ出さない', !md.includes('## 前回からの間隔と正答率'));

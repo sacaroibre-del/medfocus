@@ -13352,8 +13352,11 @@ function buildAiExportData(input) {
     if (hasQ) {
       row.qbRecorded = true;
       if (min > 0) { row.qbMin += min; row.qbQuestions += solved; }
+      // 最終演習の日付は問題形式ごとに分けて持つ。1D の行に 8B（基礎医学強化）や
+      // 4連問の日付が混ざると、「生化学は4日前に解いた」のように読めてしまうため
       const day = aiExportLogDay(l);
-      if (day && day <= todayKey) row.qbDays[day] = true;
+      const fmt = questionFormatOf(l.subject_name) || QUESTION_FORMAT_UNCLASSIFIED;
+      if (day && day <= todayKey) (row.qbDays[fmt] = row.qbDays[fmt] || {})[day] = true;
     }
     if (!inWindow(aiExportLogDay(l))) return;
     row.recentMin += min;
@@ -13370,15 +13373,22 @@ function buildAiExportData(input) {
   });
   // 最後に解いた日と、その前に解いた日との間隔。正答率の低さが「理解していない」のか
   // 「間が空いて忘れていた」のかを Opus が切り分けられるようにする
-  const gapInfo = r => {
-    const days = Object.keys(r.qbDays).sort();
-    const last = days.length ? days[days.length - 1] : null;
-    return {
-      lastQbDay: last,
-      daysSinceQb: last ? aiExportDaysBetween(last, todayKey) : null,
-      gapBeforeLast: days.length >= 2 ? aiExportDaysBetween(days[days.length - 2], last) : null
-    };
-  };
+  // 問題形式ごと（一般・4連問・基礎医学強化…）に出す。並びは QUESTION_FORMATS の順
+  const formatOrder = QUESTION_FORMATS.map(f => f.key).concat(QUESTION_FORMAT_UNCLASSIFIED);
+  const gapInfo = r => ({
+    gaps: Object.keys(r.qbDays)
+      .sort((a, b) => formatOrder.indexOf(a) - formatOrder.indexOf(b))
+      .map(fmt => {
+        const days = Object.keys(r.qbDays[fmt]).sort();
+        const last = days[days.length - 1];
+        return {
+          format: fmt, label: questionFormatDef(fmt).short,
+          lastQbDay: last,
+          daysSince: aiExportDaysBetween(last, todayKey),
+          gapBefore: days.length >= 2 ? aiExportDaysBetween(days[days.length - 2], last) : null
+        };
+      })
+  });
   const subjects = Object.values(rows).filter(r => r.qbRecorded).map(r => Object.assign(r, gapInfo(r), {
     overallPct: aiExportPct(r.correct, r.done),
     recentPct: aiExportPct(r.recentCorrect, r.recentSolved),
@@ -13430,7 +13440,12 @@ function buildAiExportData(input) {
   const unitCost = buildUnitCost(logs);
   const reliableBins = list => (list || []).filter(b => b.reliable && b.accuracy !== null);
   // 前回その科目に触ってから何日空けたかと、その日の正答率（インサイトの「復習間隔」と同じ集計）
-  const interval = todayDate ? buildReviewIntervalStats(logs, todayDate) : null;
+  // 科目名に問題形式を付けて渡す。そのままだと vol.4・vol.6〜8 が元の科目に寄せられ、
+  // 「生化学を4日ぶりに解いた」の中に基礎医学強化の日が混ざって間隔が短く出る
+  const intervalLogs = logs.map(l => Object.assign({}, l, {
+    subject_name: `${questionFormatOf(l.subject_name) || QUESTION_FORMAT_UNCLASSIFIED}:${aiExportSubjectKey(l.subject_name) || ''}`
+  }));
+  const interval = todayDate ? buildReviewIntervalStats(intervalLogs, todayDate) : null;
   const intervalBins = interval && interval.hasData ? reliableBins(interval.bins) : [];
   const method = {
     minPerQ: unitCost.hasQuestion ? unitCost.minPerQuestion : null,
@@ -13575,6 +13590,16 @@ function aiExportCell(v) { return String(v).replace(/\|/g, '｜').replace(/\s*\n
 function aiExportOneLine(v) { return String(v || '').trim().split(/\s*\n\s*/).filter(Boolean).join('／'); }
 function aiExportPctText(pct, n) { return pct === null ? null : `${pct}%（${n}問）`; }
 
+// 最終演習・前回との間隔のセル。その科目で解いた形式が一般問題だけならそのまま、
+// 複数なら「一般 4日前／4連問 2日前」。間隔の列も最終演習の列と同じ判定にそろえる
+// （片方だけ形式名が無いと、どの形式の値か読み取れない）。
+function aiExportGapCell(gaps, pick, fmt) {
+  const shown = (gaps || []).filter(pick);
+  if (!shown.length) return null;
+  const plain = gaps.length === 1 && gaps[0].format === QUESTION_FORMAT_GENERAL;
+  return shown.map(g => (plain ? fmt(g) : `${g.label} ${fmt(g)}`)).join('／');
+}
+
 // 科目表。全行が空の列は列ごと落とす。セルが空の箇所は「-」
 function aiExportSubjectTable(subjects) {
   const round = r => (r.maxRound > 0 ? `今${r.maxRound}周目` : '未着手');
@@ -13584,8 +13609,8 @@ function aiExportSubjectTable(subjects) {
     ['全体正答率', r => aiExportPctText(r.overallPct, r.done)],
     ['直近2週の正答率', r => aiExportPctText(r.recentPct, r.recentSolved)],
     ['2周目以降の正答率', r => aiExportPctText(r.laterPct, r.laterDone)],
-    ['最終演習', r => (r.daysSinceQb === null ? null : r.daysSinceQb === 0 ? '今日' : `${r.daysSinceQb}日前`)],
-    ['前回との間隔', r => (r.gapBeforeLast === null ? null : `${r.gapBeforeLast}日`)],
+    ['最終演習', r => aiExportGapCell(r.gaps, () => true, g => (g.daysSince === 0 ? '今日' : `${g.daysSince}日前`))],
+    ['前回との間隔', r => aiExportGapCell(r.gaps, g => g.gapBefore !== null, g => `${g.gapBefore}日`)],
     ['学習時間(直近2週)', r => (r.recentMin > 0 ? aiExportHours(r.recentMin) : null)],
     ['1問あたりの時間', r => (r.minPerQ !== null ? `${r.minPerQ.toFixed(1)}分` : null)],
     ['自信度(1-5)', r => r.confidence || null],
@@ -13657,7 +13682,8 @@ function formatAiExportMarkdown(data) {
     }
     push('- 注：QB解答数/総数は1周目の数。vol.4（多肢選択・4連問）と vol.6〜8（基礎医学強化）は元の科目に合算。' +
          '括弧内は正答率の母数。直近2週の正答率は問題数を記録した学習ログのみから算出。' +
-         '最終演習は問題数を記録してその科目を最後に解いた日、前回との間隔はその1つ前に解いた日からの日数。', '');
+         '最終演習は問題数を記録してその科目を最後に解いた日、前回との間隔はその1つ前に解いた日からの日数。' +
+         'どちらも問題形式（一般・4連問・基礎医学強化など）ごとに数え、形式が複数ある科目は形式名を付けて並べる。', '');
     if (t.columns.indexOf('自信度(1-5)') < 0) omitted.push('科目ごとの自信度');
   } else {
     omitted.push('QBの科目別成績');
