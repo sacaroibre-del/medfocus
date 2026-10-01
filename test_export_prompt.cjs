@@ -175,7 +175,7 @@ ok('優先順位の vol.5 は問題集の名前つき', data.priority.filter(r =
 const md = W.formatAiExportMarkdown(data);
 
 ok('「含まれていない情報」の行は「分析してほしいこと」の直後',
-   /5\. データに含まれていない項目[^\n]*\n\n※次の情報はこのデータに含まれていません：[^\n]*分析に必要なものだけ、最初に質問してください。\n/.test(md));
+   /5\. データに含まれていない項目[^\n]*\n6\. 今日の学習の振り返り[^\n]*\n\n※次の情報はこのデータに含まれていません：[^\n]*分析に必要なものだけ、最初に質問してください。\n/.test(md));
 eq('省いた項目の一覧', omittedOf(md), [
   '体調・集中力の自己申告',
   '科目ごとの自信度',
@@ -260,13 +260,46 @@ ok('自信度があれば一覧に載らない', !omittedOf(mdConf).includes('�
 const empty = W.buildAiExportMarkdown({ todayKey: TODAY });
 eq('空: 省いた項目の一覧', omittedOf(empty), [
   '試験日', '目標', '確保できる学習時間', '実際の学習時間', '試験までの予定・制約', '体調・集中力の自己申告',
-  'QBの科目別成績', '学習時間の記録', 'QB正答率の週推移', '前回からの間隔と正答率（記録件数が不足）', '模試の結果',
+  '今日の学習記録', 'QBの科目別成績', '学習時間の記録', 'QB正答率の週推移', '前回からの間隔と正答率（記録件数が不足）', '模試の結果',
   '繰り返し間違える問題（記録件数が不足）', '間違いの種類の内訳（記録件数が不足）',
   'PDCAのCheck／Act（振り返りメモ・プランの達成）', '自己認識（得意・不安な科目／最近の手応え）', 'アプリの優先順位'
 ]);
 eq('空: 残る見出しは依頼・分析・学習リソースだけ', empty.split('\n').filter(l => /^#/.test(l)),
    ['# 依頼', '## 分析してほしいこと', '## 学習リソースと進め方']);
 ok('空: 「未記録」は出ない', !empty.includes('未記録'));
+
+ok('空: 今日の記録が無ければ振り返りの依頼（6番）も出さない', !empty.includes('6. 今日の学習の振り返り'));
+
+// ---------- 今日の学習 ----------
+const todayInput = Object.assign({}, dummy, {
+  todayGoalMin: 240,
+  logs: dummy.logs.concat([
+    log('2026-10-02', '4B2C', 60, { questions_solved: 20, questions_correct: 15, focus_level: 4,
+      started_at: at('2026-10-02', 9), ended_at: at('2026-10-02', 10), memo: '心電図は波形から読むと速い' }),
+    log('2026-10-02', '1D', 90, { questions_solved: 30, questions_correct: 18,
+      started_at: at('2026-10-02', 13), ended_at: at('2026-10-02', 14, 30), memo: 'ok' }),
+    log('2026-10-02', 'OSCE', 30, { activity: 'other', started_at: at('2026-10-02', 16), ended_at: at('2026-10-02', 16, 30) })
+  ]),
+  questionRecords: dummy.questionRecords.concat([
+    { subject_id: '4B2C', round: 1, question_no: 4, is_correct: false, recorded_on: '2026-10-02' },
+    { subject_id: '4B2C', round: 1, question_no: 5, is_correct: true, recorded_on: '2026-10-02' },
+    { subject_id: '1D', round: 1, question_no: 9, is_correct: false, recorded_on: '2026-10-01',
+      retest_log: [{ date: '2026-10-02', correct: true }] }
+  ])
+});
+const td = W.buildAiExportData(todayInput).today;
+eq('今日: 合計と QB', [td.totalMin, td.goalMin, td.solved, td.correct], [180, 240, 50, 33]);
+eq('今日: セッションは時間順・科目は形式が分かる名前のまま', td.sessions.map(x => [x.range, x.subject, x.min]),
+   [['9:00〜10:00', '4連問 2C 循環器', 60], ['13:00〜14:30', '1D 生化学', 90], ['16:00〜16:30', 'OSCE', 30]]);
+const mdToday = W.buildAiExportMarkdown(todayInput);
+ok('今日: 合計の行', mdToday.includes('- 合計：3.0時間（目標 4.0時間・達成 75%）／QB 50問・正答率 66%'), lineOf(mdToday, '- 合計'));
+ok('今日: セッションの行', mdToday.includes('  - 9:00〜10:00 4連問 2C 循環器（問題演習） 60分　20問中15問正解（75%）　集中度4/5　メモ：心電図は波形から読むと速い'));
+ok('今日: 短いメモは出さない', mdToday.includes('  - 13:00〜14:30 1D 生化学（問題演習） 90分　30問中18問正解（60%）\n'));
+ok('今日: ノルマ', mdToday.includes('- 今日の逆算プランのノルマ：循環器 QB 2周目 0/30問'));
+ok('今日: 問題番号と再テスト', mdToday.includes('- 問題番号を記録した問題：2問（不正解 1問：4連問 2C 循環器 Q4）') &&
+   mdToday.includes('- 再テスト：1問中1問正解'));
+ok('今日: セクションは科目表より前', mdToday.indexOf('## 今日の学習（2026-10-02）') < mdToday.indexOf('## 科目別データ'));
+ok('今日: 一覧に「今日の学習記録」は載らない', !omittedOf(mdToday).includes('今日の学習記録'));
 
 // ---------- 設定 ----------
 eq('設定: 範囲外の値は捨てる', W.normalizeAiExportSettings({ weekdayHours: '30', holidayHours: '6', confidence: { '2C': 6, '1D': '2' } }),

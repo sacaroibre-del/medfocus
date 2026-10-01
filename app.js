@@ -13553,6 +13553,57 @@ function buildAiExportData(input) {
     .map(v => (v < 720 ? v + 1440 : v));
   const avg = list => list.length ? list.reduce((s, v) => s + v, 0) / list.length : null;
 
+  // --- 今日の学習（毎日送る前提。論理日＝3時境界の「今日」） ---
+  const clock = d => `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const todaySessions = logs.filter(l => aiExportLogDay(l) === todayKey && Number(l.duration_minutes) > 0)
+    .map(l => {
+      const r = getLogRange(l);
+      const solved = Number(l.questions_solved), correct = Number(l.questions_correct);
+      const hasQ = solved > 0 && isFinite(correct) && correct >= 0 && l.questions_correct !== null &&
+                   l.questions_correct !== undefined;
+      const memo = String(l.memo || '').replace(/\s+/g, ' ').trim();
+      return {
+        sortKey: isNaN(r.start) ? '' : r.start.toISOString(),
+        range: isNaN(r.start) || isNaN(r.end) ? '' : `${clock(r.start)}〜${clock(r.end)}`,
+        // 形式が分かるよう元の科目へは寄せない（'4連問 2C 循環器' のまま）
+        subject: normalizeSubjectName(l.subject_name),
+        activity: ACTIVITY_MAP[l.activity] ? ACTIVITY_MAP[l.activity].l : null,
+        min: Number(l.duration_minutes) || 0,
+        solved: hasQ ? solved : null, correct: hasQ ? Math.min(solved, correct) : null,
+        focus: Number(l.focus_level) > 0 ? Number(l.focus_level) : null,
+        memo: memo.replace(/\s/g, '').length >= AI_EXPORT_MIN_MEMO_CHARS
+          ? (memo.length > 120 ? memo.slice(0, 120) + '…' : memo) : ''
+      };
+    }).sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  const todayTasks = [];
+  (inp.planTasks || []).forEach(t => {
+    const plan = t && planById[t.plan_id];
+    if (!plan || !t.due_date || String(t.due_date).slice(0, 10) !== todayKey) return;
+    todayTasks.push(t.kind === 'milestone'
+      ? { title: t.title || plan.title, milestone: true, completed: !!t.completed }
+      : { title: plan.title, unit: plan.unit || 'q', target: Math.max(0, Number(t.target_amount) || 0),
+          done: Math.max(0, Number(t.done_amount) || 0) });
+  });
+  const todayRecords = records.filter(r => r && String(r.recorded_on || '').slice(0, 10) === todayKey);
+  const todayRetests = [];
+  records.forEach(r => (Array.isArray(r && r.retest_log) ? r.retest_log : []).forEach(e => {
+    if (e && String(e.date || '').slice(0, 10) === todayKey) todayRetests.push(e);
+  }));
+  const todayQ = todaySessions.filter(x => x.solved !== null);
+  const today = (todaySessions.length || todayTasks.length || todayRecords.length || todayRetests.length) ? {
+    sessions: todaySessions,
+    totalMin: todaySessions.reduce((sum, x) => sum + x.min, 0),
+    goalMin: Number(inp.todayGoalMin) > 0 ? Number(inp.todayGoalMin) : null,
+    solved: todayQ.reduce((sum, x) => sum + x.solved, 0),
+    correct: todayQ.reduce((sum, x) => sum + x.correct, 0),
+    tasks: todayTasks,
+    records: todayRecords.length,
+    wrong: todayRecords.filter(r => !r.is_correct)
+      .map(r => `${subjectNameOf(r.subject_id)} Q${r.question_no}`),
+    retests: todayRetests.length,
+    retestCorrect: todayRetests.filter(e => e.correct === true).length
+  } : null;
+
   // --- アプリの優先順位（逆算プランと同じ計算。試験日はエクスポートの試験に合わせる） ---
   // QB の解答記録が1つも無いと、計算は「手つかずの科目」を並べるだけになるので出さない
   let priority = [];
@@ -13579,7 +13630,7 @@ function buildAiExportData(input) {
     subjects, formats, weeks, accTrend, method, intervalBins, mocks, repeatedWrong,
     questionRecordCount: records.length,
     errors: { counts: errorCounts, untyped, typedTotal },
-    memos, planProgress, priority,
+    memos, planProgress, priority, today,
     focus: focusAvg === null ? null : { avg: focusAvg, count: focusLogs.length },
     sleep: { wake: avg(wakes), bed: avg(beds) }
   };
@@ -13672,6 +13723,39 @@ function formatAiExportMarkdown(data) {
     '- 教材：QB（CBT）、Notion（科目別ノート）',
     '- 普段の流れ：QB → 分からないところをAIで解説',
     '');
+
+  // 今日の学習。毎日送るので、生データの先頭に置く
+  if (data.today) {
+    const t = data.today;
+    const lines = [];
+    const total = [`${aiExportHours(t.totalMin)}`];
+    if (t.goalMin) total.push(`目標 ${aiExportHours(t.goalMin)}・達成 ${Math.round(t.totalMin / t.goalMin * 100)}%`);
+    lines.push(`- 合計：${total.join('（')}${t.goalMin ? '）' : ''}` +
+               (t.solved > 0 ? `／QB ${t.solved}問・正答率 ${aiExportPct(t.correct, t.solved)}%` : ''));
+    if (t.sessions.length) {
+      lines.push('- セッション（時間順）：');
+      t.sessions.forEach(x => {
+        const parts = [`${x.range ? x.range + ' ' : ''}${x.subject}${x.activity ? `（${x.activity}）` : ''} ${x.min}分`];
+        if (x.solved !== null) parts.push(`${x.solved}問中${x.correct}問正解（${aiExportPct(x.correct, x.solved)}%）`);
+        if (x.focus) parts.push(`集中度${x.focus}/5`);
+        if (x.memo) parts.push(`メモ：${x.memo}`);
+        lines.push(`  - ${parts.join('　')}`);
+      });
+    }
+    if (t.tasks.length) {
+      lines.push('- 今日の逆算プランのノルマ：' + t.tasks.map(k => {
+        if (k.milestone) return `${aiExportOneLine(k.title)} ${k.completed ? '完了' : '未完了'}`;
+        const unit = ({ q: '問', page: 'p', video: '本', count: '回' })[k.unit] || '';
+        return `${aiExportOneLine(k.title)} ${k.done}/${k.target}${unit}`;
+      }).join('、'));
+    }
+    if (t.records) {
+      lines.push(`- 問題番号を記録した問題：${t.records}問` +
+                 (t.wrong.length ? `（不正解 ${t.wrong.length}問：${t.wrong.slice(0, 15).join('、')}${t.wrong.length > 15 ? ' ほか' : ''}）` : '（すべて正解）'));
+    }
+    if (t.retests) lines.push(`- 再テスト：${t.retests}問中${t.retestCorrect}問正解`);
+    section(`## 今日の学習（${data.todayKey}）`, lines);
+  } else omitted.push('今日の学習記録');
 
   // 科目別データ
   if (data.subjects.length) {
@@ -13819,9 +13903,8 @@ function formatAiExportMarkdown(data) {
     '2. 残り日数に対して現実的な優先順位（上位3〜5テーマ）と、その根拠',
     '3. 今やめる・減らすべきこと',
     '4. 直近1週間の日別プラン（時間配分つき）',
-    '5. データに含まれていない項目や判断に足りない点があれば、推測で埋めずに質問してください',
-    ''
-  ];
+    '5. データに含まれていない項目や判断に足りない点があれば、推測で埋めずに質問してください'
+  ].concat(data.today ? ['6. 今日の学習の振り返り（計画・目標との差、うまくいった点、明日変えること）'] : [], ['']);
   if (omitted.length) {
     head.push(`※次の情報はこのデータに含まれていません：${omitted.join('、')}。` +
               '分析に必要なものだけ、最初に質問してください。', '');
@@ -13851,6 +13934,7 @@ async function collectAiExportInput() {
     todayKey: toLocalDateKey(getLogicalDate(new Date())),
     settings: getAiExportSettings(),
     goalHours: aiExportHoursFromGoals(getWeeklyGoals()),
+    todayGoalMin: getTodayGoalMinutes(),
     countdowns: examCountdowns, calendarEvents: events,
     logs, qb: getQBProgress(), video: primaryVideoProgress(),
     questionRecords: records, mockExams: mocks, plans, planTasks: tasks, sleepLogs
