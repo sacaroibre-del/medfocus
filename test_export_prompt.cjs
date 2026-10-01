@@ -140,6 +140,11 @@ eq('2C: 全体正答率（全周回・4連問込み）', [c2.overallPct, c2.done
 eq('2C: 直近2週の正答率はログの問題数から（9/15 は範囲外）', [c2.recentPct, c2.recentSolved], [62, 60]);
 eq('2C: 直近2週の学習時間（4連問の時間も元の科目へ）', c2.recentMin, 150);
 eq('2C: 1問あたりの時間（全期間）', Math.round(c2.minPerQ * 100) / 100, Math.round(230 / 90 * 100) / 100);
+eq('2C: 最終演習と前回との間隔（問題数を記録した日だけで数える）', [c2.daysSinceQb, c2.gapBeforeLast], [1, 1]);
+const d1 = data.subjects.find(r => r.id === '1D');
+eq('1D: 9/22(8B) → 9/28 で6日空いている（時間だけの 9/8 は数えない）', [d1.daysSinceQb, d1.gapBeforeLast], [4, 6]);
+const d3 = data.subjects.find(r => r.id === '3D');
+eq('3D: 解いた日が1日だけなら間隔は無い', [d3.daysSinceQb, d3.gapBeforeLast], [5, null]);
 eq('2C: 自信ありで不正解（直近2週）', [c2.confRecorded, c2.confHighWrong], [true, 1]);
 const v5 = data.subjects.find(r => r.id === 'set:5A');
 eq('vol.5 追加問題はブロックをまとめて1行', [v5.name, v5.r1Done, v5.r1Total, v5.overallPct],
@@ -171,6 +176,7 @@ ok('「含まれていない情報」の行は「分析してほしいこと」�
 eq('省いた項目の一覧', omittedOf(md), [
   '体調・集中力の自己申告',
   '科目ごとの自信度',
+  '前回からの間隔と正答率（記録件数が不足）',
   '繰り返し間違える問題（記録件数が不足）',
   '間違いの種類の内訳（記録件数が不足）',
   '自己認識（得意・不安な科目／最近の手応え）'
@@ -199,6 +205,21 @@ ok('問題番号の記録が200件未満なら繰り返し間違いの行は出�
 ok('種類つきの不正解が20件未満なら内訳は出さない', !md.includes('間違いの種類の内訳：'));
 ok('両方省いたら「間違いの傾向」の見出しごと出さない', !md.includes('## 間違いの傾向'));
 ok('短いメモは出さない', !md.includes('OSCE：1'));
+ok('科目表に最終演習・前回との間隔', /^\| 1D 生化学 \|[^\n]*\| 4日前 \| 6日 \|/m.test(md), lineOf(md, '| 1D'));
+ok('分析の依頼に「間が空いたことによる忘却」との切り分けを入れる',
+   md.includes('理解が足りないのか、最後に解いてから・前回から間が空いて忘れていただけなのか'));
+ok('間隔ごとの正答率は記録が足りなければ出さない', !md.includes('## 前回からの間隔と正答率'));
+
+// 間隔ごとの正答率：記録が足りれば出す（1区分あたり3回・20問以上を2区分以上）
+const spaced = [];
+['2026-08-01', '2026-08-02', '2026-08-03', '2026-08-04'].forEach(d =>
+  spaced.push(log(d, '2D', 30, { questions_solved: 10, questions_correct: 8 })));
+['2026-08-14', '2026-08-25', '2026-09-05'].forEach(d =>
+  spaced.push(log(d, '2D', 30, { questions_solved: 10, questions_correct: 5 })));
+const mdSpaced = W.buildAiExportMarkdown(Object.assign({}, dummy, { logs: dummy.logs.concat(spaced) }));
+ok('間隔ごとの正答率を出す', /## 前回からの間隔と正答率（全期間・全科目）\n- [^\n]*翌日 \d+%（\d+問）[^\n]*8〜14日 \d+%（\d+問）/.test(mdSpaced),
+   lineOf(mdSpaced, '- その科目に前回触った日から'));
+ok('出したら一覧に載せない', !omittedOf(mdSpaced).some(x => x.startsWith('前回からの間隔と正答率')));
 
 // 優先順位は生データより後ろ・指示文が見出しの直前
 const iInstr = md.indexOf('以下はアプリが計算した優先順位です。');
@@ -234,7 +255,7 @@ ok('自信度があれば一覧に載らない', !omittedOf(mdConf).includes('�
 const empty = W.buildAiExportMarkdown({ todayKey: TODAY });
 eq('空: 省いた項目の一覧', omittedOf(empty), [
   '試験日', '目標', '確保できる学習時間', '実際の学習時間', '試験までの予定・制約', '体調・集中力の自己申告',
-  'QBの科目別成績', '学習時間の記録', 'QB正答率の週推移', '模試の結果',
+  'QBの科目別成績', '学習時間の記録', 'QB正答率の週推移', '前回からの間隔と正答率（記録件数が不足）', '模試の結果',
   '繰り返し間違える問題（記録件数が不足）', '間違いの種類の内訳（記録件数が不足）',
   'PDCAのCheck／Act（振り返りメモ・プランの達成）', '自己認識（得意・不安な科目／最近の手応え）', 'アプリの優先順位'
 ]);

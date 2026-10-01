@@ -13317,7 +13317,7 @@ function buildAiExportData(input) {
     id, name: aiExportRowName(id), qbRecorded: false,
     r1Done: 0, r1Total: 0, maxRound: 0, done: 0, correct: 0, laterDone: 0, laterCorrect: 0,
     recentSolved: 0, recentCorrect: 0, recentMin: 0, qbMin: 0, qbQuestions: 0,
-    confRecorded: false, confHighWrong: 0
+    qbDays: {}, confRecorded: false, confHighWrong: 0
   });
   const formatStats = {};
   Object.entries(qb).forEach(([sid, rounds]) => {
@@ -13352,6 +13352,8 @@ function buildAiExportData(input) {
     if (hasQ) {
       row.qbRecorded = true;
       if (min > 0) { row.qbMin += min; row.qbQuestions += solved; }
+      const day = aiExportLogDay(l);
+      if (day && day <= todayKey) row.qbDays[day] = true;
     }
     if (!inWindow(aiExportLogDay(l))) return;
     row.recentMin += min;
@@ -13366,7 +13368,18 @@ function buildAiExportData(input) {
     if (r.confidence) row.confRecorded = true;
     if (!r.is_correct && r.confidence === 'high') row.confHighWrong++;
   });
-  const subjects = Object.values(rows).filter(r => r.qbRecorded).map(r => Object.assign(r, {
+  // 最後に解いた日と、その前に解いた日との間隔。正答率の低さが「理解していない」のか
+  // 「間が空いて忘れていた」のかを Opus が切り分けられるようにする
+  const gapInfo = r => {
+    const days = Object.keys(r.qbDays).sort();
+    const last = days.length ? days[days.length - 1] : null;
+    return {
+      lastQbDay: last,
+      daysSinceQb: last ? aiExportDaysBetween(last, todayKey) : null,
+      gapBeforeLast: days.length >= 2 ? aiExportDaysBetween(days[days.length - 2], last) : null
+    };
+  };
+  const subjects = Object.values(rows).filter(r => r.qbRecorded).map(r => Object.assign(r, gapInfo(r), {
     overallPct: aiExportPct(r.correct, r.done),
     recentPct: aiExportPct(r.recentCorrect, r.recentSolved),
     laterPct: aiExportPct(r.laterCorrect, r.laterDone),
@@ -13416,6 +13429,9 @@ function buildAiExportData(input) {
   const quality = buildQbQualityStats(logs, {});
   const unitCost = buildUnitCost(logs);
   const reliableBins = list => (list || []).filter(b => b.reliable && b.accuracy !== null);
+  // 前回その科目に触ってから何日空けたかと、その日の正答率（インサイトの「復習間隔」と同じ集計）
+  const interval = todayDate ? buildReviewIntervalStats(logs, todayDate) : null;
+  const intervalBins = interval && interval.hasData ? reliableBins(interval.bins) : [];
   const method = {
     minPerQ: unitCost.hasQuestion ? unitCost.minPerQuestion : null,
     questionSamples: unitCost.questionSamples,
@@ -13545,7 +13561,7 @@ function buildAiExportData(input) {
     todayKey, settings,
     exam: examDate ? { name: exam.name || '', date: examDate, daysLeft: aiExportDaysBetween(todayKey, examDate) } : null,
     hours, actual, events,
-    subjects, formats, weeks, accTrend, method, mocks, repeatedWrong,
+    subjects, formats, weeks, accTrend, method, intervalBins, mocks, repeatedWrong,
     questionRecordCount: records.length,
     errors: { counts: errorCounts, untyped, typedTotal },
     memos, planProgress, priority,
@@ -13568,6 +13584,8 @@ function aiExportSubjectTable(subjects) {
     ['全体正答率', r => aiExportPctText(r.overallPct, r.done)],
     ['直近2週の正答率', r => aiExportPctText(r.recentPct, r.recentSolved)],
     ['2周目以降の正答率', r => aiExportPctText(r.laterPct, r.laterDone)],
+    ['最終演習', r => (r.daysSinceQb === null ? null : r.daysSinceQb === 0 ? '今日' : `${r.daysSinceQb}日前`)],
+    ['前回との間隔', r => (r.gapBeforeLast === null ? null : `${r.gapBeforeLast}日`)],
     ['学習時間(直近2週)', r => (r.recentMin > 0 ? aiExportHours(r.recentMin) : null)],
     ['1問あたりの時間', r => (r.minPerQ !== null ? `${r.minPerQ.toFixed(1)}分` : null)],
     ['自信度(1-5)', r => r.confidence || null],
@@ -13638,7 +13656,8 @@ function formatAiExportMarkdown(data) {
       push('- 問題形式別の正答率：' + data.formats.map(f => `${f.label} ${aiExportPctText(f.pct, f.done)}`).join('／'));
     }
     push('- 注：QB解答数/総数は1周目の数。vol.4（多肢選択・4連問）と vol.6〜8（基礎医学強化）は元の科目に合算。' +
-         '括弧内は正答率の母数。直近2週の正答率は問題数を記録した学習ログのみから算出。', '');
+         '括弧内は正答率の母数。直近2週の正答率は問題数を記録した学習ログのみから算出。' +
+         '最終演習は問題数を記録してその科目を最後に解いた日、前回との間隔はその1つ前に解いた日からの日数。', '');
     if (t.columns.indexOf('自信度(1-5)') < 0) omitted.push('科目ごとの自信度');
   } else {
     omitted.push('QBの科目別成績');
@@ -13673,6 +13692,14 @@ function formatAiExportMarkdown(data) {
     if (m.byFocus.length >= 2) lines.push(`- 集中度ごとの正答率：${bins(m.byFocus)}`);
     section('## 解き方の傾向（全期間）', lines);
   }
+
+  // 間隔と正答率。間が空いたあとに正答率がどれだけ落ちるかの実測
+  if (data.intervalBins.length >= 2) {
+    section('## 前回からの間隔と正答率（全期間・全科目）', [
+      '- その科目に前回触った日から何日空けて解いたか別の正答率：' +
+        data.intervalBins.map(b => `${b.label} ${Math.round(b.accuracy)}%（${b.solved}問）`).join('、')
+    ]);
+  } else omitted.push('前回からの間隔と正答率（記録件数が不足）');
 
   // 模試
   section('## 模試・過去の結果', data.mocks.map(m => {
@@ -13760,6 +13787,9 @@ function formatAiExportMarkdown(data) {
     '',
     '## 分析してほしいこと',
     '1. 「点が伸びやすい領域」と「時間をかけても伸びにくい領域」の切り分け',
+    '   - 正答率が低い科目は、理解が足りないのか、最後に解いてから・前回から間が空いて忘れていただけなのかを、' +
+      '科目表の「最終演習」「前回との間隔」と「前回からの間隔と正答率」を使って区別してください。' +
+      '間が空いたことが原因なら、少しの復習で戻る見込みとして扱ってください',
     '2. 残り日数に対して現実的な優先順位（上位3〜5テーマ）と、その根拠',
     '3. 今やめる・減らすべきこと',
     '4. 直近1週間の日別プラン（時間配分つき）',
