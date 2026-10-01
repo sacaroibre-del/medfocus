@@ -195,6 +195,30 @@ async function main() {
   ok('稼働日ぶんだけノルマができる', tasks.length === 12, tasks.length);
 }
 
+// ---------- まとめて削除 ----------
+{
+  global.confirm = () => true; window.confirm = () => true;
+  const mk = (id, status) => ({ id, status, title: 't' + id, due_date: shift(5), subject_id: '2A', unit: 'q' });
+  store.setItem('medfocus_study_plans', JSON.stringify([mk('a', 'active'), mk('b', 'done'), mk('c', 'archived'), mk('d', 'active')]));
+  store.setItem('medfocus_plan_tasks', JSON.stringify(['a', 'b', 'c', 'd'].map(id => ({ id: 'k' + id, plan_id: id }))));
+  closeAll();
+  let called = 0;
+  W.openBulkDeleteWizard(JSON.parse(store.getItem('medfocus_study_plans')), () => { called++; });
+  const modal = document.querySelector('.modal-overlay');
+  const checked = () => [...modal.querySelectorAll('[data-bd-id]')].filter(b => b.checked).map(b => b.dataset.bdId).sort();
+  eq('初期選択は終わったプランだけ', checked(), ['b', 'c']);
+  modal.querySelector('[data-bd-none]').click();
+  ok('0件では削除ボタンが無効', modal.querySelector('#bd-run').disabled);
+  modal.querySelector('[data-bd-all]').click();
+  eq('全選択', checked(), ['a', 'b', 'c', 'd']);
+  modal.querySelector('[data-bd-finished]').click();
+  modal.querySelector('#bd-run').click();
+  await tick(); await tick();
+  eq('選んだプランだけ消える', JSON.parse(store.getItem('medfocus_study_plans')).map(p => p.id), ['a', 'd']);
+  eq('ノルマも一緒に消える', JSON.parse(store.getItem('medfocus_plan_tasks')).map(t => t.plan_id), ['a', 'd']);
+  ok('モーダルが閉じて再描画が呼ばれる', !document.body.contains(modal) && called === 1);
+}
+
 }
 
 main().then(() => {

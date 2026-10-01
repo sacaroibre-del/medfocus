@@ -15943,18 +15943,32 @@ async function updatePlanStatus(id, status) {
   _planSyncAt = 0;
 }
 
-async function deletePlan(id) {
+// 複数プランをまとめて消す。消せた件数を返す。
+async function deletePlans(ids) {
+  const list = Array.from(new Set((ids || []).filter(Boolean)));
+  if (!list.length) return 0;
   if (!hasDB()) {
-    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).filter(p => p.id !== id));
-    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).filter(t => t.plan_id !== id));
+    const set = new Set(list);
+    setLocalList(PLANS_LS_KEY, getLocalList(PLANS_LS_KEY).filter(p => !set.has(p.id)));
+    setLocalList(PLAN_TASKS_LS_KEY, getLocalList(PLAN_TASKS_LS_KEY).filter(t => !set.has(t.plan_id)));
   } else {
     // plan_tasks は ON DELETE CASCADE で一緒に消える
-    const { error } = await supabase.from('study_plans').delete().eq('id', id);
-    if (error) { showToast(IC.x + ' 削除に失敗しました'); return; }
+    for (let i = 0; i < list.length; i += 200) {
+      const { error } = await supabase.from('study_plans').delete().in('id', list.slice(i, i + 200));
+      if (error) {
+        invalidateCache('study_plans'); invalidateCache('plan_tasks'); _planSyncAt = 0;
+        showToast(IC.x + ' 削除に失敗しました');
+        return i;
+      }
+    }
     invalidateCache('study_plans'); invalidateCache('plan_tasks');
   }
   _planSyncAt = 0;
-  showToast(IC.check + ' プランを削除しました');
+  return list.length;
+}
+
+async function deletePlan(id) {
+  if (await deletePlans([id])) showToast(IC.check + ' プランを削除しました');
 }
 
 // 科目ID（小文字）→ 進行中プランの最大の周回。優先度の「残り時間」を
@@ -17522,6 +17536,71 @@ function planSequenceNoteHTML(sync) {
   </details>`;
 }
 
+// 削除するプランを選んで、まとめて消す。進行中のものを誤って消さないよう、
+// 最初に選ばれているのは終わった（完了・アーカイブ）プランだけにする。
+function openBulkDeleteWizard(plans, onDone) {
+  const order = { active: 0, done: 1, archived: 2 };
+  const list = plans.slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9)
+    || String(a.due_date).localeCompare(String(b.due_date)));
+  const statusLabel = { active: '進行中', done: '完了', archived: 'アーカイブ' };
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay animate-fade-in';
+  modal.style.zIndex = '2000';
+  modal.innerHTML = `
+    <div class="modal-content animate-slide-up" style="max-width:560px;">
+      <div class="modal-header">
+        <div class="modal-title">逆算プランをまとめて削除</div>
+        <button class="modal-close" data-bd-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="plan-bulk-head">
+          <strong>プラン</strong>
+          <span id="bd-count" class="plan-bulk-count"></span>
+          <span class="cal-spacer"></span>
+          <button class="btn-log-action" data-bd-finished>終わったもの</button>
+          <button class="btn-log-action" data-bd-all>全選択</button>
+          <button class="btn-log-action" data-bd-none>全解除</button>
+        </div>
+        <div class="plan-bulk-list">${list.map(p => `<label class="plan-bulk-row">
+          <input type="checkbox" data-bd-id="${esc(p.id)}" data-bd-status="${esc(p.status)}" ${p.status !== 'active' ? 'checked' : ''} />
+          <span class="plan-bulk-name">${esc(p.title)}</span>
+          <span class="plan-bulk-note">${statusLabel[p.status] || ''}</span>
+        </label>`).join('')}</div>
+        <div class="plan-hint" style="margin-bottom:12px;">選んだプランのノルマも一緒に消えます。元に戻せません。</div>
+        <button class="btn btn-primary" id="bd-run" style="width:100%; justify-content:center;"></button>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  const boxes = () => Array.from(modal.querySelectorAll('[data-bd-id]'));
+  const close = () => modal.remove();
+  const refresh = () => {
+    const n = boxes().filter(b => b.checked).length;
+    modal.querySelector('#bd-count').textContent = `${n} / ${list.length}件を選択`;
+    const run = modal.querySelector('#bd-run');
+    run.disabled = n === 0;
+    run.textContent = n ? `${n}件を削除` : '削除するプランを選んでください';
+  };
+  modal.addEventListener('click', e => { if (e.target === modal) close(); });
+  modal.querySelector('[data-bd-close]').onclick = close;
+  modal.querySelector('[data-bd-all]').onclick = () => { boxes().forEach(b => { b.checked = true; }); refresh(); };
+  modal.querySelector('[data-bd-none]').onclick = () => { boxes().forEach(b => { b.checked = false; }); refresh(); };
+  modal.querySelector('[data-bd-finished]').onclick = () => {
+    boxes().forEach(b => { b.checked = b.dataset.bdStatus !== 'active'; }); refresh();
+  };
+  modal.addEventListener('change', refresh);
+  modal.querySelector('#bd-run').onclick = async () => {
+    const picked = boxes().filter(b => b.checked);
+    if (!picked.length) return;
+    const activeN = picked.filter(b => b.dataset.bdStatus === 'active').length;
+    if (!confirm(`${picked.length}件のプランを削除しますか？${activeN ? `\n進行中のプランが${activeN}件含まれています。` : ''}\nノルマも一緒に消えます。`)) return;
+    const n = await deletePlans(picked.map(b => b.dataset.bdId));
+    close();
+    if (n) showToast(IC.check + ` ${n}件のプランを削除しました`);
+    onDone && onDone();
+  };
+  refresh();
+}
+
 // 終わったプランは既定で隠す。進行中だけを見せないと、周回を重ねるほど
 // 一覧が終わったものだらけになって、いま何をやるのかが読めなくなる。
 let showFinishedPlans = false;
@@ -17553,6 +17632,7 @@ async function renderPlans() {
         <div class="cal-spacer"></div>
         ${finished.length ? `<button class="btn btn-secondary" data-plan-show-finished style="padding:6px 14px;font-size:var(--font-size-xs)">${
           showFinishedPlans ? '終わったプランを隠す' : `終わったプラン ${finished.length}件`}</button>` : ''}
+        ${plans.length > 1 ? '<button class="btn btn-secondary" data-plan-bulk-delete style="padding:6px 14px;font-size:var(--font-size-xs)">まとめて削除</button>' : ''}
         <button class="btn btn-secondary" data-plan-bulk style="padding:6px 14px;font-size:var(--font-size-xs)">＋ まとめて追加</button>
         <button class="btn btn-primary" data-plan-new style="padding:6px 14px;font-size:var(--font-size-xs)">＋ 新しいプラン</button>
       </div>
@@ -17564,6 +17644,7 @@ async function renderPlans() {
           : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。科目ぶん一気に並べるなら「＋ まとめて追加」。</div>`)}`;
 
     root.querySelector('[data-plan-new]').onclick = () => openPlanWizard(() => draw(true));
+    root.querySelector('[data-plan-bulk-delete]')?.addEventListener('click', () => openBulkDeleteWizard(plans, () => draw(true)));
     root.querySelector('[data-plan-bulk]').onclick = () => openBulkPlanWizard(() => draw(true), sync.plans);
     root.querySelector('[data-plan-show-finished]')?.addEventListener('click', () => {
       showFinishedPlans = !showFinishedPlans; draw(false);
