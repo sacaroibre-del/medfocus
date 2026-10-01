@@ -34,6 +34,12 @@ function eq(name, actual, expected) {
   if (a === e) { pass++; return; }
   fail++; failures.push(`${name}\n    expected: ${e}\n    actual:   ${a}`);
 }
+const lineOf = (md, prefix) => md.split('\n').find(l => l.startsWith(prefix));
+const OMIT_HEAD = '※次の情報はこのデータに含まれていません：';
+const omittedOf = md => {
+  const l = lineOf(md, OMIT_HEAD);
+  return l ? l.slice(OMIT_HEAD.length).replace(/。分析に必要なものだけ.*$/, '').split('、') : [];
+};
 
 // ---------- ダミーデータ ----------
 // 時刻はローカル時刻で作る（実行環境のタイムゾーンに左右されないように）
@@ -49,19 +55,18 @@ const log = (date, subject, min, extra) => Object.assign({
 
 const dummy = {
   todayKey: TODAY,
-  settings: {
-    examId: '', goal: '本番で正答率85%以上', weekdayHours: 4, holidayHours: 8,
-    constraints: '10/10 定期試験（循環器）\n10/20〜24 臨床実習の見学',
-    confidence: { '2C': 3, '1D': 2, '3D': 4 }
-  },
-  draft: {
-    condition: '睡眠は取れているが、午後に集中が切れやすい',
-    ankiDaily: '200枚', ankiBacklog: '', ankiRetention: '88%',
-    strong: '公衆衛生', weak: '生化学、循環器の心電図', going: ''
-  },
+  settings: { examId: '', goal: '本番で正答率85%以上', weekdayHours: 4, holidayHours: '', constraints: '', confidence: {} },
+  goalHours: { weekdayHours: 3, holidayHours: 5 },
   countdowns: [
     { id: 'c-teiki', name: '循環器 定期試験', exam_date: '2026-10-10' },
     { id: 'c-cbt', name: 'CBT本番', exam_date: '2026-11-20' }
+  ],
+  calendarEvents: [
+    { title: '循環器 定期試験', category: 'exam', start_date: '2026-10-10' },
+    { title: '臨床実習 見学', category: 'deadline', start_date: '2026-10-20', end_date: '2026-10-24' },
+    { title: '飲み会', category: 'other', start_date: '2026-10-05' },            // 種類が違うので出さない
+    { title: '終わった締切', category: 'deadline', start_date: '2026-09-20' },   // 過去
+    { title: 'CBT後の予定', category: 'exam', start_date: '2026-12-01' }         // 試験日より後
   ],
   qb: {
     '2C':   { '1': { done: 200, total: 250, correct: 140 }, '2': { done: 60, total: 250, correct: 48 } },
@@ -69,38 +74,42 @@ const dummy = {
     '1D':   { '1': { done: 80, total: 120, correct: 44 } },
     '8B':   { '1': { done: 20, total: 43, correct: 9 } },             // 基礎医学強化 → 1D に合算
     '3D':   { '1': { done: 150, total: 150, correct: 120 }, '2': { done: 150, total: 150, correct: 135 } },
+    '5A1':  { '1': { done: 30, total: 30, correct: 18 } },            // vol.5 追加問題 → 1行にまとめる
+    '5A2':  { '1': { done: 10, total: 30, correct: 7 } },
+    '5A3':  { '1': { done: 0, total: 30, correct: 0 } },
     '2F':   { '1': { done: 0, total: 180, correct: 0 } }              // 未着手・ログも無い → 表に出さない
   },
   logs: [
     log('2026-10-01', '2C', 90, { questions_solved: 40, questions_correct: 26, focus_level: 4, memo: '心電図の読みで毎回止まる。波形を先に見る' }),
+    log('2026-10-01', 'OSCE', 60, { activity: 'other', memo: '1' }),     // 問題数の無い科目・短いメモ
     log('2026-09-30', '4B2C', 60, { questions_solved: 20, questions_correct: 11, focus_level: 3 }),
+    log('2026-09-29', 'osce', 30, { activity: 'other' }),                 // 大文字小文字違いの同じ科目
     log('2026-09-28', '1D', 120, { questions_solved: 30, questions_correct: 15, focus_level: 2, memo: '代謝経路が混ざる' }),
     log('2026-09-27', '3D', 45, { questions_solved: 25, questions_correct: 22, focus_level: 4 }),
-    log('2026-09-25', 'anki', 30, { activity: 'anki', focus_level: 3 }),
-    log('2026-09-24', 'anki', 25, { activity: 'anki' }),
     log('2026-09-22', '8B', 50, { questions_solved: 20, questions_correct: 9 }),
-    log('2026-09-15', '2C', 80, { questions_solved: 30, questions_correct: 21 }),  // 2週より前
+    log('2026-09-15', '2C', 80, { questions_solved: 30, questions_correct: 21 }),
     log('2026-09-10', '3D', 100),
     log('2026-09-08', '1D', 60)
   ],
   questionRecords: [
     { subject_id: '2C', round: 1, question_no: 12, is_correct: false, confidence: 'high', error_type: 'confuse', recorded_on: '2026-09-29',
       retest_log: [{ date: '2026-09-30', correct: false }, { date: '2026-10-01', correct: true }] },
-    { subject_id: '2C', round: 2, question_no: 12, is_correct: false, confidence: 'mid', error_type: 'confuse', recorded_on: '2026-10-01' },
+    { subject_id: '2c', round: 2, question_no: 12, is_correct: false, confidence: 'mid', error_type: 'confuse', recorded_on: '2026-10-01' },
     { subject_id: '1D', round: 1, question_no: 5, is_correct: false, confidence: 'low', error_type: 'unknown', recorded_on: '2026-09-28' },
     { subject_id: '1D', round: 2, question_no: 5, is_correct: false, confidence: 'low', error_type: 'unknown', recorded_on: '2026-09-28' },
     { subject_id: '8B', round: 1, question_no: 3, is_correct: false, confidence: 'high', error_type: 'unknown', recorded_on: '2026-09-22' },
     { subject_id: '3D', round: 1, question_no: 7, is_correct: false, confidence: 'high', error_type: 'misread', recorded_on: '2026-09-27' },
-    { subject_id: '3D', round: 1, question_no: 8, is_correct: true, confidence: 'high', error_type: null, recorded_on: '2026-09-27' },
-    { subject_id: '2C', round: 1, question_no: 30, is_correct: false, confidence: null, error_type: null, recorded_on: '2026-09-10' }
+    { subject_id: '3D', round: 1, question_no: 8, is_correct: true, confidence: 'high', error_type: null, recorded_on: '2026-09-27' }
   ],
   mockExams: [
+    // 成績表の「解剖学」「組織学」はどちらも 1B として入る → 内訳では1つに合算する
+    { taken_on: '2026-09-20', subject_id: '1B', correct_questions: 5, total_questions: 8, title: '第2回 CBT模試', memo: '基礎が時間切れ' },
+    { taken_on: '2026-09-20', subject_id: '1B', correct_questions: 2, total_questions: 4, title: '第2回 CBT模試', memo: '基礎が時間切れ' },
     { taken_on: '2026-09-20', subject_id: '2C', correct_questions: 18, total_questions: 25, title: '第2回 CBT模試' },
-    { taken_on: '2026-09-20', subject_id: '1D', correct_questions: 12, total_questions: 25, title: '第2回 CBT模試', memo: '基礎が時間切れ' },
     { taken_on: '2026-08-30', subject_id: '3D', correct_questions: 40, total_questions: 50, title: '第1回 CBT模試' }
   ],
   plans: [
-    { id: 'p1', title: '循環器 QB 2周目', unit: 'q', status: 'active' },
+    { id: 'p1', title: '循環器 QB 2周目', unit: 'q', status: 'active', subject_id: '2C', target_round: 2 },
     { id: 'p2', title: '古いプラン', unit: 'q', status: 'archived' }
   ],
   planTasks: [
@@ -112,8 +121,7 @@ const dummy = {
   ],
   sleepLogs: [
     { date: '2026-10-01', wake_up: '07:00', bedtime: '00:30' },
-    { date: '2026-09-30', wake_up: '07:30', bedtime: '23:30' },
-    { date: '2026-08-01', wake_up: '11:00', bedtime: '04:00' }   // 2週より前
+    { date: '2026-09-30', wake_up: '07:30', bedtime: '23:30' }
   ]
 };
 
@@ -121,77 +129,123 @@ const dummy = {
 const data = W.buildAiExportData(dummy);
 
 eq('試験は CBT を含む直近の試験', data.exam, { name: 'CBT本番', date: '2026-11-20', daysLeft: 49 });
-eq('科目は全体正答率の低い順（2F は記録が無いので出ない）', data.subjects.map(r => r.id), ['1D', '2C', '3D']);
+eq('確保時間: 設定があれば設定、空欄は曜日別の目標から', data.hours, { weekday: 4, holiday: 5 });
+eq('予定: 試験・締切だけ・今日から試験日まで', data.events.map(e => e.title), ['循環器 定期試験', '臨床実習 見学']);
 
+eq('科目表は QB の記録がある科目だけ（OSCE・未着手の 2F は出ない）・正答率の低い順',
+   data.subjects.map(r => r.id), ['1D', 'set:5A', '2C', '3D']);
 const c2 = data.subjects.find(r => r.id === '2C');
 eq('2C: 1周目は 4連問 と合算', [c2.r1Done, c2.r1Total, c2.maxRound], [240, 310, 2]);
 eq('2C: 全体正答率（全周回・4連問込み）', [c2.overallPct, c2.done], [70, 300]);
-eq('2C: 2周目以降', [c2.laterPct, c2.laterDone], [80, 60]);
 eq('2C: 直近2週の正答率はログの問題数から（9/15 は範囲外）', [c2.recentPct, c2.recentSolved], [62, 60]);
 eq('2C: 直近2週の学習時間（4連問の時間も元の科目へ）', c2.recentMin, 150);
+eq('2C: 1問あたりの時間（全期間）', Math.round(c2.minPerQ * 100) / 100, Math.round(230 / 90 * 100) / 100);
 eq('2C: 自信ありで不正解（直近2週）', [c2.confRecorded, c2.confHighWrong], [true, 1]);
-eq('2C: 自信度は設定から', c2.confidence, 3);
+const v5 = data.subjects.find(r => r.id === 'set:5A');
+eq('vol.5 追加問題はブロックをまとめて1行', [v5.name, v5.r1Done, v5.r1Total, v5.overallPct],
+   ['vol.5 追加問題（科目横断）', 40, 90, 63]);
 
-const d1 = data.subjects.find(r => r.id === '1D');
-eq('1D: 基礎医学強化(8B)を合算', [d1.r1Done, d1.r1Total, d1.overallPct], [100, 163, 53]);
-eq('1D: 2周目以降が無ければ null', d1.laterPct, null);
-eq('1D: 自信ありで不正解は 8B の分', d1.confHighWrong, 1);
+eq('形式別: 記録のある形式だけ', data.formats.map(f => f.key), ['general', '4B', '5A', 'BM']);
 
-const fmt = Object.fromEntries(data.formats.map(f => [f.key, [f.pct, f.done]]));
-eq('形式別: 4連問', fmt['4B'], [55, 40]);
-eq('形式別: 基礎医学強化', fmt['BM'], [45, 20]);
-eq('形式別: 記録の無い形式は null', fmt['4A'], [null, 0]);
+const lastWeek = data.weeks[3];
+eq('週の内訳: 大文字小文字違いの科目は1つに合算', lastWeek.top.filter(b => /osce/i.test(b.name)).map(b => b.min), [90]);
 
-eq('週は4つ、最後が今日で終わる', data.weeks.map(w => [w.start, w.end]),
-   [['2026-09-05', '2026-09-11'], ['2026-09-12', '2026-09-18'], ['2026-09-19', '2026-09-25'], ['2026-09-26', '2026-10-02']]);
-eq('週の合計', data.weeks.map(w => w.total), [160, 80, 105, 315]);
-
-eq('Anki: 時間は直近2週の anki ログ', [data.anki.recentMin, data.anki.recentDays], [55, 2]);
-eq('模試は日付順・同じ回はまとめる', data.mocks.map(m => [m.date, m.correct, m.total]),
-   [['2026-08-30', 40, 50], ['2026-09-20', 30, 50]]);
-
-eq('繰り返し間違い: 周回と再テストをまたいで数える', data.repeatedWrong.map(q => [q.subjectId, q.no, q.attempts, q.wrong]),
-   [['2C', 12, 4, 3], ['1D', 5, 2, 2]]);
-eq('間違いの種類', [data.errors.counts, data.errors.untyped, data.errors.typedTotal],
-   [{ unknown: 3, confuse: 2, misread: 1 }, 1, 6]);
-
+eq('模試: 同じ科目は科目コードで合算', data.mocks[1].parts.map(p => [p.name, p.correct, p.total]),
+   [['1B 組織・解剖', 7, 12], ['2C 循環器', 18, 25]]);
+eq('模試: 同じメモは1回だけ', data.mocks[1].memos, ['基礎が時間切れ']);
+eq('繰り返し間違い: 周回・再テスト・ID の大文字小文字をまたいで数える',
+   data.repeatedWrong.map(q => [q.subjectId, q.no, q.attempts, q.wrong]), [['2C', 12, 4, 3], ['1D', 5, 2, 2]]);
+eq('振り返りメモ: 3文字未満は除く', data.memos.map(m => m.text), ['心電図の読みで毎回止まる。波形を先に見る', '代謝経路が混ざる']);
 eq('プランの達成は昨日まで・超過は数えない・アーカイブは除く', data.planProgress.map(p => [p.title, p.done, p.target]),
    [['循環器 QB 2周目', 72, 90]]);
-eq('振り返りメモは直近2週の新しい順', data.memos.map(m => m.date), ['2026-10-01', '2026-09-28']);
-eq('集中度の平均', [Math.round(data.focus.avg * 10) / 10, data.focus.count], [3.2, 5]);
-eq('睡眠: 就寝は日付をまたいで平均', [W.aiExportMinToClock(data.sleep.wake), W.aiExportMinToClock(data.sleep.bed)], ['7:15', '0:00']);
+ok('実際の学習時間は昨日までの4週', data.actual && data.actual.totalDays === 28 && data.actual.studyDays === 9, data.actual);
+ok('アプリの優先順位が出る', data.priority.length > 0 && data.priority.length <= 10, data.priority.length);
+ok('優先順位の vol.5 は問題集の名前つき', data.priority.filter(r => /^5A/.test(r.id)).every(r => /^vol\.5 追加問題 ブロック\d$/.test(r.name)),
+   data.priority.map(r => r.name));
 
-// ---------- 文面 ----------
+// ---------- 文面：省略のロジック ----------
 const md = W.formatAiExportMarkdown(data);
-ok('テンプレートの見出しがそろう', ['# 依頼', '## 分析してほしいこと', '## 前提・制約', '## 学習リソースと進め方',
-   '## 科目別データ（出力日：2026-10-02）', '## 直近の学習時間の推移', '## Anki', '## 模試・過去の結果',
-   '## 間違いの傾向', '## PDCAのCheck／Actの記録（直近2週）', '## 自己認識'].every(h => md.includes(h + '\n')));
-ok('試験日と残り日数', md.includes('- 試験：CBT／試験日 2026-11-20（残り 49 日）'));
-ok('予定・制約は1行にまとめる', md.includes('- 試験までの予定・制約：10/10 定期試験（循環器）／10/20〜24 臨床実習の見学'));
-ok('科目の行', md.includes('| 2C 循環器 | 240/310（今2周目） | 70%（300問） | 62%（60問） | 80%（60問） | 2.5時間 | 3 | 1問 |'), md.split('\n').find(l => l.startsWith('| 2C')));
-ok('2周目以降が無い科目は未記録', md.includes('| 1D 生化学 | 100/163（今1周目） | 53%（100問） | 48%（50問） | 未記録 |'), md.split('\n').find(l => l.startsWith('| 1D')));
-ok('問題形式の行', /- 問題形式別の正答率：一般問題 [^\n]*4連問 55%（40問）[^\n]*基礎医学強化 45%（20問）/.test(md));
-ok('Anki の空欄は未記録', md.includes('- 溜まり（未消化）：未記録'));
-ok('時間不足は未記録', md.includes('時間不足 未記録'));
-ok('空の自由記述は行ごと省く', !md.includes('うまくいっていないこと'));
-ok('入力した自己認識は出る', md.includes('- 不安な科目：生化学、循環器の心電図'));
 
-// 記録がまったく無いとき：推測で埋めずに未記録
+ok('「含まれていない情報」の行は「分析してほしいこと」の直後',
+   /5\. データに含まれていない項目[^\n]*\n\n※次の情報はこのデータに含まれていません：[^\n]*分析に必要なものだけ、最初に質問してください。\n/.test(md));
+eq('省いた項目の一覧', omittedOf(md), [
+  '体調・集中力の自己申告',
+  '科目ごとの自信度',
+  '繰り返し間違える問題（記録件数が不足）',
+  '間違いの種類の内訳（記録件数が不足）',
+  '自己認識（得意・不安な科目／最近の手応え）'
+]);
+ok('「未記録」はどこにも出ない', !md.includes('未記録'));
+ok('Anki は出さない', !/anki/i.test(md));
+ok('予定・制約はカレンダーから', md.includes('- 試験までの予定・制約：カレンダー：10/10 循環器 定期試験、10/20〜10/24 臨床実習 見学'));
+ok('確保時間', md.includes('- 確保できる学習時間：平日 4 時間／休日 5 時間'));
+ok('目標は設定から', md.includes('- 目標：本番で正答率85%以上'));
+
+// 空の列は列ごと消える（自信度は誰にも入っていない）
+const header = lineOf(md, '| 科目 |');
+ok('空の列（自信度）は列ごと消える', header && !header.includes('自信度'), header);
+ok('値のある列は残る', header && header.includes('自信ありで不正解(直近2週)') && header.includes('1問あたりの時間'), header);
+const colCount = header.split('|').length;
+const tableRows = md.split('\n').slice(md.split('\n').indexOf(header) + 2);
+ok('すべての行の列数が見出しとそろう', tableRows.slice(0, tableRows.indexOf('')).length === 4 &&
+   tableRows.slice(0, tableRows.indexOf('')).every(l => l.split('|').length === colCount));
+ok('科目表に OSCE は出ない', !/^\| OSCE/im.test(md));
+ok('週の推移には OSCE が出る', /9\/26〜10\/2：[^\n]*OSCE 1\.5時間/.test(md), lineOf(md, '- 9/26'));
+ok('問題形式の行は記録のある形式だけ', lineOf(md, '- 問題形式別の正答率：') ===
+   '- 問題形式別の正答率：一般問題 76%（640問）／4連問 55%（40問）／追加問題 63%（40問）／基礎医学強化 45%（20問）',
+   lineOf(md, '- 問題形式別の正答率：'));
+ok('模試の内訳に 1B は1回', (lineOf(md, '- 2026-09-20') || '').split('1B 組織・解剖').length === 2, lineOf(md, '- 2026-09-20'));
+ok('問題番号の記録が200件未満なら繰り返し間違いの行は出さない', !md.includes('繰り返し間違える問題（上位10）'));
+ok('種類つきの不正解が20件未満なら内訳は出さない', !md.includes('間違いの種類の内訳：'));
+ok('両方省いたら「間違いの傾向」の見出しごと出さない', !md.includes('## 間違いの傾向'));
+ok('短いメモは出さない', !md.includes('OSCE：1'));
+
+// 優先順位は生データより後ろ・指示文が見出しの直前
+const iInstr = md.indexOf('以下はアプリが計算した優先順位です。');
+const iHead = md.indexOf('## アプリが計算した優先順位（上位10科目）');
+ok('優先順位の指示文は見出しの直前', iInstr > 0 && iHead > iInstr && md.slice(iInstr, iHead).split('\n').length === 3);
+ok('優先順位は科目表・推移・模試より後ろ', ['## 科目別データ', '## 直近の学習時間の推移', '## 模試・過去の結果', '## PDCAのCheck']
+   .every(h => md.indexOf(h) >= 0 && md.indexOf(h) < iInstr));
+
+// しきい値を超えたら出す
+const many = [];
+for (let i = 1; i <= 200; i++) {
+  many.push({ subject_id: '2C', round: 1, question_no: i, is_correct: i > 26, confidence: null,
+              error_type: i <= 12 ? 'unknown' : i <= 20 ? 'confuse' : i <= 22 ? 'misread' : null, recorded_on: '2026-09-01' });
+}
+many.push({ subject_id: '2C', round: 2, question_no: 3, is_correct: false, error_type: null, recorded_on: '2026-09-20' });
+const mdMany = W.buildAiExportMarkdown(Object.assign({}, dummy, { questionRecords: many }));
+ok('200件以上なら繰り返し間違いを出す', mdMany.includes('  - 2C 循環器 Q3（2回中2回不正解）'));
+ok('種類つきが20件以上なら内訳を出す', lineOf(mdMany, '- 間違いの種類の内訳：') ===
+   '- 間違いの種類の内訳：知識不足 55%（12問）／うろ覚え・混同 36%（8問）／読み違い 9%（2問）（種類を入れていない不正解 5問は除く）',
+   lineOf(mdMany, '- 間違いの種類の内訳：'));
+ok('内訳を出したら時間不足だけを省いた一覧に載せる', omittedOf(mdMany).includes('間違いのうち時間不足によるもの') &&
+   !omittedOf(mdMany).some(x => x.startsWith('間違いの種類の内訳')) &&
+   !omittedOf(mdMany).some(x => x.startsWith('繰り返し間違える問題')), omittedOf(mdMany));
+
+// 自信度が保存されていれば列が出て、一覧からは消える
+const mdConf = W.buildAiExportMarkdown(Object.assign({}, dummy, { settings: Object.assign({}, dummy.settings, { confidence: { '2C': 3 } }) }));
+ok('自信度があれば列が出る（無い科目は「-」）', (lineOf(mdConf, '| 科目 |') || '').includes('自信度(1-5)') &&
+   / \| 3 \| /.test(lineOf(mdConf, '| 2C 循環器') || '') && / \| - \| /.test(lineOf(mdConf, '| 1D 生化学') || ''),
+   [lineOf(mdConf, '| 2C 循環器'), lineOf(mdConf, '| 1D 生化学')]);
+ok('自信度があれば一覧に載らない', !omittedOf(mdConf).includes('科目ごとの自信度'));
+
+// 記録がまったく無いとき：セクションは出さず、一覧にまとめる
 const empty = W.buildAiExportMarkdown({ todayKey: TODAY });
-ok('空: 試験は未記録', empty.includes('- 試験：CBT／試験日 未記録（残り 未記録）'));
-ok('空: 目標・時間は未記録', empty.includes('- 目標：未記録') && empty.includes('平日 未記録 時間／休日 未記録 時間'));
-const emptyQb = W.buildAiExportMarkdown({ todayKey: TODAY, qb: { '2C': { '1': { done: 10, total: 250, correct: 6 } } } });
-ok('空: ログが無ければ学習時間は未記録', emptyQb.includes('| 2C 循環器 | 10/250（今1周目） | 60%（10問） | 未記録 | 未記録 | 未記録 |'), emptyQb.split('\n').find(l => l.startsWith('| 2C')));
-ok('空: 体調の行は出さない', !empty.includes('体調・集中力の状態'));
-ok('空: 科目表は未記録の1行', empty.includes('| 未記録 | 未記録 | 未記録 | 未記録 | 未記録 | 未記録 | 未記録 | 未記録 |'));
-ok('空: 各セクション未記録', ['## Anki\n- 未記録', '## 模試・過去の結果\n- 未記録',
-   '- 繰り返し間違えるテーマ（上位10）：未記録', '- 間違いの種類の内訳：未記録',
-   '## PDCAのCheck／Actの記録（直近2週）\n- 未記録', '## 自己認識\n- 未記録'].every(s => empty.includes(s)));
+eq('空: 省いた項目の一覧', omittedOf(empty), [
+  '試験日', '目標', '確保できる学習時間', '実際の学習時間', '試験までの予定・制約', '体調・集中力の自己申告',
+  'QBの科目別成績', '学習時間の記録', 'QB正答率の週推移', '模試の結果',
+  '繰り返し間違える問題（記録件数が不足）', '間違いの種類の内訳（記録件数が不足）',
+  'PDCAのCheck／Act（振り返りメモ・プランの達成）', '自己認識（得意・不安な科目／最近の手応え）', 'アプリの優先順位'
+]);
+eq('空: 残る見出しは依頼・分析・学習リソースだけ', empty.split('\n').filter(l => /^#/.test(l)),
+   ['# 依頼', '## 分析してほしいこと', '## 学習リソースと進め方']);
+ok('空: 「未記録」は出ない', !empty.includes('未記録'));
 
 // ---------- 設定 ----------
 eq('設定: 範囲外の値は捨てる', W.normalizeAiExportSettings({ weekdayHours: '30', holidayHours: '6', confidence: { '2C': 6, '1D': '2' } }),
    { examId: '', goal: '', weekdayHours: '', holidayHours: 6, constraints: '', confidence: { '1D': 2 } });
-eq('確保時間の初期値は曜日別の目標から', W.aiExportHoursFromGoals([300, 180, 180, 180, 180, 240, 360]), { weekdayHours: 3, holidayHours: 5.5 });
+eq('確保時間の既定値は曜日別の目標から', W.aiExportHoursFromGoals([300, 180, 180, 180, 180, 240, 360]), { weekdayHours: 3, holidayHours: 5.5 });
 eq('試験を選んでいればそれを使う', W.pickAiExportExam(dummy.countdowns, 'c-teiki', TODAY).name, '循環器 定期試験');
 
 if (process.argv.includes('--print')) console.log('\n' + md);
