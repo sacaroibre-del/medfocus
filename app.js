@@ -953,9 +953,10 @@ function qbCountChip(log){
   if (!Number.isFinite(Number(s)) || Number(s) <= 0) return '';
   const solved = Number(s);
   const correct = Number(log.questions_correct);
-  if (!Number.isFinite(correct)) return `<span class="qb-count-chip">${solved}問</span>`;
+  const tag = isReviewLog(log) ? '復習 ' : '';
+  if (!Number.isFinite(correct)) return `<span class="qb-count-chip">${tag}${solved}問</span>`;
   const pct = (correct / solved) * 100;
-  return `<span class="qb-count-chip" style="--chip-color:${accColor(pct)}">${correct}/${solved}問 ${pct.toFixed(0)}%</span>`;
+  return `<span class="qb-count-chip" style="--chip-color:${accColor(pct)}">${tag}${correct}/${solved}問 ${pct.toFixed(0)}%</span>`;
 }
 
 function activityChip(v){
@@ -1130,8 +1131,14 @@ function qbCountFieldsHtml(suffix){
   //   間違えた ∩ 自信なし → 自信のない誤答
   //   間違えた − 自信なし → 自信があったのに外した（＝翌日と7日後に解き直す）
   //   自信なし − 間違えた → 正解したが自信がなかった
+  // 「間違えた問題のみ」は解き直しの回。解いた数を周回の進捗に足すと
+  // 本を1周していないのに周が進んでしまうので、押したときは進捗を動かさない。
   return `<div class="field qb-count-field" id="qb-count-wrap${suffix}" style="display:${show ? 'block' : 'none'}">
-    <label>解いた問題（任意）</label>
+    <div class="qb-count-head">
+      <label>解いた問題（任意）</label>
+      <button type="button" class="qb-wrong-only-btn" id="qb-wrong-only${suffix}" aria-pressed="false">間違えた問題のみ</button>
+    </div>
+    <div class="qb-wrong-only-note" id="qb-wrong-only-note${suffix}" hidden>間違えた問題だけを解いた回として記録します。周回の進捗（○周目）は進めません。</div>
     <div class="qb-count-row">
       <input type="number" id="qb-solved${suffix}" min="0" step="1" placeholder="0" inputmode="numeric" />
       <span class="qb-count-sep">問中</span>
@@ -1139,6 +1146,11 @@ function qbCountFieldsHtml(suffix){
       <span class="qb-count-sep">問正解</span>
       <span class="qb-count-acc" id="qb-acc${suffix}">—</span>
     </div>
+    <div class="qb-mark-row" id="qb-review-wrong-row${suffix}" hidden>
+      <label class="qb-mark-label">まだ間違えた番号</label>
+      <input type="text" id="qb-review-wrong${suffix}" placeholder="3,7,12-14" />
+    </div>
+    <div class="qb-mark-rows" id="qb-mark-rows${suffix}">
     <div class="qb-mark-row">
       <label class="qb-mark-label">間違えた番号</label>
       <input type="text" id="qb-wrong${suffix}" placeholder="3,7,12-14" />
@@ -1148,13 +1160,21 @@ function qbCountFieldsHtml(suffix){
       <input type="text" id="qb-unsure${suffix}" placeholder="7,20" />
     </div>
     <div class="qb-mark-hint" id="qb-mark-hint${suffix}">どちらも任意です。間違えたのに自信があった問題は、翌日と7日後に「解き直す問題」として出ます。</div>
+    </div>
   </div>`;
 }
 
 // 入力から3種類に振り分ける。番号は解いた直後に書くものなので、
 // 書き方の揺れ（全角・読点・範囲）は parseQuestionNumbers が吸収する。
+function isQbWrongOnly(suffix){
+  const btn = document.getElementById('qb-wrong-only' + suffix);
+  return !!btn && btn.getAttribute('aria-pressed') === 'true';
+}
+
 function readQbMarks(suffix){
   if (selectedActivity !== 'qb') return { wrong: [], unsure: [], any: false };
+  // 番号は周ごとに持つ。間違えた問題のみの回はどの周に付けるか決まらないので記録しない
+  if (isQbWrongOnly(suffix)) return { wrong: [], unsure: [], any: false };
   const wEl = document.getElementById('qb-wrong' + suffix);
   const uEl = document.getElementById('qb-unsure' + suffix);
   const wrong = parseQuestionNumbers(wEl && wEl.value);
@@ -1210,8 +1230,24 @@ function wireQbCountFields(root, suffix){
     const el = (root || document).querySelector('#' + base + suffix);
     if (el) el.addEventListener('input', () => syncQbMarkHint(suffix));
   });
+  const wo = (root || document).querySelector('#qb-wrong-only' + suffix);
+  if (wo) wo.addEventListener('click', () => {
+    wo.setAttribute('aria-pressed', wo.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+    syncQbWrongOnly(suffix);
+  });
   syncQbCountFields(suffix);
   syncQbMarkHint(suffix);
+  syncQbWrongOnly(suffix);
+}
+
+function syncQbWrongOnly(suffix){
+  const on = isQbWrongOnly(suffix);
+  const note = document.getElementById('qb-wrong-only-note' + suffix);
+  const marks = document.getElementById('qb-mark-rows' + suffix);
+  const reviewRow = document.getElementById('qb-review-wrong-row' + suffix);
+  if (note) note.hidden = !on;
+  if (marks) marks.hidden = on;
+  if (reviewRow) reviewRow.hidden = !on;
 }
 
 function syncQbMarkHint(suffix){
@@ -1235,19 +1271,29 @@ function syncQbMarkHint(suffix){
   el.classList.add('is-live');
 }
 
+// 「間違えた問題のみ」の回の情報。オフなら null。
+// まだ間違えた番号は周回の間違いリストには書かず、学習ログにだけ残す（元の周の記録を変えないため）。
+function readQbReview(suffix){
+  if (selectedActivity !== 'qb' || !isQbWrongOnly(suffix)) return null;
+  const el = document.getElementById('qb-review-wrong' + suffix);
+  return { wrongNumbers: parseQuestionNumbers(el && el.value) };
+}
+
 // 保存前に取り出す。未入力なら null（＝記録しない）。
+// review は問題数を入れていなくても返す（復習の回だという印は数と関係なく残す）。
 function readQbCounts(suffix){
   const sEl = document.getElementById('qb-solved' + suffix);
   const cEl = document.getElementById('qb-correct' + suffix);
-  if (selectedActivity !== 'qb' || !sEl || !cEl) return { solved: null, correct: null, error: null };
+  if (selectedActivity !== 'qb' || !sEl || !cEl) return { solved: null, correct: null, review: null, error: null };
+  const review = readQbReview(suffix);
   const sRaw = sEl.value.trim(), cRaw = cEl.value.trim();
-  if (!sRaw && !cRaw) return { solved: null, correct: null, error: null };
+  if (!sRaw && !cRaw) return { solved: null, correct: null, review, error: null };
   const s = parseInt(sRaw, 10);
   const c = cRaw === '' ? 0 : parseInt(cRaw, 10);
   if (!Number.isFinite(s) || s < 0) return { solved: null, correct: null, error: '問題数が正しくありません' };
   if (!Number.isFinite(c) || c < 0) return { solved: null, correct: null, error: '正解数が正しくありません' };
   if (c > s) return { solved: null, correct: null, error: '正解数が問題数を超えています' };
-  return { solved: s, correct: c, error: null };
+  return { solved: s, correct: c, review, error: null };
 }
 
 function activitySegmentHtml(selected){
@@ -1772,6 +1818,7 @@ async function fetchStudyLogsAll() {
       if (bad) { console.error('fetchStudyLogs error:', bad.error.message); return getStale('study_logs') || all; }
       rest.forEach(r => { all = all.concat(r.data || []); });
     }
+    all.forEach(normalizeStudyLogRow);
     setCache('study_logs', all);
     return all;
   });
@@ -1785,7 +1832,7 @@ async function fetchStudyLogsAll() {
 //
 // 反映できなかったときも null を返さず、理由を返す。黙って捨てると
 // 「解いたのに進捗が増えない」だけが残って、原因が画面のどこにも出ない。
-function applyQbSessionToProgress(subjectId, solved, correct) {
+function applyQbSessionToProgress(subjectId, solved, correct, wrongOnly = false) {
   if (!subjectId) return null;
   const s = Number(solved);
   if (!Number.isFinite(s) || s <= 0) return null;
@@ -1794,6 +1841,8 @@ function applyQbSessionToProgress(subjectId, solved, correct) {
   // 自由入力の学習内容はトラッカー上の対応先が無い。触らないが、そのことは返す。
   const sid = subjectIdOfName(subjectId);
   if (!sid) return { subjectId, skipped: 'unknown-subject', changes: [] };
+  // 間違えた問題だけの解き直しは周回に数えない（足すと○周目が先へずれる）
+  if (wrongOnly) return { subjectId: sid, skipped: 'wrong-only', changes: [] };
 
   const qb = getQBProgress();
   const rounds = { ...(qb[sid] || {}) };
@@ -1860,6 +1909,9 @@ function describeQbChanges(result) {
   if (result.skipped === 'unknown-subject') {
     return `${name} は教材進捗トラッカーに無いので、問題数は反映していません`;
   }
+  if (result.skipped === 'wrong-only') {
+    return `${name} 間違えた問題のみの回なので、周回の進捗は動かしていません`;
+  }
   const parts = (result.changes || []).map(c => c.total > 0
     ? `${c.round}周目 ${c.from}→${c.to}/${c.total}問${c.to >= c.total ? '(完了)' : ''}`
     : `${c.round}周目 ${c.from}→${c.to}問`);
@@ -1872,7 +1924,7 @@ function describeQbChanges(result) {
 function showQbToast(result, plain) {
   const note = describeQbChanges(result);
   if (!note) { showToast(IC.check + plain); return; }
-  const warn = !!(result && (result.skipped || result.noTotal));
+  const warn = !!(result && ((result.skipped && result.skipped !== 'wrong-only') || result.noTotal));
   showToast((warn ? IC.warn : IC.check) + ' 記録しました（' + note + '）', warn ? 7000 : 4000);
 }
 
@@ -1885,6 +1937,39 @@ function isMissingVideoEditionColumn(error) {
   const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
   return /video_edition/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
 }
+// is_review / review_wrong_numbers は add_review_flag.sql で足す列。考え方は video_edition と同じ。
+let reviewColumnsMissing = false;
+function isMissingReviewColumn(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return /(is_review|review_wrong_numbers)/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
+
+// 保存する復習の列。review は readQbReview の戻り値（オフなら null）。
+function reviewLogFields(review) {
+  const nums = review && Array.isArray(review.wrongNumbers) ? review.wrongNumbers : [];
+  return { is_review: !!review, review_wrong_numbers: review && nums.length ? nums.slice() : null };
+}
+
+// 読み込んだ学習ログの復習の列をそろえる。列を足す前の行・列が無い環境の行は
+// is_review = false（通常の回）、review_wrong_numbers = null として読む。
+function normalizeStudyLogRow(l) {
+  if (!l || typeof l !== 'object') return l;
+  l.is_review = l.is_review === true;
+  const nums = Array.isArray(l.review_wrong_numbers)
+    ? l.review_wrong_numbers.map(Number).filter(n => Number.isInteger(n) && n > 0) : [];
+  l.review_wrong_numbers = nums.length ? nums : null;
+  return l;
+}
+function isReviewLog(l) { return !!(l && l.is_review === true); }
+
+// 正答率を出す集計に渡すログ。復習の回は間違えた問題だけを解くので、混ぜると
+// 正答率が実力より低く出る。時間は残し、問題数と正解数だけを外す。
+function accuracyLogsOf(logs) {
+  return (logs || []).some(isReviewLog)
+    ? logs.map(l => isReviewLog(l) ? Object.assign({}, l, { questions_solved: null, questions_correct: null }) : l)
+    : logs;
+}
+
 function stripVideoEdition(payload) {
   const out = { ...payload };
   delete out.video_edition;
@@ -1928,14 +2013,15 @@ async function refreshTodaySnapshot() {
   saveDailySnapshot(dateKey, goalForToday, todayTotal);
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null) {
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null, qbReview = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
   const applyQb = () => {
     if (activity !== 'qb') return null;
-    const res = applyQbSessionToProgress(subjectId, questionsSolved, questionsCorrect);
+    const res = applyQbSessionToProgress(subjectId, questionsSolved, questionsCorrect, !!qbReview);
     // 番号の保存はログの保存を待たせない（失敗しても学習記録は残す）
-    if (res && qbMarks && qbMarks.any) addSessionMarks(res, qbMarks);
+    // 復習の回は周回の間違いリストに書かない。まだ間違えた番号は学習ログ側に入れている
+    if (res && !qbReview && qbMarks && qbMarks.any) addSessionMarks(res, qbMarks);
     return res;
   };
 
@@ -1966,11 +2052,24 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
       payload.video_edition = videoEdition;
     }
     if (breaks && breaks.length > 0) payload.breaks = JSON.stringify(breaks);
+    if (!reviewColumnsMissing) Object.assign(payload, reviewLogFields(qbReview));
     let { error } = await supabase.from('study_logs').insert([payload]);
-    if (error && isMissingVideoEditionColumn(error)) {
-      console.warn('study_logs.video_edition が未作成のため、版なしで保存します（add_video_editions.sql を実行してください）');
-      videoEditionColumnMissing = true;
-      ({ error } = await supabase.from('study_logs').insert([stripVideoEdition(payload)]));
+    // 足していない列があれば、その列を落としてやり直す（列は2種類あるので最大2回）
+    for (let i = 0; i < 2 && error; i++) {
+      if (isMissingVideoEditionColumn(error) && 'video_edition' in payload) {
+        console.warn('study_logs.video_edition が未作成のため、版なしで保存します（add_video_editions.sql を実行してください）');
+        videoEditionColumnMissing = true;
+        delete payload.video_edition;
+      } else if (isMissingReviewColumn(error) && 'is_review' in payload) {
+        console.warn('study_logs.is_review が未作成のため、復習の印なしで保存します（add_review_flag.sql を実行してください）');
+        reviewColumnsMissing = true;
+        delete payload.is_review; delete payload.review_wrong_numbers;
+      } else break;
+      ({ error } = await supabase.from('study_logs').insert([payload]));
+    }
+    // 印を落として保存したら、通常の回として集計に混ざることを知らせる
+    if (!error && qbReview && !('is_review' in payload)) {
+      showToast(IC.warn + ' 復習の印を保存する列がまだありません。add_review_flag.sql を実行するまで、この回は通常の回として集計されます', 7000);
     }
     if (error) {
       console.error('Supabase save error:', error);
@@ -2714,7 +2813,7 @@ function finishSession(manualStop = false) {
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
         const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks, qb.review);
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -5802,7 +5901,7 @@ async function renderStudy(){
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
       const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''));
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''), qb.review);
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
@@ -6854,6 +6953,8 @@ function recentQuestionPace(allLogs, snapshotDeltas, days) {
 
   let logged = 0, hasLogged = false;
   (allLogs || []).forEach(l => {
+    // 復習の回は周回を進めないので、周回の残りと比べるペースにも入れない
+    if (isReviewLog(l)) return;
     const n = Number(l.questions_solved);
     if (!Number.isFinite(n) || n <= 0) return;
     if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) < sinceKey) return;
@@ -7045,6 +7146,38 @@ function volRoundAggregate(qb, video, cat) {
     registeredTotal: volTotal,
     masterTotal: Number.isFinite(cat.masterTotal) ? cat.masterTotal : null
   };
+}
+
+// 教材ごとの復習（間違えた問題のみ）の累計。study_logs の is_review = true から数えるだけで、
+// 周回の進捗（qb_progress）や周回ごとの間違いリスト（qb_question_records）には触らない。
+// 科目は保存時（applyQbSessionToProgress）と同じく subjectIdOfName で引く。
+// 正答率は正解数が入っている回だけで出す（正解数なしの回まで分母に入れると低く出る）。
+function buildReviewTotals(logs) {
+  const out = {};
+  (logs || []).forEach(l => {
+    if (!isReviewLog(l)) return;
+    const sid = subjectIdOfName(l.subject_name);
+    const solved = Number(l.questions_solved);
+    if (!sid || !Number.isFinite(solved) || solved <= 0) return;
+    const t = out[sid] || (out[sid] = { solved: 0, sessions: 0, accSolved: 0, correct: 0 });
+    t.solved += solved; t.sessions++;
+    const c = Number(l.questions_correct);
+    if (l.questions_correct !== null && l.questions_correct !== undefined && Number.isFinite(c) && c >= 0) {
+      t.accSolved += solved; t.correct += Math.min(c, solved);
+    }
+  });
+  Object.values(out).forEach(t => { t.accPct = t.accSolved > 0 ? Math.round(t.correct / t.accSolved * 100) : null; });
+  return out;
+}
+
+// 教材ごとの「復習」の行。復習のログが無い教材では出さない。
+function qbReviewRowHtml(sid, totals) {
+  const t = totals && totals[sid];
+  if (!t || t.solved <= 0) return '';
+  return `<div class="qb-review-row" data-review-row="${sid}" title="間違えた問題のみの回（${t.sessions}回）。周回の進捗には数えていません">
+    <span class="qb-review-tag">復習</span>
+    <span class="qb-review-text">累計${t.solved}問${t.accPct !== null ? `（正答率${t.accPct}%）` : ''}</span>
+  </div>`;
 }
 
 function roundBarColor(pct) { return pct >= 80 ? 'var(--color-success)' : pct >= 50 ? 'var(--color-warning)' : 'var(--color-text-secondary)'; }
@@ -7259,6 +7392,7 @@ function videoTrackerBlockHtml(sid, raw) {
 }
 
 async function renderQBProgress(){
+  let reviewTotals = {};
   // 互いに関係の無い取得なので同時に投げる（直列だと往復が積み上がる）
   await Promise.all([
     loadQBFromSupabase(),
@@ -7266,7 +7400,10 @@ async function renderQBProgress(){
     fetchQuestionRecords().then(r => { _qRecords = r; })
                           .catch(e => console.warn('question records:', e)),
     // 模試の入口をこのページに置くので、記録済みの件数を出すために読んでおく
-    fetchMockExams().catch(e => console.warn('mock exams:', e))
+    fetchMockExams().catch(e => console.warn('mock exams:', e)),
+    // 復習（間違えた問題のみ）の累計。周回とは別枠で出すので学習ログから読むだけ
+    fetchStudyLogs().then(l => { reviewTotals = buildReviewTotals(l); })
+                    .catch(e => console.warn('review totals:', e))
   ]);
   const ct=document.getElementById('page-container');
   const qb=getQBProgress();
@@ -7403,6 +7540,7 @@ async function renderQBProgress(){
                   ${qbMarksHTML(s.id, rk)}
                 </div>`;
               }).join(''):'<div style="font-size:0.75rem;color:var(--color-text-tertiary);padding:4px 8px;">未登録</div>'}
+              ${qbReviewRowHtml(s.id, reviewTotals)}
             </div>`;
           }).join('')}
           </div>
@@ -8265,8 +8403,12 @@ function buildBreakStats(logs) {
 const QB_MIN_SESSIONS = 3;   // これ未満のセッション数の区分は判定に使わない
 const QB_MIN_SOLVED = 20;    // 解答数がこれ未満の区分も参考値どまり
 
-function qbSessionsOf(logs) {
+// 既定では通常の回だけ。復習の回（間違えた問題のみ）は正答率が低く出るので混ぜない。
+// { review: true } で復習の回だけを返す。
+function qbSessionsOf(logs, opts = {}) {
+  const wantReview = !!opts.review;
   return logs.map(l => {
+    if (isReviewLog(l) !== wantReview) return null;
     const solved = Number(l.questions_solved);
     const correct = Number(l.questions_correct);
     if (!Number.isFinite(solved) || solved <= 0) return null;
@@ -8450,7 +8592,9 @@ const UNIT_SUBJECT_MIN_QUESTIONS = 20;   // この問数を超えたら科目別
 function buildUnitCostBySubject(logs) {
   const acc = {};
   (logs || []).forEach(l => {
-    if (!l || l.activity !== 'qb') return;
+    // 復習の回は数えない（buildUnitCost と同じ）。通常の回が足りない科目は has=false になり、
+    // minutesPerQuestionFor が全体の実測 → 仮の単価へ落とす
+    if (!l || l.activity !== 'qb' || isReviewLog(l)) return;
     const qs = Number(l.questions_solved), min = Number(l.duration_minutes) || 0;
     if (!Number.isFinite(qs) || qs <= 0 || min <= 0) return;
     const sid = subjectIdOfName(l.subject_name) || String(l.subject_name || '').toUpperCase();
@@ -8867,7 +9011,8 @@ function buildUnitCost(logs) {
       const b = byEdition[logVideoEdition(l)];
       if (b) { b.min += m; b.count += vw; b.sessions++; }
     }
-    if (l.activity === 'qb' && Number.isFinite(qs) && qs > 0) { qMin += m; qCount += qs; qSessions++; }
+    // 1問あたりの時間は通常の回だけで測る。復習（間違えた問題のみ）の回は1問の重さが違う
+    if (l.activity === 'qb' && !isReviewLog(l) && Number.isFinite(qs) && qs > 0) { qMin += m; qCount += qs; qSessions++; }
   });
 
   const video = {};
@@ -9196,8 +9341,10 @@ function setAccTrendFormat(v) { try { localStorage.setItem(ACC_TREND_FORMAT_KEY,
 
 // format: 'all'（既定）または形式の key。その形式の問題を解いたセッションだけで推移を出す。
 function buildAccuracyTrend(logs, logicalToday, weeks = ACC_TREND_WEEKS, format = 'all') {
-  const items = qbSessionsOf(logs)
-    .filter(x => format === 'all' || questionFormatOf(x.log.subject_name) === format);
+  const byFormat = x => format === 'all' || questionFormatOf(x.log.subject_name) === format;
+  const items = qbSessionsOf(logs).filter(byFormat);
+  // 復習の回（間違えた問題のみ）は別に数えて「復習正答率」として並べる
+  const reviewItems = qbSessionsOf(logs, { review: true }).filter(byFormat);
   const buckets = [];
   for (let i = weeks - 1; i >= 0; i--) {
     const end = new Date(logicalToday); end.setDate(end.getDate() - i * 7);
@@ -9205,19 +9352,35 @@ function buildAccuracyTrend(logs, logicalToday, weeks = ACC_TREND_WEEKS, format 
     buckets.push({
       startKey: toLocalDateKey(start), endKey: toLocalDateKey(end),
       label: `${start.getMonth() + 1}/${start.getDate()}`,
-      solved: 0, correct: 0, sessions: 0
+      solved: 0, correct: 0, sessions: 0,
+      reviewSolved: 0, reviewCorrect: 0, reviewSessions: 0
     });
   }
-  items.forEach(x => {
+  const bucketOf = x => {
     const k = toLocalDateKey(getLogicalDate(x.start));
-    const b = buckets.find(v => k >= v.startKey && k <= v.endKey);
+    return buckets.find(v => k >= v.startKey && k <= v.endKey);
+  };
+  items.forEach(x => {
+    const b = bucketOf(x);
     if (!b) return;
     b.solved += x.solved; b.correct += x.correct; b.sessions++;
+  });
+  reviewItems.forEach(x => {
+    const b = bucketOf(x);
+    if (!b) return;
+    b.reviewSolved += x.solved; b.reviewCorrect += x.correct; b.reviewSessions++;
   });
   buckets.forEach(b => {
     b.accuracy = b.solved > 0 ? b.correct / b.solved * 100 : null;
     b.reliable = b.solved >= QB_MIN_SOLVED;
+    b.reviewAccuracy = b.reviewSolved > 0 ? b.reviewCorrect / b.reviewSolved * 100 : null;
   });
+  const rvSolved = buckets.reduce((a, b) => a + b.reviewSolved, 0);
+  const rvCorrect = buckets.reduce((a, b) => a + b.reviewCorrect, 0);
+  const review = rvSolved > 0
+    ? { solved: rvSolved, correct: rvCorrect, accuracy: rvCorrect / rvSolved * 100,
+        sessions: buckets.reduce((a, b) => a + b.reviewSessions, 0) }
+    : null;
 
   const filled = buckets.filter(b => b.reliable);
   // 前半と後半の通算で比べる。週ごとの上下に振り回されないため。
@@ -9232,7 +9395,7 @@ function buildAccuracyTrend(logs, logicalToday, weeks = ACC_TREND_WEEKS, format 
     const first = acc(filled.slice(0, mid)), last = acc(filled.slice(mid));
     if (first !== null && last !== null) trend = { first, last, diff: last - first };
   }
-  return { hasData: filled.length >= 2, buckets, filled, trend };
+  return { hasData: filled.length >= 2, buckets, filled, trend, review };
 }
 
 // ==================== 弱点科目にあと何時間 ====================
@@ -10055,8 +10218,11 @@ function reviewDayKey(l) {
 
 // 1日ぶんのログを合計する。集中度は時間で重みづけする
 // （5分のログと3時間のログを同じ1票にすると、短いログに引っ張られるため）。
+// 問題数は復習（間違えた問題のみ）の回も含めた合計にし、内訳として reviewSolved を持つ。
+// 正答率は通常の回だけで出し、復習の回は reviewAccuracy として別に出す（インサイトと同じ扱い）。
 function aggregateReviewDay(dayLogs) {
   let min = 0, focusMin = 0, focusSum = 0, solved = 0, correct = 0, correctMin = 0, videos = 0;
+  let reviewSolved = 0, reviewCorrect = 0, reviewCorrectMin = 0;
   dayLogs.forEach(l => {
     const m = l.duration_minutes || 0;
     min += m;
@@ -10065,8 +10231,12 @@ function aggregateReviewDay(dayLogs) {
     if (Number.isFinite(s) && s > 0) {
       solved += s;
       const c = Number(l.questions_correct);
+      const hasC = l.questions_correct !== null && l.questions_correct !== undefined && Number.isFinite(c);
       // 正答数が入っていないログは正答率の母数からも外す
-      if (Number.isFinite(c)) { correct += c; correctMin += s; }
+      if (isReviewLog(l)) {
+        reviewSolved += s;
+        if (hasC) { reviewCorrect += c; reviewCorrectMin += s; }
+      } else if (hasC) { correct += c; correctMin += s; }
     }
     const v = Number(l.videos_watched);
     if (Number.isFinite(v) && v > 0) videos += v;
@@ -10075,7 +10245,9 @@ function aggregateReviewDay(dayLogs) {
     min, sessions: dayLogs.length, solved, correct, videos,
     accSolved: correctMin,
     focus: focusMin > 0 ? focusSum / focusMin : null,
-    accuracy: correctMin > 0 ? (correct / correctMin) * 100 : null
+    accuracy: correctMin > 0 ? (correct / correctMin) * 100 : null,
+    reviewSolved, reviewCorrect, reviewAccSolved: reviewCorrectMin,
+    reviewAccuracy: reviewCorrectMin > 0 ? (reviewCorrect / reviewCorrectMin) * 100 : null
   };
 }
 
@@ -10176,7 +10348,9 @@ function buildDailyReview(allLogs, targetDate, baselineDays = REVIEW_BASELINE_DA
     achievedPct: goalMin > 0 ? Math.round((agg.min / goalMin) * 100) : null,
     sessionCount: agg.sessions,
     focus: agg.focus,
-    qb: { solved: agg.solved, correct: agg.correct, accSolved: agg.accSolved, accuracy: agg.accuracy },
+    qb: { solved: agg.solved, correct: agg.correct, accSolved: agg.accSolved, accuracy: agg.accuracy,
+          reviewSolved: agg.reviewSolved, reviewCorrect: agg.reviewCorrect,
+          reviewAccSolved: agg.reviewAccSolved, reviewAccuracy: agg.reviewAccuracy },
     videos: agg.videos,
     activities, subjects,
     firstStart: ordered.length ? ordered[0].start : null,
@@ -10266,12 +10440,17 @@ function dailyReviewBodyHTML(rv, colorOf) {
         ${rv.qb.solved > 0 ? `
           <div class="review-output-item">
             <span class="review-output-value">${rv.qb.solved.toLocaleString()}<span class="acc-unit">問</span></span>
-            <span class="review-output-label">解いた問題数${cmp && b.avgSolved ? ` <span class="review-output-base">直近平均 ${Math.round(b.avgSolved)}問/日</span>` : ''}</span>
+            <span class="review-output-label">解いた問題数${rv.qb.reviewSolved > 0 ? `（うち復習${rv.qb.reviewSolved.toLocaleString()}問）` : ''}${cmp && b.avgSolved ? ` <span class="review-output-base">直近平均 ${Math.round(b.avgSolved)}問/日</span>` : ''}</span>
           </div>
           ${rv.qb.accuracy !== null ? `
             <div class="review-output-item">
               <span class="review-output-value" style="color:${accColor(rv.qb.accuracy)}">${rv.qb.accuracy.toFixed(0)}<span class="acc-unit">%</span></span>
               <span class="review-output-label">正答率（${rv.qb.correct}/${rv.qb.accSolved}問）${cmp ? reviewDeltaHTML(rv.qb.accuracy, b.accuracy, v => `${v.toFixed(0)}pt`, { eps: 1 }) : ''}</span>
+            </div>` : ''}
+          ${rv.qb.reviewAccuracy !== null ? `
+            <div class="review-output-item is-review">
+              <span class="review-output-value">${rv.qb.reviewAccuracy.toFixed(0)}<span class="acc-unit">%</span></span>
+              <span class="review-output-label">復習正答率（${rv.qb.reviewCorrect}/${rv.qb.reviewAccSolved}問・間違えた問題のみ）</span>
             </div>` : ''}
         ` : ''}
         ${rv.videos > 0 ? `
@@ -10987,8 +11166,10 @@ async function renderInsights(){
   const io = buildIOBalance(logs);
   const breakStats = buildBreakStats(logs);
   const intraStats = buildIntraSessionStats(logs);
-  const qbQuality = buildQbQualityStats(logs, breakStats.breakBeforeById);
-  const reviewStats = buildReviewIntervalStats(logs, logicalToday);
+  // 正答率を出す集計には復習の回の問題数を渡さない（accuracyLogsOf を参照）
+  const accLogs = accuracyLogsOf(logs);
+  const qbQuality = buildQbQualityStats(accLogs, breakStats.breakBeforeById);
+  const reviewStats = buildReviewIntervalStats(accLogs, logicalToday);
   const roundGain = buildRoundGainByGap(getQBProgress(), reviewStats);
   // 間隔選びに実際に使っている指標。旧指標（直後の正答率）とは別物なので別表にする
   const laterGain = buildLaterRoundGain(getQBProgress(), reviewStats, _mockExams);
@@ -11003,12 +11184,12 @@ async function renderInsights(){
   const accTrend = buildAccuracyTrend(logs, logicalToday, ACC_TREND_WEEKS, accTrendFormat);
   const subjectBudget = buildSubjectBudget(getQBProgress(), unitCost, ioTargetRound);
   const comeback = buildComebackStats(allLogs);
-  const videoLag = buildVideoQbLag(logs, logicalToday);
-  const subjectMix = buildSubjectMix(logs);
+  const videoLag = buildVideoQbLag(accLogs, logicalToday);
+  const subjectMix = buildSubjectMix(accLogs);
   // 主軸でない版を見た時間。フィルタに関係なく直近30日で見る
   const supplemental = buildSupplementalVideo(allLogs, logicalToday);
-  const sameDayMix = buildSameDayMix(logs);
-  const sessionLen = buildSessionLengthStats(logs);
+  const sameDayMix = buildSameDayMix(accLogs);
+  const sessionLen = buildSessionLengthStats(accLogs);
   const allNighter = buildAllNighterImpact(getSleepLogs(), allLogs, logicalToday);
   // 母数が小さいとセッション数回でズレ判定がひっくり返るので、下限を切る
   const ioThin = io.core < IO_MIN_CORE_MIN;
@@ -11952,7 +12133,7 @@ function insightsQbProgressHTML(d) {
   const trendFmtLabel = accTrendFormat === 'all' ? '' : questionFormatDef(accTrendFormat).label;
   return `
   <!-- Section O: 正答率の推移 -->
-  ${accTrend.hasData || accTrendFormat !== 'all' ? `
+  ${accTrend.hasData || accTrend.review || accTrendFormat !== 'all' ? `
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.126s">
     <div class="section-header">
       <div class="section-icon-wrap" style="color:var(--color-accent-teal)">${insightIcons.trend}</div>
@@ -11979,12 +12160,15 @@ function insightsQbProgressHTML(d) {
           <div class="acc-trend-val">${b.accuracy !== null ? b.accuracy.toFixed(0) + '%' : ''}</div>
           <div class="acc-trend-bar-wrap">
             <div class="acc-trend-bar ${b.reliable ? '' : 'is-thin'}" style="height:${b.accuracy === null ? 0 : Math.max(2, b.accuracy)}%"></div>
+            ${b.reviewAccuracy !== null ? `<div class="acc-trend-review-mark" style="bottom:${b.reviewAccuracy}%" title="復習正答率 ${b.reviewAccuracy.toFixed(0)}%（${b.reviewSolved}問）"></div>` : ''}
           </div>
+          ${accTrend.review ? `<div class="acc-trend-review-val">${b.reviewAccuracy !== null ? b.reviewAccuracy.toFixed(0) + '%' : ''}</div>` : ''}
           <div class="acc-trend-label">${b.label}</div>
         </div>
       `).join('')}
     </div>
-    <div class="break-note">${trendFmtLabel ? `${trendFmtLabel}のセッションだけで出しています。` : ''}科目で絞るときは、ページ上部の科目フィルタを使ってください（4連問・多肢選択も元の科目に含まれます）。各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
+    ${accTrend.review ? `<div class="acc-trend-legend"><span class="acc-trend-legend-bar"></span>通常の回の正答率　<span class="acc-trend-legend-review"></span>復習正答率（間違えた問題のみの回）：期間通算 ${accTrend.review.accuracy.toFixed(0)}%（${accTrend.review.correct}/${accTrend.review.solved}問）</div>` : ''}
+    <div class="break-note">${trendFmtLabel ? `${trendFmtLabel}のセッションだけで出しています。` : ''}棒は通常の回だけで出しています（間違えた問題のみの回は正答率が低く出るので、復習正答率として別に表示します）。科目で絞るときは、ページ上部の科目フィルタを使ってください（4連問・多肢選択も元の科目に含まれます）。各週の「その週に解いた問題の通算正答率」です。解答数が${QB_MIN_SOLVED}問に満たない週は薄く表示し、前半／後半の比較からも外しています。</div>
   </div>
   ` : ''}
 
@@ -13316,7 +13500,9 @@ function buildAiExportData(input) {
   const rowOf = id => rows[id] || (rows[id] = {
     id, name: aiExportRowName(id), qbRecorded: false,
     r1Done: 0, r1Total: 0, maxRound: 0, done: 0, correct: 0, laterDone: 0, laterCorrect: 0,
-    recentSolved: 0, recentCorrect: 0, recentMin: 0, qbMin: 0, qbQuestions: 0,
+    recentSolved: 0, recentCorrect: 0, recentMin: 0,
+    // 直近の問題数は復習の回も含めた合計。正答率は通常の回だけ（recentAccSolved が分母）
+    recentReviewSolved: 0, recentAccSolved: 0, recentReviewCorrect: 0, qbMin: 0, qbQuestions: 0,
     qbDays: {}, confRecorded: false, confHighWrong: 0
   });
   const formatStats = {};
@@ -13351,7 +13537,8 @@ function buildAiExportData(input) {
     const min = Number(l.duration_minutes) || 0;
     if (hasQ) {
       row.qbRecorded = true;
-      if (min > 0) { row.qbMin += min; row.qbQuestions += solved; }
+      // 1問あたりの時間は通常の回だけ（インサイト・プランと同じ）
+      if (min > 0 && !isReviewLog(l)) { row.qbMin += min; row.qbQuestions += solved; }
       // 最終演習の日付は問題形式ごとに分けて持つ。1D の行に 8B（基礎医学強化）や
       // 4連問の日付が混ざると、「生化学は4日前に解いた」のように読めてしまうため
       const day = aiExportLogDay(l);
@@ -13360,7 +13547,11 @@ function buildAiExportData(input) {
     }
     if (!inWindow(aiExportLogDay(l))) return;
     row.recentMin += min;
-    if (hasQ) { row.recentSolved += solved; row.recentCorrect += Math.min(solved, correct); }
+    if (hasQ) {
+      row.recentSolved += solved;
+      if (isReviewLog(l)) { row.recentReviewSolved += solved; row.recentReviewCorrect += Math.min(solved, correct); }
+      else { row.recentAccSolved += solved; row.recentCorrect += Math.min(solved, correct); }
+    }
   });
   records.forEach(r => {
     const base = aiExportBaseId(r.subject_id);
@@ -13391,7 +13582,8 @@ function buildAiExportData(input) {
   });
   const subjects = Object.values(rows).filter(r => r.qbRecorded).map(r => Object.assign(r, gapInfo(r), {
     overallPct: aiExportPct(r.correct, r.done),
-    recentPct: aiExportPct(r.recentCorrect, r.recentSolved),
+    recentPct: aiExportPct(r.recentCorrect, r.recentAccSolved),
+    recentReviewPct: aiExportPct(r.recentReviewCorrect, r.recentReviewSolved),
     laterPct: aiExportPct(r.laterCorrect, r.laterDone),
     // 1問あたりの時間は、インサイトと同じく問数が足りた科目だけ
     minPerQ: r.qbQuestions >= UNIT_SUBJECT_MIN_QUESTIONS ? r.qbMin / r.qbQuestions : null,
@@ -13436,13 +13628,13 @@ function buildAiExportData(input) {
   // --- 正答率の週推移・解き方の傾向（インサイトと同じ集計） ---
   const todayDate = parseDateKey(todayKey);
   const accTrend = todayDate ? buildAccuracyTrend(logs, todayDate, 6) : null;
-  const quality = buildQbQualityStats(logs, {});
+  const quality = buildQbQualityStats(accuracyLogsOf(logs), {});
   const unitCost = buildUnitCost(logs);
   const reliableBins = list => (list || []).filter(b => b.reliable && b.accuracy !== null);
   // 前回その科目に触ってから何日空けたかと、その日の正答率（インサイトの「復習間隔」と同じ集計）
   // 科目名に問題形式を付けて渡す。そのままだと vol.4・vol.6〜8 が元の科目に寄せられ、
   // 「生化学を4日ぶりに解いた」の中に基礎医学強化の日が混ざって間隔が短く出る
-  const intervalLogs = logs.map(l => Object.assign({}, l, {
+  const intervalLogs = accuracyLogsOf(logs).map(l => Object.assign({}, l, {
     subject_name: `${questionFormatOf(l.subject_name) || QUESTION_FORMAT_UNCLASSIFIED}:${aiExportSubjectKey(l.subject_name) || ''}`
   }));
   const interval = todayDate ? buildReviewIntervalStats(intervalLogs, todayDate) : null;
@@ -13570,6 +13762,9 @@ function buildAiExportData(input) {
         activity: ACTIVITY_MAP[l.activity] ? ACTIVITY_MAP[l.activity].l : null,
         min: Number(l.duration_minutes) || 0,
         solved: hasQ ? solved : null, correct: hasQ ? Math.min(solved, correct) : null,
+        // 間違えた問題のみの回。まだ間違えた番号はこの回にだけ残している
+        isReview: isReviewLog(l),
+        reviewWrong: Array.isArray(l.review_wrong_numbers) ? l.review_wrong_numbers.slice() : [],
         focus: Number(l.focus_level) > 0 ? Number(l.focus_level) : null,
         memo: memo.replace(/\s/g, '').length >= AI_EXPORT_MIN_MEMO_CHARS
           ? (memo.length > 120 ? memo.slice(0, 120) + '…' : memo) : ''
@@ -13589,13 +13784,17 @@ function buildAiExportData(input) {
   records.forEach(r => (Array.isArray(r && r.retest_log) ? r.retest_log : []).forEach(e => {
     if (e && String(e.date || '').slice(0, 10) === todayKey) todayRetests.push(e);
   }));
-  const todayQ = todaySessions.filter(x => x.solved !== null);
+  // 合計の正答率は通常の回だけ。復習の回は別に出す（インサイトと同じ扱い）
+  const todayQ = todaySessions.filter(x => x.solved !== null && !x.isReview);
+  const todayRQ = todaySessions.filter(x => x.solved !== null && x.isReview);
   const today = (todaySessions.length || todayTasks.length || todayRecords.length || todayRetests.length) ? {
     sessions: todaySessions,
     totalMin: todaySessions.reduce((sum, x) => sum + x.min, 0),
     goalMin: Number(inp.todayGoalMin) > 0 ? Number(inp.todayGoalMin) : null,
     solved: todayQ.reduce((sum, x) => sum + x.solved, 0),
     correct: todayQ.reduce((sum, x) => sum + x.correct, 0),
+    reviewSolved: todayRQ.reduce((sum, x) => sum + x.solved, 0),
+    reviewCorrect: todayRQ.reduce((sum, x) => sum + x.correct, 0),
     tasks: todayTasks,
     records: todayRecords.length,
     wrong: todayRecords.filter(r => !r.is_correct)
@@ -13658,7 +13857,10 @@ function aiExportSubjectTable(subjects) {
     ['科目', r => r.name],
     ['QB解答数/総数', r => (r.r1Total > 0 ? `${r.r1Done}/${r.r1Total}（${round(r)}）` : null)],
     ['全体正答率', r => aiExportPctText(r.overallPct, r.done)],
-    ['直近2週の正答率', r => aiExportPctText(r.recentPct, r.recentSolved)],
+    ['直近2週の問題数', r => (r.recentSolved > 0
+      ? `${r.recentSolved}問${r.recentReviewSolved > 0 ? `（うち復習${r.recentReviewSolved}問）` : ''}` : null)],
+    ['直近2週の正答率', r => aiExportPctText(r.recentPct, r.recentAccSolved)],
+    ['直近2週の復習正答率', r => aiExportPctText(r.recentReviewPct, r.recentReviewSolved)],
     ['2周目以降の正答率', r => aiExportPctText(r.laterPct, r.laterDone)],
     ['最終演習', r => aiExportGapCell(r.gaps, () => true, g => (g.daysSince === 0 ? '今日' : `${g.daysSince}日前`))],
     ['前回との間隔', r => aiExportGapCell(r.gaps, g => g.gapBefore !== null, g => `${g.gapBefore}日`)],
@@ -13722,6 +13924,7 @@ function formatAiExportMarkdown(data) {
   push('## 学習リソースと進め方',
     '- 教材：QB（CBT）、Notion（科目別ノート）',
     '- 普段の流れ：QB → 分からないところをAIで解説',
+    '- is_review=true のセッションは「間違えた問題のみ」を解き直した回（表記のない回は is_review=false の通常の回）。周回の進捗には数えず、正答率も通常の回とは分けて出している。review_wrong_numbers はその回でまだ間違えた問題番号',
     '');
 
   // 今日の学習。毎日送るので、生データの先頭に置く
@@ -13731,12 +13934,15 @@ function formatAiExportMarkdown(data) {
     const total = [`${aiExportHours(t.totalMin)}`];
     if (t.goalMin) total.push(`目標 ${aiExportHours(t.goalMin)}・達成 ${Math.round(t.totalMin / t.goalMin * 100)}%`);
     lines.push(`- 合計：${total.join('（')}${t.goalMin ? '）' : ''}` +
-               (t.solved > 0 ? `／QB ${t.solved}問・正答率 ${aiExportPct(t.correct, t.solved)}%` : ''));
+               (t.solved > 0 ? `／QB ${t.solved}問・正答率 ${aiExportPct(t.correct, t.solved)}%` : '') +
+               (t.reviewSolved > 0 ? `／復習（間違えた問題のみ）${t.reviewSolved}問・復習正答率 ${aiExportPct(t.reviewCorrect, t.reviewSolved)}%` : ''));
     if (t.sessions.length) {
       lines.push('- セッション（時間順）：');
       t.sessions.forEach(x => {
         const parts = [`${x.range ? x.range + ' ' : ''}${x.subject}${x.activity ? `（${x.activity}）` : ''} ${x.min}分`];
+        if (x.isReview) parts.push('復習・間違えた問題のみ（is_review=true）');
         if (x.solved !== null) parts.push(`${x.solved}問中${x.correct}問正解（${aiExportPct(x.correct, x.solved)}%）`);
+        if (x.isReview) parts.push(`review_wrong_numbers=[${x.reviewWrong.join(',')}]`);
         if (x.focus) parts.push(`集中度${x.focus}/5`);
         if (x.memo) parts.push(`メモ：${x.memo}`);
         lines.push(`  - ${parts.join('　')}`);
@@ -13789,8 +13995,15 @@ function formatAiExportMarkdown(data) {
       (b.reliable ? '' : '　※問題数が少なく参考値'));
     if (tr.trend) lines.push(`- 前半と後半の比較：${Math.round(tr.trend.first)}% → ${Math.round(tr.trend.last)}%` +
                              `（${tr.trend.diff >= 0 ? '+' : ''}${Math.round(tr.trend.diff)}ポイント）`);
-    section('## QB正答率の推移（週ごと・全科目）', lines);
+    section('## QB正答率の推移（週ごと・全科目・通常の回のみ）', lines);
   } else omitted.push('QB正答率の週推移');
+  // 復習の回（is_review=true：間違えた問題だけを解き直した回）は正答率が低く出るので別に出す
+  if (tr && tr.review) {
+    const lines = tr.buckets.filter(b => b.reviewSolved > 0).map(b =>
+      `- ${aiExportMd(b.startKey)}〜${aiExportMd(b.endKey)}：${Math.round(b.reviewAccuracy)}%（${b.reviewSolved}問）`);
+    lines.push(`- 期間通算：${Math.round(tr.review.accuracy)}%（${tr.review.correct}/${tr.review.solved}問・${tr.review.sessions}回）`);
+    section('## 復習正答率の推移（is_review=true の回のみ）', lines);
+  }
 
   // 解き方の傾向（インサイトの「問題演習の質」と同じ集計）
   {
@@ -14614,6 +14827,10 @@ function planDoneByDayFromLogs(plan, logs) {
   if (!field) return out;
   const startKey = String((plan && plan.start_date) || '').slice(0, 10);
   (logs || []).forEach(l => {
+    // 復習（間違えた問題のみ）の回はノルマの消化に数えない。周回を進めないのと同じ理由で、
+    // 数えると先の範囲が終わっていないのに残りの1日あたりが減ってしまう。
+    // その日の量は planReviewOnDay で別に出す。
+    if (isReviewLog(l)) return;
     if (!planLogMatches(plan, l) || !l.started_at) return;
     const n = Number(l[field]);
     if (!Number.isFinite(n) || n <= 0) return;
@@ -14622,6 +14839,23 @@ function planDoneByDayFromLogs(plan, logs) {
     out[key] = (out[key] || 0) + n;
   });
   return out;
+}
+
+// そのプランの科目で、dayKey の日に復習の回で解いた問題数。問題数のプランだけ。
+// ノルマには入れず、ノルマの近くに「今日の復習」として並べるためのもの。
+function planReviewOnDay(plan, logs, dayKey) {
+  if (planLogField(plan) !== 'questions_solved') return 0;
+  let n = 0;
+  (logs || []).forEach(l => {
+    if (!isReviewLog(l) || !l.started_at || !planLogMatches(plan, l)) return;
+    if (toLocalDateKey(getLogicalDate(new Date(l.started_at))) !== dayKey) return;
+    const q = Number(l.questions_solved);
+    if (Number.isFinite(q) && q > 0) n += q;
+  });
+  return n;
+}
+function planReviewTodayHTML(n) {
+  return n > 0 ? `<span class="plan-review-today">今日の復習：${n}問</span>` : '';
 }
 
 // 保存済みタスクに実績を重ねる（元の配列は変えない）。
@@ -15613,11 +15847,18 @@ function buildCalendarModel(cursorKey, view, sources) {
       bucket.bySubject[sid] = (bucket.bySubject[sid] || 0) + min;
     }
     const t = logTotals[key] = logTotals[key] ||
-      { minutes: 0, questions: 0, correct: 0, videos: 0, otherMinutes: 0 };
+      { minutes: 0, questions: 0, reviewQuestions: 0, correct: 0, accQuestions: 0, videos: 0, otherMinutes: 0 };
     t.minutes += min;
     t.questions += questions;
     t.videos += videos;
-    if (questions > 0) t.correct += Math.max(0, Number(l.questions_correct) || 0);
+    // 問題数は復習の回も含めた合計（内訳は reviewQuestions）。正答率は通常の回で、
+    // 正解数が入っている回だけを分母にする
+    if (questions > 0 && isReviewLog(l)) t.reviewQuestions += questions;
+    else if (questions > 0 && l.questions_correct !== null && l.questions_correct !== undefined &&
+             Number.isFinite(Number(l.questions_correct))) {
+      t.correct += Math.min(questions, Math.max(0, Number(l.questions_correct)));
+      t.accQuestions += questions;
+    }
     // 問題演習でも講義動画でもない時間（暗記・復習など）は「その他」にまとめる
     if (questions <= 0 && videos <= 0) t.otherMinutes += min;
   });
@@ -15634,8 +15875,14 @@ function buildCalendarModel(cursorKey, view, sources) {
     if (t.minutes > 0) row('total', calHoursText(t.minutes), `合計 ${formatMinutes(t.minutes)}`);
     if (t.videos > 0) row('video', `動画${t.videos}本`, `講義動画 ${t.videos}本`, actColor('video'));
     if (t.questions > 0) {
-      row('qb', `qb${t.questions}問`, `問題演習 ${t.questions}問` +
-        (t.correct > 0 ? `（${t.correct}問正解 ${Math.round((t.correct / t.questions) * 100)}%）` : ''),
+      const rvNote = t.reviewQuestions > 0 ? `（うち復習${t.reviewQuestions}）` : '';
+      row('qb', `qb${t.questions}問${rvNote}`, `問題演習 ${t.questions}問${rvNote}` +
+        (t.accQuestions > 0 && t.correct > 0
+          ? (t.reviewQuestions > 0
+            // 復習があるときは、正答率が通常の回だけのものだと分かるように書く
+            ? `・通常の回 ${t.correct}/${t.accQuestions}問正解 ${Math.round((t.correct / t.accQuestions) * 100)}%`
+            : `（${t.correct}問正解 ${Math.round((t.correct / t.accQuestions) * 100)}%）`)
+          : ''),
         actColor('qb'));
     }
     if (t.otherMinutes > 0) {
@@ -17423,7 +17670,8 @@ function planSyncSignature(sync) {
     return JSON.stringify([
       (sync.plans || []).map(p => [p.id, p.status, p.title, p.total_volume, p.due_date]),
       todays.map(t => [t.plan_id, t.kind, t.title, t.target_amount, t.done_amount, t.completed]),
-      (sync.tasks || []).length
+      (sync.tasks || []).length,
+      sync.reviewToday || {}
     ]);
   } catch (e) { return String(Math.random()); }
 }
@@ -17500,7 +17748,10 @@ async function runPlanSync(force) {
   }
   const noEstimate = state.filter(s => s.noEstimate).map(s => s.plan.id);
   const gapBase = roundGapBase(roundGain);
-  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate,
+  // 今日の復習の問題数（プランごと）。ノルマとは別枠で表示だけに使う
+  const reviewToday = {};
+  plans.forEach(p => { const n = planReviewOnDay(p, logs, today); if (n > 0) reviewToday[p.id] = n; });
+  _planSyncResult = { plans, tasks, plansById, rebuilt, todayKey: today, sequence, noEstimate, reviewToday,
                       subjectPriority, roundGapBaseDays: gapBase.days, roundGapMeasured: gapBase.measured };
   _planSyncAt = Date.now();
   return _planSyncResult;
@@ -17576,7 +17827,7 @@ function planUnlockNoteHTML(seq) {
 }
 
 // seq は syncPlans が返す順番詰めの結果（そのプランのぶん）。無ければ従来どおり。
-function planCardHTML(plan, tasks, todayKey, seq) {
+function planCardHTML(plan, tasks, todayKey, seq, reviewToday = 0) {
   const prog = planProgress(plan, tasks, todayKey);
   const unit = planUnitLabel(plan.unit);
   const color = subjectColorOf(plan.subject_id);
@@ -17605,7 +17856,7 @@ function planCardHTML(plan, tasks, todayKey, seq) {
 
   const stats = hasVolume ? `
     <div class="plan-stats">
-      <div><div class="plan-stat-num">${prog.todayTarget}${unit}</div><div class="plan-stat-label">今日のノルマ${prog.todayDone ? `（実績 ${prog.todayDone}）` : ''}</div></div>
+      <div><div class="plan-stat-num">${prog.todayTarget}${unit}</div><div class="plan-stat-label">今日のノルマ${prog.todayDone ? `（実績 ${prog.todayDone}）` : ''}${reviewToday > 0 ? `<br>${planReviewTodayHTML(reviewToday)}` : ''}</div></div>
       ${paceCell}
       <div><div class="plan-stat-num ${prog.behind > 0 ? 'warn' : ''}">${prog.behind > 0 ? prog.behind + unit : '0'}</div><div class="plan-stat-label">遅れ</div></div>
       <div><div class="plan-stat-num">${prog.daysLeft}</div><div class="plan-stat-label">残り日数</div></div>
@@ -18635,7 +18886,7 @@ async function renderPlans() {
       </div>
       ${planSequenceNoteHTML(sync)}${subjectPriorityTableHTML(sync)}
       ${shown.length ? `<div class="plan-list">${shown.map(p => planCardHTML(p, byPlan[p.id] || [], sync.todayKey,
-          sync.sequence && sync.sequence.byPlan[p.id])).join('')}</div>`
+          sync.sequence && sync.sequence.byPlan[p.id], (sync.reviewToday || {})[p.id] || 0)).join('')}</div>`
         : (plans.length
           ? `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">進行中のプランはありません。終わったプランは上のボタンから見られます。</div>`
           : `<div class="card" style="text-align:center;padding:var(--space-2xl);color:var(--color-text-secondary)">まだプランがありません。「＋ 新しいプラン」から、科目と締切を入れるだけで毎日のノルマができます。科目ぶん一気に並べるなら「＋ まとめて追加」。</div>`)}`;
@@ -18849,7 +19100,8 @@ function todayPlanCardHTML(sync) {
     if (todayTask) {
       const done = prog.todayDone >= prog.todayTarget;
       main = `<span class="${done ? 'is-done' : ''}">${prog.todayDone > 0 ? `${prog.todayDone} / ` : ''}${prog.todayTarget}${unit}</span>${done ? ' <span class="tp-ok">✓</span>' : ''}`;
-      sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日${prog.behind > 0 ? `・<span class="tp-warn">遅れ ${prog.behind}${unit}</span>` : ''}`;
+      sub = `${prog.hasVolume ? `残り ${prog.remaining}${unit}・` : ''}あと${prog.daysLeft}日${prog.behind > 0 ? `・<span class="tp-warn">遅れ ${prog.behind}${unit}</span>` : ''}${
+        (sync.reviewToday || {})[plan.id] ? `・${planReviewTodayHTML(sync.reviewToday[plan.id])}` : ''}`;
     } else {
       main = `<span>節目</span>`;
       sub = esc(milestone.title || '');

@@ -325,6 +325,18 @@ ok('vol.4 は元の科目と違う色を持つ',
   window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
 })();
 
+// --- 間違えた問題のみの回は周回を進めない ---
+(() => {
+  const before = { '7D': { '1': { done: 15, total: 15, correct: 10 }, '2': { done: 3, total: 15, correct: 2 } } };
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify(before));
+  const res = W.applyQbSessionToProgress('7D', 5, 3, true);
+  eq('間違えた問題のみ: 理由を返す', [res.skipped, res.changes.length], ['wrong-only', 0]);
+  eq('間違えた問題のみ: 進捗は変わらない',
+     JSON.parse(window.localStorage.getItem('medfocus_qb_progress'))['7D'], before['7D']);
+  ok('間違えた問題のみ: トーストで伝える', /周回の進捗は動かしていません/.test(W.describeQbChanges(res)));
+  window.localStorage.setItem('medfocus_qb_progress', JSON.stringify({}));
+})();
+
 console.log();
 if (failures.length) {
   console.log('--- 失敗 ---');

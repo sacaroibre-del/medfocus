@@ -301,6 +301,59 @@ ok('今日: 問題番号と再テスト', mdToday.includes('- 問題番号を記
 ok('今日: セクションは科目表より前', mdToday.indexOf('## 今日の学習（2026-10-02）') < mdToday.indexOf('## 科目別データ'));
 ok('今日: 一覧に「今日の学習記録」は載らない', !omittedOf(mdToday).includes('今日の学習記録'));
 
+// ---------- 復習の回（is_review） ----------
+const reviewInput = Object.assign({}, todayInput, {
+  logs: todayInput.logs.concat([
+    log('2026-10-02', '1D', 40, { questions_solved: 10, questions_correct: 4, is_review: true,
+      review_wrong_numbers: [3, 7, 12], started_at: at('2026-10-02', 18), ended_at: at('2026-10-02', 18, 40) })
+  ])
+});
+const tdR = W.buildAiExportData(reviewInput).today;
+eq('復習: 合計の正答率は通常の回だけ・復習は別', [tdR.solved, tdR.correct, tdR.reviewSolved, tdR.reviewCorrect], [50, 33, 10, 4]);
+const mdR = W.buildAiExportMarkdown(reviewInput);
+ok('復習: 合計の行に復習正答率', mdR.includes('／QB 50問・正答率 66%／復習（間違えた問題のみ）10問・復習正答率 40%'), lineOf(mdR, '- 合計'));
+ok('復習: セッションに is_review と review_wrong_numbers',
+   mdR.includes('  - 18:00〜18:40 1D 生化学（問題演習） 40分　復習・間違えた問題のみ（is_review=true）　10問中4問正解（40%）　review_wrong_numbers=[3,7,12]'),
+   lineOf(mdR, '18:00'));
+ok('復習: 通常の回の行には付けない', mdR.includes('  - 13:00〜14:30 1D 生化学（問題演習） 90分　30問中18問正解（60%）\n'));
+ok('復習: 復習正答率の推移を別の見出しで出す', mdR.includes('## 復習正答率の推移（is_review=true の回のみ）'));
+ok('復習: 記録が無ければ復習の見出しは出さない', !mdToday.includes('## 復習正答率の推移'));
+ok('復習: 前提に is_review の説明', mdR.includes('is_review=true のセッションは「間違えた問題のみ」'));
+
+// ---------- 科目表: 復習の回は問題数の内訳に入れ、正答率は通常の回だけ ----------
+const tableInput = Object.assign({}, todayInput, {
+  logs: todayInput.logs.concat([
+    log('2026-10-02', '1D', 40, { questions_solved: 10, questions_correct: 2, is_review: true,
+      started_at: at('2026-10-02', 18), ended_at: at('2026-10-02', 18, 40) })
+  ])
+});
+const rowOfId = (data, id) => data.subjects.find(r => r.id === id);
+const rvBefore = rowOfId(W.buildAiExportData(todayInput), '1D');
+const rvRow = rowOfId(W.buildAiExportData(tableInput), '1D');
+eq('科目表: 問題数は復習込み・内訳あり', [rvRow.recentSolved - rvBefore.recentSolved, rvRow.recentReviewSolved], [10, 10]);
+eq('科目表: 正答率は通常の回だけ（復習を足しても同じ）', [rvRow.recentPct, rvRow.recentAccSolved], [rvBefore.recentPct, rvBefore.recentSolved]);
+eq('科目表: 復習正答率は別（2/10）', rvRow.recentReviewPct, 20);
+const mdTable = W.buildAiExportMarkdown(tableInput);
+const rvLine = lineOf(mdTable, '| 1D');
+ok('科目表: 問題数の列に「うち復習10問」', rvLine && rvLine.includes(`${rvRow.recentSolved}問（うち復習10問）`), rvLine);
+ok('科目表: 復習正答率の列', rvLine && rvLine.includes('20%（10問）'), rvLine);
+ok('科目表: 復習が無い表には復習正答率の列を出さない',
+   !(lineOf(W.buildAiExportMarkdown(todayInput), '| 科目') || '').includes('復習正答率'));
+
+// ---------- 1問あたりの時間は通常の回だけ ----------
+{
+  const heavy = Object.assign({}, todayInput, {
+    logs: todayInput.logs.concat([
+      log('2026-10-02', '1D', 300, { questions_solved: 10, questions_correct: 2, is_review: true,
+        started_at: at('2026-10-02', 19), ended_at: at('2026-10-02', 24) })
+    ])
+  });
+  const a = W.buildAiExportData(todayInput), b = W.buildAiExportData(heavy);
+  const rowA = a.subjects.find(r => r.id === '1D'), rowB = b.subjects.find(r => r.id === '1D');
+  eq('1問あたり: 科目表は復習を足しても同じ', [rowB.qbMin, rowB.qbQuestions, rowB.minPerQ], [rowA.qbMin, rowA.qbQuestions, rowA.minPerQ]);
+  eq('1問あたり: 全体の平均も同じ', b.method.minPerQ, a.method.minPerQ);
+}
+
 // ---------- 設定 ----------
 eq('設定: 範囲外の値は捨てる', W.normalizeAiExportSettings({ weekdayHours: '30', holidayHours: '6', confidence: { '2C': 6, '1D': '2' } }),
    { examId: '', goal: '', weekdayHours: '', holidayHours: 6, constraints: '', confidence: { '1D': 2 } });
