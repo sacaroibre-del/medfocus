@@ -2179,6 +2179,122 @@ function currentBlockPayload(results) {
   return { seconds: simulationBlockSeconds.slice(), limitMin: simulationStudyMin,
            questions: results ? results.questions : null, correct: results ? results.correct : null };
 }
+// ---------- 学習ログの編集フォームのブロック欄 ----------
+// 「次のブロックへ」や⏹を押し間違えたときに、ブロックごとの時間を直すためのもの。
+// 1ブロックを途中で切ってしまったら「前と合わせる」で1つに戻す。
+// ブロックの合計が変わったら、学習時間と終了時刻も同じだけ動かす（集計は学習時間を見るので）。
+// 編集ボタンの data-blocks に載せる値: [[秒, 問題数, 正解数], ...] の JSON
+function blockDataAttr(l) {
+  if (!l || !Array.isArray(l.block_seconds) || !l.block_seconds.length) return '';
+  const qs = Array.isArray(l.block_questions) ? l.block_questions : [];
+  const cs = Array.isArray(l.block_correct) ? l.block_correct : [];
+  return esc(JSON.stringify(l.block_seconds.map((sec, i) => [Number(sec) || 0, qs[i] ?? null, cs[i] ?? null])));
+}
+function parseBlockDataAttr(v) {
+  try { const a = JSON.parse(v || ''); return Array.isArray(a) && a.length ? a : null; } catch (e) { return null; }
+}
+function editBlockRowHtml(sec, q, c) {
+  return `<div class="edit-block-row" data-sec="${sec}" style="display:flex;align-items:center;gap:4px;font-size:0.8rem;">
+    <span class="edit-block-label" style="width:28px;color:var(--color-text-secondary);"></span>
+    <input type="number" class="edit-block-min" min="0" step="1" inputmode="numeric" value="${Math.round(sec / 60)}" style="width:56px;text-align:center;" /><span>分</span>
+    <input type="number" class="edit-block-q" min="0" step="1" inputmode="numeric" value="${q ?? ''}" placeholder="問" style="width:50px;text-align:center;" /><span>問中</span>
+    <input type="number" class="edit-block-c" min="0" step="1" inputmode="numeric" value="${c ?? ''}" placeholder="正" style="width:50px;text-align:center;" /><span>正解</span>
+    <button type="button" class="btn-log-action edit-block-merge" title="前のブロックと合わせる" style="font-size:0.7rem;padding:2px 6px;">前と合わせる</button>
+    <button type="button" class="btn-log-action delete edit-block-del" title="このブロックを消す" style="font-size:0.7rem;padding:2px 6px;">✕</button>
+  </div>`;
+}
+function editBlocksFieldHtml(attr) {
+  const rows = parseBlockDataAttr(attr);
+  if (!rows) return '';
+  return `<div class="settings-field" id="edit-blocks" style="margin-bottom:12px;">
+    <label>本番模試のブロックごとの時間</label>
+    <div id="edit-block-rows" style="display:flex;flex-direction:column;gap:6px;">
+      ${rows.map(r => editBlockRowHtml(r[0], r[1], r[2])).join('')}
+    </div>
+    <button type="button" class="btn btn-secondary btn-sm" id="edit-block-add" style="margin-top:6px;">ブロックを足す</button>
+    <div style="font-size:0.68rem; color:var(--color-text-tertiary); margin-top:6px; line-height:1.5;">
+      ※ ブロックの合計を変えると、学習時間と終了時刻も同じ分だけ変わります<br>
+      ※ ボタンを押し間違えて1ブロックが2つに分かれたら「前と合わせる」で1つに戻せます
+    </div>
+  </div>`;
+}
+// 行の秒数。分の欄を触っていなければ元の秒数のまま（分に丸めて戻すと端数が消える）
+function editBlockRowSec(row) {
+  const min = parseInt(row.querySelector('.edit-block-min').value, 10);
+  const orig = Number(row.dataset.sec) || 0;
+  if (!Number.isFinite(min)) return null;
+  return min === Math.round(orig / 60) ? orig : min * 60;
+}
+function bindEditBlocks(modal) {
+  const box = modal.querySelector('#edit-block-rows');
+  if (!box) return;
+  const durEl = modal.querySelector('#edit-log-duration');
+  const endEl = modal.querySelector('#edit-log-end-time');
+  const totalMin = () => Math.round([...box.querySelectorAll('.edit-block-row')]
+    .reduce((n, r) => n + (editBlockRowSec(r) || 0), 0) / 60);
+  let lastTotal = totalMin();
+  // ブロックの合計が動いた分だけ、学習時間と終了時刻を動かす
+  const sync = () => {
+    box.querySelectorAll('.edit-block-row').forEach((r, i) => {
+      r.querySelector('.edit-block-label').textContent = `B${i + 1}`;
+      r.querySelector('.edit-block-merge').style.visibility = i === 0 ? 'hidden' : 'visible';
+    });
+    const t = totalMin(), delta = t - lastTotal;
+    lastTotal = t;
+    if (!delta) return;
+    const dur = parseInt(durEl.value, 10);
+    if (Number.isFinite(dur)) durEl.value = Math.max(1, dur + delta);
+    const m = /^(\d{1,2}):(\d{2})$/.exec(endEl.value || '');
+    if (m) {
+      const total = ((Number(m[1]) * 60 + Number(m[2]) + delta) % 1440 + 1440) % 1440;
+      endEl.value = `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+    }
+  };
+  box.addEventListener('input', e => { if (e.target.classList.contains('edit-block-min')) sync(); });
+  box.addEventListener('click', e => {
+    const row = e.target.closest('.edit-block-row');
+    if (!row) return;
+    if (e.target.classList.contains('edit-block-del')) {
+      if (box.querySelectorAll('.edit-block-row').length <= 1) { showToast(' ブロックは1つ以上必要です'); return; }
+      row.remove(); sync();
+    } else if (e.target.classList.contains('edit-block-merge')) {
+      const prev = row.previousElementSibling;
+      if (!prev) return;
+      // 時間は足す。問題数・正解数は両方入っていれば足し、片方だけならそちらを残す
+      const sec = (editBlockRowSec(prev) || 0) + (editBlockRowSec(row) || 0);
+      const add = (a, b) => { const x = a.value.trim(), y = b.value.trim(); return x && y ? String(Number(x) + Number(y)) : (x || y); };
+      const q = add(prev.querySelector('.edit-block-q'), row.querySelector('.edit-block-q'));
+      const c = add(prev.querySelector('.edit-block-c'), row.querySelector('.edit-block-c'));
+      prev.insertAdjacentHTML('afterend', editBlockRowHtml(sec, q || null, c || null));
+      prev.remove(); row.remove(); sync();
+    }
+  });
+  modal.querySelector('#edit-block-add').addEventListener('click', () => {
+    box.insertAdjacentHTML('beforeend', editBlockRowHtml(0, null, null)); sync();
+  });
+  sync();
+}
+// 保存する値。ブロック欄が無い記録は null（列に触らない）
+function readEditBlocks(modal) {
+  const rows = [...modal.querySelectorAll('#edit-block-rows .edit-block-row')];
+  if (!rows.length) return null;
+  const seconds = [], questions = [], correct = [];
+  for (let i = 0; i < rows.length; i++) {
+    const sec = editBlockRowSec(rows[i]);
+    if (sec === null || sec < 0) return { error: `ブロック${i + 1}の時間を入れてください` };
+    const qRaw = rows[i].querySelector('.edit-block-q').value.trim();
+    const cRaw = rows[i].querySelector('.edit-block-c').value.trim();
+    let q = null, c = null;
+    if (qRaw || cRaw) {
+      q = parseInt(qRaw, 10); c = parseInt(cRaw, 10);
+      if (!(q > 0) || !Number.isFinite(c) || c < 0) return { error: `ブロック${i + 1}の問題数と正解数を両方入れてください` };
+      if (c > q) return { error: `ブロック${i + 1}の正解数が問題数を超えています` };
+    }
+    seconds.push(sec); questions.push(q); correct.push(c);
+  }
+  return { seconds, questions, correct, error: null };
+}
+
 // あとから正答数を入れる（インサイトのブロック別カードから）
 async function updateStudyLogBlockResults(id, questions, correct) {
   if (!hasDB()) { showToast(' デモモードでは保存できません'); return false; }
@@ -2356,7 +2472,7 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
   }
 }
 
-async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined, videosWatched = undefined, videoEdition = undefined) {
+async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo, focusLevel = 2, location = '未設定', endedAt = null, activity = undefined, questionsSolved = undefined, questionsCorrect = undefined, videosWatched = undefined, videoEdition = undefined, blocks = null) {
   if (!hasDB()) return;
   // If endedAt not provided, compute from startedAt + duration
   if (!endedAt && startedAt) {
@@ -2380,6 +2496,12 @@ async function updateStudyLog(id, subjectName, durationMinutes, startedAt, memo,
     payload.video_edition = isVideoEdition(videoEdition) ? videoEdition : null;
   }
   if (endedAt) payload.ended_at = endedAt;
+  // 本番模試のブロック（編集フォームでブロック欄を出した記録だけ）
+  if (blocks && !blockSecondsColumnMissing) {
+    payload.block_seconds = blocks.seconds;
+    payload.block_questions = blocks.questions;
+    payload.block_correct = blocks.correct;
+  }
   let { error } = await supabase.from('study_logs').update(payload).eq('id', id);
   if (error && isMissingVideoEditionColumn(error)) {
     console.warn('study_logs.video_edition が未作成のため、版なしで更新します（add_video_editions.sql を実行してください）');
@@ -5811,7 +5933,7 @@ async function renderStudy(){
                 ${l.memo?`<div class="study-log-memo" style="font-size:0.8rem;color:var(--color-text-secondary);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.memo)}</div>`:''}
               </div>
               <div class="study-log-actions">
-                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${esc(sub?.name||l.subject_name)}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${esc(l.memo)}" data-location="${esc(l.location)}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" data-video-edition="${l.video_edition || ''}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
+                <button class="btn-log-action edit" data-id="${l.id}" data-subject="${esc(sub?.name||l.subject_name)}" data-duration="${l.duration_minutes}" data-startedat="${realStart.toISOString()}" data-endedat="${realEnd.toISOString()}" data-memo="${esc(l.memo)}" data-location="${esc(l.location)}" data-focus="${l.focus_level || ''}" data-activity="${l.activity || ''}" data-solved="${l.questions_solved ?? ''}" data-correct="${l.questions_correct ?? ''}" data-videos="${l.videos_watched ?? ''}" data-video-edition="${l.video_edition || ''}" data-blocks="${blockDataAttr(l)}" title="編集" style="font-size:0.75rem;padding:2px 8px;">編集</button>
                 <button class="btn-log-action delete" data-id="${l.id}" title="削除" style="font-size:0.75rem;padding:2px 8px;color:var(--color-accent-pink);">削除</button>
               </div>
             </div>`;}).join('')}</div>`;}).join('')}
@@ -6273,6 +6395,7 @@ async function renderStudy(){
             <label>学習時間 (分)</label>
             <input type="number" id="edit-log-duration" value="${ds.duration}" />
           </div>
+          ${editBlocksFieldHtml(ds.blocks)}
           <div class="settings-field" style="margin-bottom:12px;">
             <label>学習内容</label>
             <select id="edit-log-subject">
@@ -6354,6 +6477,7 @@ async function renderStudy(){
     const subSelect = document.getElementById('edit-log-subject');
     const subCustom = document.getElementById('edit-log-subject-custom');
     subSelect.onchange = () => { subCustom.style.display = subSelect.value === 'custom' ? 'block' : 'none'; };
+    bindEditBlocks(modal);
 
     document.getElementById('save-edit-log').onclick = async () => {
       const newDate = document.getElementById('edit-log-date').value;
@@ -6376,6 +6500,8 @@ async function renderStudy(){
       if (newSolved !== null && (!Number.isFinite(newSolved) || newSolved < 0)) { showToast(IC.x + ' 問題数が正しくありません'); return; }
       if (newCorrect !== null && (!Number.isFinite(newCorrect) || newCorrect < 0)) { showToast(IC.x + ' 正解数が正しくありません'); return; }
       if (newSolved !== null && newCorrect !== null && newCorrect > newSolved) { showToast(IC.x + ' 正解数が問題数を超えています'); return; }
+      const newBlocks = readEditBlocks(modal);
+      if (newBlocks && newBlocks.error) { showToast(IC.x + ' ' + newBlocks.error); return; }
 
       if (!newDate || !newTime || isNaN(newDur) || newDur <= 0 || !subVal) {
         showToast(' 全ての項目を正しく入力してください');
@@ -6384,7 +6510,7 @@ async function renderStudy(){
 
       const newStartedAt = new Date(`${newDate}T${newTime}`).toISOString();
       const newEndedAt = newEndTime ? new Date(`${newDate}T${newEndTime}`).toISOString() : null;
-      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect, newVideos, newVideoEdition);
+      await updateStudyLog(ds.id, subVal, newDur, newStartedAt, newMemo, newFoc, newLoc, newEndedAt, newAct, newSolved, newCorrect, newVideos, newVideoEdition, newBlocks);
       close();
       renderStudy();
     };

@@ -139,6 +139,59 @@ const plain = { id: 13, subject_name: '2C', duration_minutes: 30, started_at: '2
   ok('列が未作成: 保存は成功する', saved === true);
   eq('列が未作成: 2回目はブロックの列をすべて落とす', tries.map(t => Object.keys(t.rows[0]).filter(k => k.startsWith('block_')).length), [4, 0]);
 
+  // ---------- 5. 学習ログの編集フォーム ----------
+  // B3 を 20分で押し間違えて、残り 35分が B4 になった回
+  const mis = { id: 21, block_seconds: [3000, 3300, 1200, 2100, 3000], block_questions: [60, 60, 20, 40, null], block_correct: [50, 48, 15, 30, null] };
+  const attr = W.blockDataAttr(mis);
+  ok('data-blocks: 本番模試以外は空', W.blockDataAttr({ id: 1 }) === '');
+  const mkModal = () => {
+    const m = W.document.createElement('div');
+    // data-* に入れたあと dataset で読む流れを通す
+    const holder = W.document.createElement('div');
+    holder.innerHTML = `<button data-blocks="${attr}"></button>`;
+    m.innerHTML = `<input id="edit-log-duration" value="210" /><input id="edit-log-end-time" value="13:30" />` +
+      W.editBlocksFieldHtml(holder.firstChild.dataset.blocks);
+    W.document.body.appendChild(m);
+    W.bindEditBlocks(m);
+    return m;
+  };
+  let m = mkModal();
+  const rows = () => [...m.querySelectorAll('.edit-block-row')];
+  eq('編集: 行が出る', rows().map(r => r.querySelector('.edit-block-label').textContent), ['B1', 'B2', 'B3', 'B4', 'B5']);
+  eq('編集: 触らなければそのまま', W.readEditBlocks(m).seconds, [3000, 3300, 1200, 2100, 3000]);
+  eq('編集: 開いただけでは学習時間は動かない', m.querySelector('#edit-log-duration').value, '210');
+  // B4 を B3 に合わせる
+  rows()[3].querySelector('.edit-block-merge').click();
+  let r = W.readEditBlocks(m);
+  eq('合わせる: 時間を足す', r.seconds, [3000, 3300, 3300, 3000]);
+  eq('合わせる: 問題数と正解数も足す', [r.questions, r.correct], [[60, 60, 60, null], [50, 48, 45, null]]);
+  eq('合わせる: 合計は同じなので学習時間はそのまま', m.querySelector('#edit-log-duration').value, '210');
+  eq('合わせる: 番号を振り直す', rows().map(x => x.querySelector('.edit-block-label').textContent), ['B1', 'B2', 'B3', 'B4']);
+  // B4 の時間を 50分 → 60分 に直す
+  const minEl = rows()[3].querySelector('.edit-block-min');
+  minEl.value = '60'; minEl.dispatchEvent(new W.Event('input', { bubbles: true }));
+  eq('分を直す: 秒に直して保存', W.readEditBlocks(m).seconds[3], 3600);
+  eq('分を直す: 学習時間が10分増える', m.querySelector('#edit-log-duration').value, '220');
+  eq('分を直す: 終了時刻も10分後ろへ', m.querySelector('#edit-log-end-time').value, '13:40');
+  // 消す
+  rows()[3].querySelector('.edit-block-del').click();
+  eq('消す: 行が減って学習時間も減る', [rows().length, m.querySelector('#edit-log-duration').value], [3, '160']);
+  // 正解数だけ入れたらエラー
+  rows()[0].querySelector('.edit-block-q').value = '';
+  ok('入力の誤り: 問題数なしはエラー', /ブロック1/.test(W.readEditBlocks(m).error || ''));
+  m.remove();
+  ok('ブロック欄の無い記録は null（列に触らない）', W.readEditBlocks(W.document.createElement('div')) === null);
+
+  // 更新で送る列
+  const upd = [];
+  const sbU = { from() { const ch = { update(p) { upd.push(p); return ch; }, eq() { return Promise.resolve({ error: null }); } }; return ch; } };
+  W.__setEnv(sbU, ses); W.__reset();
+  await G(`updateStudyLog(21, '模試', 160, '2026-09-20T01:00:00.000Z', '', 3, '自宅', null, 'other', null, null, null, null, { seconds: [3000, 3300, 3300], questions: [60, 60, 60], correct: [50, 48, 45] })`);
+  eq('更新: ブロックの列も送る', [upd[0].block_seconds, upd[0].block_questions, upd[0].block_correct, upd[0].duration_minutes],
+     [[3000, 3300, 3300], [60, 60, 60], [50, 48, 45], 160]);
+  await G(`updateStudyLog(22, '2C', 30, '2026-09-20T01:00:00.000Z', '', 3, '自宅')`);
+  ok('更新: 本番模試以外はブロックの列に触らない', !Object.keys(upd[1]).some(k => k.startsWith('block_')), upd[1]);
+
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('\n--- failures ---\n' + failures.join('\n')); process.exit(1); }
 })();
