@@ -749,6 +749,8 @@ const QB_MASTER_TOTALS = {};
 // 組み立てが終わってから追加する。
 subjectCategories.push({id:'cat-other',name:'その他',color:'#94a3b8',subjects:[
   {id:'anki',name:'Anki'},
+  // 本番模試モードの記録先。範囲混在で1科目に決められないのでここにまとめる
+  {id:'mock-exam',name:'模試'},
   {id:'mock-review',name:'模試復習'}
 ]});
 
@@ -1939,6 +1941,11 @@ function isMissingVideoEditionColumn(error) {
 }
 // is_review / review_wrong_numbers は add_review_flag.sql で足す列。考え方は video_edition と同じ。
 let reviewColumnsMissing = false;
+let blockSecondsColumnMissing = false;
+function isMissingBlockSecondsColumn(error) {
+  const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
+  return /block_seconds/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
 function isMissingReviewColumn(error) {
   const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
   return /(is_review|review_wrong_numbers)/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
@@ -2013,7 +2020,7 @@ async function refreshTodaySnapshot() {
   saveDailySnapshot(dateKey, goalForToday, todayTotal);
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null, qbReview = null) {
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null, qbReview = null, blockSeconds = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
   const applyQb = () => {
@@ -2053,9 +2060,11 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
     }
     if (breaks && breaks.length > 0) payload.breaks = JSON.stringify(breaks);
     if (!reviewColumnsMissing) Object.assign(payload, reviewLogFields(qbReview));
+    // 本番模試のブロックごとの秒数
+    if (blockSeconds && blockSeconds.length > 0 && !blockSecondsColumnMissing) payload.block_seconds = blockSeconds;
     let { error } = await supabase.from('study_logs').insert([payload]);
-    // 足していない列があれば、その列を落としてやり直す（列は2種類あるので最大2回）
-    for (let i = 0; i < 2 && error; i++) {
+    // 足していない列があれば、その列を落としてやり直す（列は3種類あるので最大3回）
+    for (let i = 0; i < 3 && error; i++) {
       if (isMissingVideoEditionColumn(error) && 'video_edition' in payload) {
         console.warn('study_logs.video_edition が未作成のため、版なしで保存します（add_video_editions.sql を実行してください）');
         videoEditionColumnMissing = true;
@@ -2064,6 +2073,10 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
         console.warn('study_logs.is_review が未作成のため、復習の印なしで保存します（add_review_flag.sql を実行してください）');
         reviewColumnsMissing = true;
         delete payload.is_review; delete payload.review_wrong_numbers;
+      } else if (isMissingBlockSecondsColumn(error) && 'block_seconds' in payload) {
+        console.warn('study_logs.block_seconds が未作成のため、ブロックごとの時間なしで保存します（add_block_seconds.sql を実行してください）');
+        blockSecondsColumnMissing = true;
+        delete payload.block_seconds;
       } else break;
       ({ error } = await supabase.from('study_logs').insert([payload]));
     }
@@ -2185,6 +2198,7 @@ let isCountdown=false, countdownSeconds=0, initialCountdownSeconds=0, isConfirmi
 let isPomodoro=false, pomodoroPhase='study', pomodoroStudySec=25*60, pomodoroBreakSec=5*60;
 let isSimulation=false, simulationPhase='study';
 let simulationBlockCurrent=1, simulationBlockTotal=6, simulationStudyMin=60, simulationBreakMin=10;
+let simulationBlockSeconds=[]; // 本番模試: ブロックごとに実際にかかった秒数（終えた順）
 let pendingLogDuration=0, timerStartTime=0, baseElapsed=0, baseCountdown=0;
 let selectedSubjectId='', selectedSubjectCustom='';
 let selectedLocation='自宅', selectedFocusLevel=2, selectedPurpose='other', selectedActivity='qb';
@@ -2196,6 +2210,7 @@ function saveTimerState() {
   localStorage.setItem('medfocus_timer_v2', JSON.stringify({
     isRunning, isCountdown, isPomodoro, pomodoroPhase, pomodoroStudySec, pomodoroBreakSec, elapsedSeconds, countdownSeconds,
     isSimulation, simulationPhase, simulationBlockCurrent, simulationBlockTotal, simulationStudyMin, simulationBreakMin,
+    simulationBlockSeconds,
     isConfirmingLog, pendingLogDuration,
     selectedSubjectId, selectedSubjectCustom,
     selectedLocation, selectedFocusLevel, selectedPurpose, selectedActivity,
@@ -2223,6 +2238,7 @@ function loadTimerState() {
   simulationBlockTotal = state.simulationBlockTotal || 6;
   simulationStudyMin = state.simulationStudyMin || 60;
   simulationBreakMin = state.simulationBreakMin || 10;
+  simulationBlockSeconds = Array.isArray(state.simulationBlockSeconds) ? state.simulationBlockSeconds : [];
   isConfirmingLog = state.isConfirmingLog || false;
   pendingLogDuration = state.pendingLogDuration || 0;
   selectedSubjectId = state.selectedSubjectId || '';
@@ -2556,29 +2572,36 @@ function startSW(){
 
 function finishSession(manualStop = false) {
   pauseSW();
+  // 本番模試の最後のブロックを終えたとき。累計はもう足してあるので下で足し直さない
+  let simulationDone = false;
   
   // If manual stop, skip auto-cycling and go to save overlay
   if (manualStop) {
     // Add current block's elapsed time to cumulative
     if ((isPomodoro && pomodoroPhase === 'study') || (isSimulation && simulationPhase === 'study')) {
       cumulativeStudySeconds += elapsedSeconds;
+      if (isSimulation && elapsedSeconds > 0) simulationBlockSeconds.push(elapsedSeconds);
     } else if (!isPomodoro && !isSimulation) {
       cumulativeStudySeconds = elapsedSeconds;
     }
     // Skip to save overlay (fall through to code below the auto-cycle blocks)
   } else {
     // Auto-cycle logic for timer reaching zero
+  // 「次のブロックへ」で早めに切り上げたときもここを通る。足すのは実際にかかった
+  // elapsedSeconds なので、記録はブロックの持ち時間ではなく実時間になる。
   if (isSimulation) {
     if (simulationPhase === 'study') {
       cumulativeStudySeconds += elapsedSeconds;
-      showToast(IC.check+` ブロック${simulationBlockCurrent}完了！休憩に入ります。`);
-      // Removed auto-save here
+      simulationBlockSeconds.push(elapsedSeconds);
       
       if (simulationBlockCurrent >= simulationBlockTotal) {
+        // 最後のブロックは休憩を挟まず、そのまま記録フォームへ進む
         showToast(IC.check+' 全ブロック完了！お疲れ様でした！');
         isSimulation = false;
         simulationBlockCurrent = 1;
+        simulationDone = true;
       } else {
+        showToast(IC.check+` ブロック${simulationBlockCurrent}完了！休憩に入ります。`);
         simulationPhase = 'break';
         countdownSeconds = simulationBreakMin * 60;
         baseCountdown = simulationBreakMin * 60;
@@ -2587,9 +2610,9 @@ function finishSession(manualStop = false) {
         baseElapsed = 0;
         saveTimerState();
         startSW();
+        if (currentRoute === '/study' || window.location.pathname === '/study') renderStudy();
+        return;
       }
-      if (currentRoute === '/study' || window.location.pathname === '/study') renderStudy();
-      return;
     } else {
       simulationBlockCurrent++;
       showToast(IC.check+` 休憩終了！ブロック${simulationBlockCurrent}開始！`);
@@ -2641,7 +2664,7 @@ function finishSession(manualStop = false) {
   // If we got here via auto-cycle return above, we won't reach this.
   // This code is only reached on manual stop.
 
-  if (!manualStop) {
+  if (!manualStop && !simulationDone) {
     if (!isPomodoro && !isSimulation) {
       cumulativeStudySeconds = elapsedSeconds;
     } else {
@@ -2813,7 +2836,7 @@ function finishSession(manualStop = false) {
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
         const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks, qb.review);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks, qb.review, simulationBlockSeconds);
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -2882,6 +2905,7 @@ function resetSW(){
   pomodoroPhase='study';
   simulationPhase='study';
   simulationBlockCurrent=1;
+  simulationBlockSeconds=[];
   multiResetRuntime();
   saveTimerState();
 }
@@ -5331,11 +5355,14 @@ async function renderStudy(){
           <button class="stopwatch-btn ${isRunning?'stopwatch-btn-pause':'stopwatch-btn-start'}" id="btn-toggle">${isRunning?'⏸':'▶'}</button>
           <button class="stopwatch-btn stopwatch-btn-stop" id="btn-save" title="記録する">⏹</button>
         </div>
+        ${isSimulation && !isConfirmingLog && (isRunning || elapsedSeconds > 0) ? `<div style="display:flex;justify-content:center;margin-top:8px;">
+          <button class="btn btn-secondary btn-sm" id="btn-sim-next">${simulationPhase === 'break' ? '休憩を終えて次のブロックへ' : simulationBlockCurrent >= simulationBlockTotal ? 'ここで終えて記録する' : '解き終えた・次のブロックへ'}</button>
+        </div>` : ''}
         ${document.pictureInPictureEnabled || 'documentPictureInPicture' in window ? `<div style="display:flex;align-items:center;gap:6px;margin-top:8px;justify-content:center;">
           <button id="btn-pip" style="background:none;border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-secondary);padding:4px 12px;font-size:0.8rem;cursor:pointer;" title="ミニタイマーをフローティング表示">${pipActive ? 'PiP 閉じる' : 'PiP'}</button>
           <button id="btn-pip-color" style="background:none;border:1px solid var(--color-border);border-radius:var(--radius-sm);padding:4px 8px;font-size:0.9rem;cursor:pointer;" title="PiPの色を変更">${getPipTheme().label}</button>
         </div>` : ''}
-        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning && isMulti && multiSession && multiSession.id ? `<span class="status-dot"></span>${multiStatusText()}` : isMulti && multiSession && multiSession.id ? `一時停止中・${multiStatusText()}` : isRunning? (isPomodoro && pomodoroPhase === 'break' ? '<span class="status-dot"></span>休憩中...' : isSimulation ? (simulationPhase === 'break' ? `<span class="status-dot"></span>休憩中... (次: ブロック${simulationBlockCurrent})` : `<span class="status-dot"></span>ブロック${simulationBlockCurrent}/${simulationBlockTotal} 挑戦中...`) : '<span class="status-dot"></span>集中記録中...') : '準備ができたら開始しましょう'}</div>
+        <div class="stopwatch-status ${isRunning?'recording':''}" id="timer-status">${isRunning && isMulti && multiSession && multiSession.id ? `<span class="status-dot"></span>${multiStatusText()}` : isMulti && multiSession && multiSession.id ? `一時停止中・${multiStatusText()}` : isRunning? (isPomodoro && pomodoroPhase === 'break' ? '<span class="status-dot"></span>休憩中...' : isSimulation ? (simulationPhase === 'break' ? `<span class="status-dot"></span>休憩中... (次: ブロック${simulationBlockCurrent + 1})` : `<span class="status-dot"></span>ブロック${simulationBlockCurrent}/${simulationBlockTotal} 挑戦中...`) : '<span class="status-dot"></span>集中記録中...') : '準備ができたら開始しましょう'}</div>
         <div class="stopwatch-memo" style="margin-top:var(--space-md);"><input type="text" id="study-memo" placeholder="メモ（任意）..." style="width:100%;max-width:300px;text-align:center;background:var(--color-bg-input);border:1px solid var(--color-border);border-radius:var(--radius-sm);color:var(--color-text-primary);padding:5px;" maxlength="100"/></div>
 
         <!-- Confirmation Overlay（複数科目モードは showMultiConfirmOverlay が出す） -->
@@ -5642,6 +5669,8 @@ async function renderStudy(){
       status.className='stopwatch-status recording';
       status.innerHTML = isMulti && multiSession && multiSession.id ? `<span class="status-dot"></span>${multiStatusText()}` : '<span class="status-dot"></span>記録中...';
       if(isCountdown && !isRunning) renderStudy(); // Re-render to hide settings
+      // 本番模試は設定を隠して「次のブロックへ」を出す
+      if(isSimulation) renderStudy();
     }
   });
 
@@ -5662,6 +5691,13 @@ async function renderStudy(){
     } else {
       showToast(' 記録する時間がありません');
     }
+  });
+
+  // 本番模試: 持ち時間を待たずにブロック（または休憩）を終える。
+  // 時間切れと同じ経路を通すので、記録には実際にかかった時間だけが入る。
+  document.getElementById('btn-sim-next')?.addEventListener('click', () => {
+    if (!isSimulation) return;
+    finishSession(false);
   });
 
   // PiP Mini Timer
@@ -5751,6 +5787,14 @@ async function renderStudy(){
     countdownSeconds = simulationStudyMin * 60;
     baseCountdown = simulationStudyMin * 60;
     initialCountdownSeconds = simulationStudyMin * 60;
+    // 模試は全科目が混ざるので科目は「模試」に固定する。活動は「その他」にして
+    // 問題数の欄を出さない（科目別の得点は「模試の結果を入れる」から入れる。
+    // ここで問題数を入れると QB の周回進捗に混ざってしまう）
+    simulationBlockSeconds = [];
+    selectedSubjectId = 'mock-exam';
+    selectedSubjectCustom = '';
+    selectedActivity = 'other';
+    saveTimerState();
     renderStudy();
   });
 
@@ -5901,7 +5945,7 @@ async function renderStudy(){
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
       const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''), qb.review);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''), qb.review, simulationBlockSeconds);
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
@@ -13323,7 +13367,7 @@ const AI_EXPORT_MIN_TYPED_ERRORS = 20;
 const AI_EXPORT_MIN_MEMO_CHARS = 3;
 const AI_EXPORT_PRIORITY_TOP = 10;
 // 科目表に出さない「科目」（教材の科目ではないもの）
-const AI_EXPORT_NON_SUBJECTS = { 'anki': true, 'mock-review': true };
+const AI_EXPORT_NON_SUBJECTS = { 'anki': true, 'mock-exam': true, 'mock-review': true };
 // アプリの間違いの種類 → テンプレートの呼び名（時間不足はアプリに無い）
 const AI_EXPORT_ERROR_LABELS = [
   ['unknown', '知識不足'], ['confuse', 'うろ覚え・混同'], ['misread', '読み違い']
