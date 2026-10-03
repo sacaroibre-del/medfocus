@@ -2099,16 +2099,10 @@ function bindMockBlockCard(st) {
     btn.addEventListener('click', () => {
       const box = el.querySelector('.mock-block-edit');
       btn.hidden = true;
-      box.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
-        ${se.blocks.map((b, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
-          <span style="width:84px;color:var(--color-text-secondary);">B${i + 1}・${fmtMockMin(b.sec)}</span>
-          <input type="number" class="blk-q-ins" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="問題数" value="${b.q !== null ? b.q : ''}" style="width:72px;text-align:center;" />
-          <span>問中</span>
-          <input type="number" class="blk-c-ins" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="正解" value="${b.c !== null ? b.c : ''}" style="width:72px;text-align:center;" />
-          <span>問正解</span>
-        </div>`).join('')}
-        <button type="button" class="btn btn-primary btn-sm mock-block-save" style="align-self:flex-start;">保存</button>
-      </div>`;
+      box.innerHTML = `<div class="blk-rows" style="margin-top:6px;">
+        ${se.blocks.map((b, i) => blockScoreRowHtml(`B${i + 1}・${fmtMockMin(b.sec)}`, 'blk-q-ins', 'blk-c-ins', i, b.q, b.c)).join('')}
+      </div>
+      <button type="button" class="btn btn-primary btn-sm mock-block-save" style="margin-top:6px;">保存</button>`;
       box.querySelectorAll('.blk-q-ins').forEach(inp => inp.addEventListener('change', () => {
         if (inp.value) box.querySelectorAll('.blk-q-ins').forEach(o => { if (!o.value) o.value = inp.value; });
       }));
@@ -2139,14 +2133,18 @@ function blockResultFieldsHtml(suffix) {
   if (!simulationBlockSeconds.length) return '';
   return `<div class="field">
     <label>ブロックごとの結果（任意・あとからインサイトでも入れられます）</label>
-    <div style="display:flex;flex-direction:column;gap:6px;">
-      ${simulationBlockSeconds.map((sec, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
-        <span style="width:84px;color:var(--color-text-secondary);">B${i + 1}・${fmtMockMin(sec)}</span>
-        <input type="number" class="blk-q${suffix}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="問題数" style="width:72px;text-align:center;" />
-        <span>問中</span>
-        <input type="number" class="blk-c${suffix}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="正解" style="width:72px;text-align:center;" />
-        <span>問正解</span>
-      </div>`).join('')}
+    <div class="blk-rows">
+      ${simulationBlockSeconds.map((sec, i) => blockScoreRowHtml(`B${i + 1}・${fmtMockMin(sec)}`, `blk-q${suffix}`, `blk-c${suffix}`, i, null, null)).join('')}
+    </div>
+  </div>`;
+}
+// 問題数・正解数だけの1行（記録フォームとインサイトのあとから入力で共通）
+function blockScoreRowHtml(label, qClass, cClass, i, q, c) {
+  return `<div class="blk-row">
+    <div class="blk-row-head"><span class="blk-row-label">${label}</span></div>
+    <div class="blk-row-fields is-two">
+      <div class="blk-cell"><input type="number" class="${qClass}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="問題数" value="${q ?? ''}" /><span class="blk-unit">問中</span></div>
+      <div class="blk-cell"><input type="number" class="${cClass}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="正解" value="${c ?? ''}" /><span class="blk-unit">問正解</span></div>
     </div>
   </div>`;
 }
@@ -2194,13 +2192,19 @@ function parseBlockDataAttr(v) {
   try { const a = JSON.parse(v || ''); return Array.isArray(a) && a.length ? a : null; } catch (e) { return null; }
 }
 function editBlockRowHtml(sec, q, c) {
-  return `<div class="edit-block-row" data-sec="${sec}" style="display:flex;align-items:center;gap:4px;font-size:0.8rem;">
-    <span class="edit-block-label" style="width:28px;color:var(--color-text-secondary);"></span>
-    <input type="number" class="edit-block-min" min="0" step="1" inputmode="numeric" value="${Math.round(sec / 60)}" style="width:56px;text-align:center;" /><span>分</span>
-    <input type="number" class="edit-block-q" min="0" step="1" inputmode="numeric" value="${q ?? ''}" placeholder="問" style="width:50px;text-align:center;" /><span>問中</span>
-    <input type="number" class="edit-block-c" min="0" step="1" inputmode="numeric" value="${c ?? ''}" placeholder="正" style="width:50px;text-align:center;" /><span>正解</span>
-    <button type="button" class="btn-log-action edit-block-merge" title="前のブロックと合わせる" style="font-size:0.7rem;padding:2px 6px;">前と合わせる</button>
-    <button type="button" class="btn-log-action delete edit-block-del" title="このブロックを消す" style="font-size:0.7rem;padding:2px 6px;">✕</button>
+  return `<div class="blk-row edit-block-row" data-sec="${sec}">
+    <div class="blk-row-head">
+      <span class="blk-row-label edit-block-label"></span>
+      <span class="blk-row-actions">
+        <button type="button" class="btn-log-action edit-block-merge" title="前のブロックと合わせる">前と合わせる</button>
+        <button type="button" class="btn-log-action delete edit-block-del" title="このブロックを消す">✕</button>
+      </span>
+    </div>
+    <div class="blk-row-fields">
+      <div class="blk-cell"><input type="number" class="edit-block-min" min="0" step="1" inputmode="numeric" value="${Math.round(sec / 60)}" /><span class="blk-unit">分</span></div>
+      <div class="blk-cell"><input type="number" class="edit-block-q" min="0" step="1" inputmode="numeric" value="${q ?? ''}" /><span class="blk-unit">問中</span></div>
+      <div class="blk-cell"><input type="number" class="edit-block-c" min="0" step="1" inputmode="numeric" value="${c ?? ''}" /><span class="blk-unit">正解</span></div>
+    </div>
   </div>`;
 }
 function editBlocksFieldHtml(attr) {
@@ -2208,7 +2212,7 @@ function editBlocksFieldHtml(attr) {
   if (!rows) return '';
   return `<div class="settings-field" id="edit-blocks" style="margin-bottom:12px;">
     <label>本番模試のブロックごとの時間</label>
-    <div id="edit-block-rows" style="display:flex;flex-direction:column;gap:6px;">
+    <div id="edit-block-rows" class="blk-rows">
       ${rows.map(r => editBlockRowHtml(r[0], r[1], r[2])).join('')}
     </div>
     <button type="button" class="btn btn-secondary btn-sm" id="edit-block-add" style="margin-top:6px;">ブロックを足す</button>

@@ -4006,3 +4006,31 @@ i.pacer-proj { background: repeating-linear-gradient(45deg, color-mix(in srgb, v
 .ai-export-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:0 var(--space-md); }
 .ai-export-hint { font-size:var(--font-size-xs); color:var(--color-text-tertiary); margin:0 0 var(--space-sm); display:flex; align-items:center; gap:var(--space-sm); }
 #settings-ai-export .settings-field textarea { width:100%; resize:vertical; }
+
+/* ---------- 本番模試のブロック欄（記録フォーム・学習ログの編集・インサイト） ---------- */
+/* 1ブロック2段: 上に番号と操作、下に数字の欄を等幅で並べる。
+   全体の input は左右16pxの余白を持つので、そのままだと細い欄で2桁目が隠れる */
+.blk-rows { display: flex; flex-direction: column; }
+.blk-row { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid var(--color-border); }
+.blk-row:first-child { border-top: none; padding-top: 2px; }
+.blk-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 26px; }
+.blk-row-label { font-size: 0.8rem; font-weight: 600; color: var(--color-text-secondary); }
+.blk-row-actions { display: flex; gap: 6px; }
+.blk-row-actions .btn-log-action { font-size: 0.72rem; padding: 3px 8px; white-space: nowrap; }
+.blk-row-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.blk-row-fields.is-two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.blk-cell { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.blk-cell input[type="number"] {
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  margin: 0; /* モーダル内の input に付く下余白で単位が下にずれるのを止める */
+  padding: 6px 4px;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 700;
+  -moz-appearance: textfield;
+}
+.blk-cell input[type="number"]::-webkit-outer-spin-button,
+.blk-cell input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.blk-unit { font-size: 0.75rem; color: var(--color-text-secondary); white-space: nowrap; }
