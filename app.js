@@ -1942,9 +1942,255 @@ function isMissingVideoEditionColumn(error) {
 // is_review / review_wrong_numbers は add_review_flag.sql で足す列。考え方は video_edition と同じ。
 let reviewColumnsMissing = false;
 let blockSecondsColumnMissing = false;
+const BLOCK_LOG_FIELDS = ['block_seconds', 'block_limit_min', 'block_questions', 'block_correct'];
 function isMissingBlockSecondsColumn(error) {
   const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
-  return /block_seconds/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+  return /block_(seconds|limit_min|questions|correct)/.test(m) && /(column|does not exist|schema cache|could not find)/i.test(m);
+}
+
+// ---------- 本番模試のブロック別 ----------
+// 本番模試モードの学習ログ（block_seconds を持つ行）を1回ずつ並べ、ブロック番号ごとに
+// 束ねる。インサイトと AI分析用エクスポートが同じ数字を出すよう、集計はここだけで行う。
+//   sessions: 新しい順。blocks[i] = { sec, q, c, acc, leftSec, secPerQ }
+//   byIndex:  ブロック番号ごとの通算（全回）。終盤の失速を見る
+//   halves:   前半ブロックと後半ブロックの通算正答率（正答数が入っている回だけ）
+//   leftAvgSec / timeoutBlocks: 持ち時間の余り（平均）と、時間切れまで使ったブロック数
+const MOCK_BLOCK_TIMEOUT_SEC = 60; // 残りがこれ未満なら「時間を使い切った」とみなす
+function mockBlockNum(v) { const n = Number(v); return Number.isFinite(n) && v !== null && v !== '' ? n : null; }
+function buildMockBlockStats(logs) {
+  const sessions = (logs || [])
+    .filter(l => l && Array.isArray(l.block_seconds) && l.block_seconds.length > 0)
+    .map(l => {
+      const limitMin = Number(l.block_limit_min) > 0 ? Number(l.block_limit_min) : null;
+      const qs = Array.isArray(l.block_questions) ? l.block_questions : [];
+      const cs = Array.isArray(l.block_correct) ? l.block_correct : [];
+      const blocks = l.block_seconds.map((v, i) => {
+        const sec = Math.max(0, Number(v) || 0);
+        const q = mockBlockNum(qs[i]), c = mockBlockNum(cs[i]);
+        const has = q !== null && q > 0 && c !== null;
+        return {
+          sec, q: has ? q : null, c: has ? c : null,
+          acc: has ? c / q * 100 : null,
+          leftSec: limitMin ? Math.max(0, limitMin * 60 - sec) : null,
+          secPerQ: has ? sec / q : null
+        };
+      });
+      const scored = blocks.filter(b => b.acc !== null);
+      const totalQ = scored.reduce((n, b) => n + b.q, 0), totalC = scored.reduce((n, b) => n + b.c, 0);
+      return {
+        id: l.id, startedAt: l.started_at,
+        dateKey: l.started_at ? toLocalDateKey(getLogicalDate(new Date(l.started_at))) : null,
+        memo: l.memo || '', limitMin, blocks,
+        totalSec: blocks.reduce((n, b) => n + b.sec, 0),
+        totalQ, totalC, acc: totalQ > 0 ? totalC / totalQ * 100 : null,
+        scoredAll: scored.length === blocks.length
+      };
+    })
+    .sort((a, b) => String(b.startedAt || '').localeCompare(String(a.startedAt || '')));
+
+  const byIndex = [];
+  const halves = { first: { q: 0, c: 0 }, last: { q: 0, c: 0 } };
+  let leftSum = 0, leftN = 0, timeoutBlocks = 0, limitedBlocks = 0;
+  sessions.forEach(s => {
+    const half = Math.floor(s.blocks.length / 2);
+    s.blocks.forEach((b, i) => {
+      const x = byIndex[i] || (byIndex[i] = { index: i + 1, sessions: 0, sec: 0, q: 0, c: 0 });
+      x.sessions++; x.sec += b.sec;
+      if (b.acc !== null) {
+        x.q += b.q; x.c += b.c;
+        // 奇数個のときの真ん中のブロックはどちらにも入れない
+        if (s.blocks.length >= 2 && i < half) { halves.first.q += b.q; halves.first.c += b.c; }
+        else if (s.blocks.length >= 2 && i >= s.blocks.length - half) { halves.last.q += b.q; halves.last.c += b.c; }
+      }
+      if (b.leftSec !== null) {
+        limitedBlocks++; leftSum += b.leftSec; leftN++;
+        if (b.leftSec < MOCK_BLOCK_TIMEOUT_SEC) timeoutBlocks++;
+      }
+    });
+  });
+  byIndex.forEach(x => {
+    x.avgSec = x.sessions ? x.sec / x.sessions : 0;
+    x.acc = x.q > 0 ? x.c / x.q * 100 : null;
+  });
+  // 1問あたりの秒数は正答数（＝問題数）の入ったブロックだけで出す
+  byIndex.forEach(x => {
+    let sec = 0, q = 0;
+    sessions.forEach(s => { const b = s.blocks[x.index - 1]; if (b && b.q) { sec += b.sec; q += b.q; } });
+    x.secPerQ = q > 0 ? sec / q : null;
+  });
+  const pct = h => h.q > 0 ? h.c / h.q * 100 : null;
+  const first = pct(halves.first), last = pct(halves.last);
+  let pace = { sec: 0, q: 0 };
+  sessions.forEach(s => s.blocks.forEach(b => { if (b.q) { pace.sec += b.sec; pace.q += b.q; } }));
+  return {
+    hasData: sessions.length > 0,
+    sessions, byIndex,
+    halves: first !== null && last !== null
+      ? { first, last, diff: last - first, firstQ: halves.first.q, lastQ: halves.last.q } : null,
+    leftAvgSec: leftN ? leftSum / leftN : null,
+    timeoutBlocks, limitedBlocks,
+    secPerQ: pace.q > 0 ? pace.sec / pace.q : null,
+    unscored: sessions.filter(s => !s.scoredAll).length
+  };
+}
+function fmtMockMin(sec) { return `${Math.round((Number(sec) || 0) / 60)}分`; }
+
+// 前半と後半の差がこれ以上なら「後半で落ちている」と言う（ポイント）
+const MOCK_BLOCK_DROP_PT = 5;
+// インサイトのカード。本番模試モードの記録が無ければ出さない
+function mockBlockCardHTML(st) {
+  if (!st || !st.hasData) return '';
+  const pctTxt = v => v === null ? '<span style="color:var(--color-text-tertiary)">-</span>' : `${Math.round(v)}%`;
+  const verdicts = [];
+  if (st.halves) {
+    const h = st.halves;
+    verdicts.push(h.diff <= -MOCK_BLOCK_DROP_PT
+      ? `<div class="break-verdict"><span class="break-verdict-mark">${IC.warn}</span><div>前半のブロックは <strong>${Math.round(h.first)}%</strong>、後半は <strong>${Math.round(h.last)}%</strong>。後半で ${Math.round(-h.diff)}pt 落ちています。本番も同じ順に疲れが出るので、後半ブロックの前の休憩の取り方を見直す余地があります。</div></div>`
+      : `<div class="break-verdict break-verdict-muted"><div>前半 ${Math.round(h.first)}%・後半 ${Math.round(h.last)}%（差 ${h.diff >= 0 ? '+' : ''}${Math.round(h.diff)}pt）。後半での大きな崩れはありません。</div></div>`);
+  }
+  if (st.limitedBlocks > 0) {
+    verdicts.push(st.timeoutBlocks > 0
+      ? `<div class="break-verdict"><span class="break-verdict-mark">${IC.warn}</span><div>時間を使い切ったブロックが <strong>${st.timeoutBlocks}/${st.limitedBlocks}</strong>。${st.secPerQ !== null ? `1問あたり ${Math.round(st.secPerQ)}秒で、` : ''}見直しの時間が取れていない可能性があります。</div></div>`
+      : `<div class="break-verdict break-verdict-muted"><div>1ブロックあたり平均 ${fmtMockMin(st.leftAvgSec)} 残して終えています${st.secPerQ !== null ? `（1問あたり ${Math.round(st.secPerQ)}秒）` : ''}。余った時間は見直しに使えます。</div></div>`);
+  }
+  const rows = st.byIndex.map(x => `
+    <div class="break-row break-row-run">
+      <div class="break-row-label">B${x.index}</div>
+      <div class="break-row-num">${fmtMockMin(x.avgSec)}</div>
+      <div class="break-row-num">${x.secPerQ !== null ? Math.round(x.secPerQ) + '秒' : '<span style="color:var(--color-text-tertiary)">-</span>'}</div>
+      <div class="break-row-num">${pctTxt(x.acc)}${x.q > 0 ? `<span style="color:var(--color-text-tertiary);font-size:0.75rem;">（${x.q}問）</span>` : ''}</div>
+    </div>`).join('');
+  const sessions = st.sessions.slice(0, 5).map(se => `
+    <div class="mock-block-session" data-log-id="${se.id}" style="padding:8px 0;border-top:1px solid var(--color-border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:0.85rem;">
+        <strong>${se.dateKey ? aiExportMd(se.dateKey) : ''}${se.limitMin ? `（${se.limitMin}分×${se.blocks.length}）` : ''}</strong>
+        <span>${fmtMockMin(se.totalSec)}${se.acc !== null ? `・${se.totalC}/${se.totalQ}（${Math.round(se.acc)}%）` : ''}</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px 10px;font-size:0.8rem;color:var(--color-text-secondary);margin-top:4px;">
+        ${se.blocks.map((b, i) => `<span>B${i + 1} ${fmtMockMin(b.sec)}${b.acc !== null ? `・${Math.round(b.acc)}%` : ''}</span>`).join('')}
+      </div>
+      <div class="mock-block-edit"></div>
+      <button type="button" class="btn-log-action mock-block-edit-btn" style="margin-top:6px;">${se.scoredAll ? '正答数を直す' : '正答数を入れる'}</button>
+    </div>`).join('');
+  return `
+  <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.14s">
+    <div class="section-header">
+      <div class="section-icon-wrap" style="color:var(--color-accent-blue)">${IC.timer}</div>
+      <div><div class="section-title">本番模試のブロック別</div><div class="section-subtitle">時間の使い方と、後半で正答率が落ちていないか</div></div>
+    </div>
+    ${verdicts.join('')}
+    <div class="break-table">
+      <div class="break-row break-row-head break-row-run">
+        <div>ブロック</div><div style="text-align:right">平均時間</div><div style="text-align:right">1問あたり</div><div style="text-align:right">正答率</div>
+      </div>
+      ${rows}
+    </div>
+    <div class="break-subtitle">最近の回</div>
+    ${sessions}
+    ${st.unscored ? `<div class="break-note">正答数が入っていない回が ${st.unscored}回あります。採点したら「正答数を入れる」から入れると、正答率と後半の失速が出ます。</div>` : ''}
+  </div>`;
+}
+function bindMockBlockCard(st) {
+  if (!st || !st.hasData) return;
+  document.querySelectorAll('.mock-block-session').forEach(el => {
+    const se = st.sessions.find(x => String(x.id) === el.dataset.logId);
+    const btn = el.querySelector('.mock-block-edit-btn');
+    if (!se || !btn) return;
+    btn.addEventListener('click', () => {
+      const box = el.querySelector('.mock-block-edit');
+      btn.hidden = true;
+      box.innerHTML = `<div style="display:flex;flex-direction:column;gap:6px;margin-top:6px;">
+        ${se.blocks.map((b, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
+          <span style="width:84px;color:var(--color-text-secondary);">B${i + 1}・${fmtMockMin(b.sec)}</span>
+          <input type="number" class="blk-q-ins" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="問題数" value="${b.q !== null ? b.q : ''}" style="width:72px;text-align:center;" />
+          <span>問中</span>
+          <input type="number" class="blk-c-ins" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="正解" value="${b.c !== null ? b.c : ''}" style="width:72px;text-align:center;" />
+          <span>問正解</span>
+        </div>`).join('')}
+        <button type="button" class="btn btn-primary btn-sm mock-block-save" style="align-self:flex-start;">保存</button>
+      </div>`;
+      box.querySelectorAll('.blk-q-ins').forEach(inp => inp.addEventListener('change', () => {
+        if (inp.value) box.querySelectorAll('.blk-q-ins').forEach(o => { if (!o.value) o.value = inp.value; });
+      }));
+      box.querySelector('.mock-block-save').addEventListener('click', async (ev) => {
+        const questions = [], correct = [];
+        for (let i = 0; i < se.blocks.length; i++) {
+          const qRaw = box.querySelector(`.blk-q-ins[data-i="${i}"]`).value.trim();
+          const cRaw = box.querySelector(`.blk-c-ins[data-i="${i}"]`).value.trim();
+          if (!qRaw && !cRaw) { questions.push(null); correct.push(null); continue; }
+          const q = parseInt(qRaw, 10), c = parseInt(cRaw, 10);
+          if (!(q > 0) || !Number.isFinite(c) || c < 0) { showToast(IC.x + ` ブロック${i + 1}の問題数と正解数を両方入れてください`); return; }
+          if (c > q) { showToast(IC.x + ` ブロック${i + 1}の正解数が問題数を超えています`); return; }
+          questions.push(q); correct.push(c);
+        }
+        ev.currentTarget.disabled = true;
+        if (await updateStudyLogBlockResults(se.id, questions, correct)) {
+          showToast(IC.check + ' ブロックごとの正答数を保存しました');
+          renderInsights();
+        } else ev.currentTarget.disabled = false;
+      });
+    });
+  });
+}
+
+// 本番模試の記録フォームに出す、ブロックごとの問題数・正解数の欄。
+// 採点がまだならあとからインサイトで入れられるので、空のままでも保存できる。
+function blockResultFieldsHtml(suffix) {
+  if (!simulationBlockSeconds.length) return '';
+  return `<div class="field">
+    <label>ブロックごとの結果（任意・あとからインサイトでも入れられます）</label>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      ${simulationBlockSeconds.map((sec, i) => `<div style="display:flex;align-items:center;gap:6px;font-size:0.85rem;">
+        <span style="width:84px;color:var(--color-text-secondary);">B${i + 1}・${fmtMockMin(sec)}</span>
+        <input type="number" class="blk-q${suffix}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="問題数" style="width:72px;text-align:center;" />
+        <span>問中</span>
+        <input type="number" class="blk-c${suffix}" data-i="${i}" min="0" step="1" inputmode="numeric" placeholder="正解" style="width:72px;text-align:center;" />
+        <span>問正解</span>
+      </div>`).join('')}
+    </div>
+  </div>`;
+}
+// 1つ目に入れた問題数を、まだ空のほかのブロックにも入れる（ブロックの問題数はふつう同じ）
+function bindBlockResultFields(root, suffix) {
+  root.querySelectorAll('.blk-q' + suffix).forEach(inp => inp.addEventListener('change', () => {
+    if (!inp.value) return;
+    root.querySelectorAll('.blk-q' + suffix).forEach(o => { if (!o.value) o.value = inp.value; });
+  }));
+}
+// 入力を読み取る。問題数と正解数の両方が入ったブロックだけ数字、ほかは null。
+function readBlockResults(root, suffix) {
+  const n = simulationBlockSeconds.length;
+  const questions = new Array(n).fill(null), correct = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const qEl = root.querySelector(`.blk-q${suffix}[data-i="${i}"]`);
+    const cEl = root.querySelector(`.blk-c${suffix}[data-i="${i}"]`);
+    const qRaw = qEl ? qEl.value.trim() : '', cRaw = cEl ? cEl.value.trim() : '';
+    if (!qRaw && !cRaw) continue;
+    const q = parseInt(qRaw, 10), c = parseInt(cRaw, 10);
+    if (!(q > 0) || !Number.isFinite(c) || c < 0) return { error: `ブロック${i + 1}の問題数と正解数を両方入れてください` };
+    if (c > q) return { error: `ブロック${i + 1}の正解数が問題数を超えています` };
+    questions[i] = q; correct[i] = c;
+  }
+  return { questions, correct, error: null };
+}
+// 本番模試の記録フォームからまとめて渡すもの
+function currentBlockPayload(results) {
+  if (!simulationBlockSeconds.length) return null;
+  return { seconds: simulationBlockSeconds.slice(), limitMin: simulationStudyMin,
+           questions: results ? results.questions : null, correct: results ? results.correct : null };
+}
+// あとから正答数を入れる（インサイトのブロック別カードから）
+async function updateStudyLogBlockResults(id, questions, correct) {
+  if (!hasDB()) { showToast(' デモモードでは保存できません'); return false; }
+  const { error } = await supabase.from('study_logs')
+    .update({ block_questions: questions, block_correct: correct }).eq('id', id);
+  if (error) {
+    if (isMissingBlockSecondsColumn(error)) showToast(IC.warn + ' 正答数を入れる列がまだありません。add_block_results.sql を実行してください', 7000);
+    else showToast(IC.x + ' 保存に失敗しました: ' + error.message);
+    return false;
+  }
+  invalidateCache('study_logs');
+  return true;
 }
 function isMissingReviewColumn(error) {
   const m = ((error && error.message) || '') + ' ' + ((error && error.details) || '');
@@ -2020,7 +2266,7 @@ async function refreshTodaySnapshot() {
   saveDailySnapshot(dateKey, goalForToday, todayTotal);
 }
 
-async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null, qbReview = null, blockSeconds = null) {
+async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, location = '未設定', startedAt = null, endedAt = null, breaks = null, studyPurpose = 'other', activity = null, questionsSolved = null, questionsCorrect = null, videosWatched = null, videoEdition = null, qbMarks = null, qbReview = null, blocks = null) {
   // 問題演習の実績を教材進捗へ反映する処理。DB の有無に関わらず同じ結果になるよう関数化する
   // （教材進捗は localStorage 主体なので、デモモードでも同じ挙動を再現できる）
   const applyQb = () => {
@@ -2060,8 +2306,15 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
     }
     if (breaks && breaks.length > 0) payload.breaks = JSON.stringify(breaks);
     if (!reviewColumnsMissing) Object.assign(payload, reviewLogFields(qbReview));
-    // 本番模試のブロックごとの秒数
-    if (blockSeconds && blockSeconds.length > 0 && !blockSecondsColumnMissing) payload.block_seconds = blockSeconds;
+    // 本番模試のブロックごとの秒数・持ち時間・正答数
+    if (blocks && blocks.seconds && blocks.seconds.length > 0 && !blockSecondsColumnMissing) {
+      payload.block_seconds = blocks.seconds;
+      payload.block_limit_min = blocks.limitMin || null;
+      if (blocks.questions && blocks.questions.some(v => v !== null)) {
+        payload.block_questions = blocks.questions;
+        payload.block_correct = blocks.correct;
+      }
+    }
     let { error } = await supabase.from('study_logs').insert([payload]);
     // 足していない列があれば、その列を落としてやり直す（列は3種類あるので最大3回）
     for (let i = 0; i < 3 && error; i++) {
@@ -2074,9 +2327,9 @@ async function saveStudyLog(subjectId, durationMinutes, memo, focusLevel = 2, lo
         reviewColumnsMissing = true;
         delete payload.is_review; delete payload.review_wrong_numbers;
       } else if (isMissingBlockSecondsColumn(error) && 'block_seconds' in payload) {
-        console.warn('study_logs.block_seconds が未作成のため、ブロックごとの時間なしで保存します（add_block_seconds.sql を実行してください）');
+        console.warn('study_logs のブロック用の列が未作成のため、ブロックごとの記録なしで保存します（add_block_seconds.sql と add_block_results.sql を実行してください）');
         blockSecondsColumnMissing = true;
-        delete payload.block_seconds;
+        BLOCK_LOG_FIELDS.forEach(k => { delete payload[k]; });
       } else break;
       ({ error } = await supabase.from('study_logs').insert([payload]));
     }
@@ -2729,6 +2982,7 @@ function finishSession(manualStop = false) {
           </div>
           ${videoCountFieldsHtml('-sync')}
           ${qbCountFieldsHtml('-sync')}
+          ${blockResultFieldsHtml('-sync')}
           <div class="field">
             <label>学習の目的</label>
             <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
@@ -2795,6 +3049,7 @@ function finishSession(manualStop = false) {
     });
     wireQbCountFields(overlay, '-sync');
     wireVideoCountFields(overlay, '-sync');
+    bindBlockResultFields(overlay, '-sync');
     overlay.querySelector('#btn-discard-log-sync').onclick = () => { 
       overlay.remove();
       resetSW(); 
@@ -2816,6 +3071,8 @@ function finishSession(manualStop = false) {
       const qb = readQbCounts('-sync');
       const qbMarks = readQbMarks('-sync');
       const vid = readVideoCount('-sync');
+      const blk = readBlockResults(overlay, '-sync');
+      if(blk.error) { showToast(IC.x + ' ' + blk.error); return; }
 
       if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
       if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
@@ -2836,7 +3093,7 @@ function finishSession(manualStop = false) {
         const startedAt = sessionStartedAt || endedAt;
         saveTimerState();
         const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks, qb.review, simulationBlockSeconds);
+        const success = await saveStudyLog(subjVal, dur, memo, foc, loc, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, qbMarks, qb.review, currentBlockPayload(blk));
         if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
         
         if (success) {
@@ -5395,6 +5652,7 @@ async function renderStudy(){
                 </div>
                 ${videoCountFieldsHtml('')}
                 ${qbCountFieldsHtml('')}
+                ${blockResultFieldsHtml('')}
                 <div class="field">
                   <label>学習の目的</label>
                   <div class="purpose-segment-control" style="display:flex; gap:8px; margin-top:4px;">
@@ -5908,6 +6166,7 @@ async function renderStudy(){
   wireQbCountFields(document, '');
   wireVideoCountFields(document, '');
 
+  bindBlockResultFields(document, '');
   document.getElementById('btn-confirm-save')?.addEventListener('click', async (e) => {
     const btn = e.currentTarget;
     const durEle = document.getElementById('confirm-duration');
@@ -5926,6 +6185,8 @@ async function renderStudy(){
     
     const qb = readQbCounts('');
     const vid = readVideoCount('');
+    const blk = readBlockResults(document, '');
+    if(blk.error) { showToast(IC.x + ' ' + blk.error); return; }
 
     if(isNaN(dur) || dur <= 0) { showToast(' 正しい時間を入力してください'); return; }
     if(!subjVal) { showToast(' 学習内容を入力してください'); return; }
@@ -5945,7 +6206,7 @@ async function renderStudy(){
       const endedAt = new Date().toISOString();
       const startedAt = sessionStartedAt || endedAt;
       const vidApplied = applyVideoCountToProgress(vid.subjectId, vid.done, vid.edition);
-      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''), qb.review, simulationBlockSeconds);
+      const success = await saveStudyLog(subjVal, dur, memo, focVal, locVal, startedAt, endedAt, sessionBreaks, selectedPurpose, selectedActivity, qb.solved, qb.correct, vid.watched, vid.edition, readQbMarks(''), qb.review, currentBlockPayload(blk));
       if (success && vidApplied) showToast(IC.check + ` 視聴済み本数を ${vidApplied.before} → ${vidApplied.after}本 に更新しました`);
       if (success) {
         resetSW();
@@ -11217,6 +11478,8 @@ async function renderInsights(){
   const roundGain = buildRoundGainByGap(getQBProgress(), reviewStats);
   // 間隔選びに実際に使っている指標。旧指標（直後の正答率）とは別物なので別表にする
   const laterGain = buildLaterRoundGain(getQBProgress(), reviewStats, _mockExams);
+  // 本番模試のブロック別。絞り込みに関係なく全期間で見る（回数が少ないので）
+  const mockBlocks = buildMockBlockStats(allLogs);
   const goalHistory = buildGoalHistory(allLogs, logicalToday);
   // 単価（動画1本◯分・1問◯分）は教材の性質なので期間フィルタでは変えない。
   // 期間で動かすと「今日」を選んだだけでサンプル不足になり基準線ごと消えてしまう。
@@ -11257,7 +11520,7 @@ async function renderInsights(){
     lastWeekAvgStart, lastWeekLag, lastWeekSleepAvg, lateNightAlert, lateNightDiff, logs,
     maxDowMin, maxLocMin, medAcc, medHours, minutesFromBase5AMToTimeStr, morningPct, nightPct,
     oldestBacklog, paceCV, paceColor, paceIconSvg, paceName, performanceHtml, pipeline,
-    presetLabels, qbQuality, reviewMethod, reviewStats, rhythmLabel, rhythmStatus, roundGain, laterGain,
+    presetLabels, qbQuality, reviewMethod, reviewStats, rhythmLabel, rhythmStatus, roundGain, laterGain, mockBlocks,
     roundGains, sameDayMix, scatterPoints, sessionCount, sessionLen, shortCooldownDays,
     sleepAvgHours, sleepDailyData, sleepDebtHours, sleepHoursArr, sleepMaxHours, sleepMinHours,
     sleepSlotCompare, sortedLocations, sortedSubjectFocus, sortedSubjects, startTimeDiff,
@@ -12246,7 +12509,7 @@ function insightsQbProgressHTML(d) {
 
 // 解き方の質：条件別の正答率、解くスピード、解き直しの間隔
 function insightsQbQualityHTML(d) {
-  const { avgFocus, qbQuality, reviewStats, roundGain, laterGain, sessionCount } = d;
+  const { avgFocus, qbQuality, reviewStats, roundGain, laterGain, mockBlocks, sessionCount } = d;
   return `
   <!-- Section K: 演習の質（条件別） -->
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.128s">
@@ -12341,6 +12604,8 @@ function insightsQbQualityHTML(d) {
     })()}
   </div>
   ` : ''}
+
+  ${mockBlockCardHTML(mockBlocks)}
 
   <!-- Section M: 解き直しの間隔 -->
   <div class="card insight-analysis-card animate-slide-up" style="animation-delay:.132s">
@@ -13330,6 +13595,7 @@ function wireInsightFilters(ct, d) {
   });
   // --- Event: 模試を記録 ---
   // 保存すると「後の時点の伸び」のビンが変わるので、そのまま描き直す
+  bindMockBlockCard(d.mockBlocks);
   document.getElementById('btn-add-mock')?.addEventListener('click', () => {
     openMockExamWizard(() => renderInsights());
   });
@@ -13706,6 +13972,8 @@ function buildAiExportData(input) {
     }
     if (m.memo && String(m.memo).trim() && g.memos.indexOf(String(m.memo).trim()) < 0) g.memos.push(String(m.memo).trim());
   });
+  // 本番模試モードで解いた回のブロック別（インサイトと同じ集計・全期間）
+  const mockBlocks = buildMockBlockStats(inp.logs || []);
   const mocks = Object.values(mockGroups).filter(g => g.total > 0)
     .map(g => Object.assign(g, { parts: Object.values(g.parts) }))
     .sort((a, b) => a.date.localeCompare(b.date));
@@ -13870,7 +14138,7 @@ function buildAiExportData(input) {
     todayKey, settings,
     exam: examDate ? { name: exam.name || '', date: examDate, daysLeft: aiExportDaysBetween(todayKey, examDate) } : null,
     hours, actual, events,
-    subjects, formats, weeks, accTrend, method, intervalBins, mocks, repeatedWrong,
+    subjects, formats, weeks, accTrend, method, intervalBins, mocks, mockBlocks, repeatedWrong,
     questionRecordCount: records.length,
     errors: { counts: errorCounts, untyped, typedTotal },
     memos, planProgress, priority, today,
@@ -14079,6 +14347,22 @@ function formatAiExportMarkdown(data) {
   }));
   if (!data.mocks.length) omitted.push('模試の結果');
 
+  // 本番模試モードのブロック別（時間配分と後半の失速）
+  if (data.mockBlocks && data.mockBlocks.hasData) {
+    const st = data.mockBlocks;
+    const lines = st.sessions.slice(0, 5).map(se =>
+      `- ${se.dateKey || ''}${se.limitMin ? `（持ち時間${se.limitMin}分×${se.blocks.length}ブロック）` : ''}：` +
+      se.blocks.map((b, i) => `B${i + 1} ${fmtMockMin(b.sec)}` + (b.acc !== null ? ` ${b.c}/${b.q}（${Math.round(b.acc)}%）` : ' 正答数未入力')).join('、'));
+    const idx = st.byIndex.filter(x => x.acc !== null);
+    if (idx.length >= 2) lines.push('- ブロック番号ごとの通算正答率：' + idx.map(x => `B${x.index} ${Math.round(x.acc)}%（${x.q}問）`).join('、'));
+    if (st.halves) lines.push(`- 前半ブロックと後半ブロックの正答率：${Math.round(st.halves.first)}% → ${Math.round(st.halves.last)}%` +
+                              `（${st.halves.diff >= 0 ? '+' : ''}${Math.round(st.halves.diff)}ポイント）`);
+    if (st.limitedBlocks > 0) lines.push(`- 持ち時間の余り：1ブロック平均${fmtMockMin(st.leftAvgSec)}。` +
+                                         `残り1分未満まで使ったブロック ${st.timeoutBlocks}/${st.limitedBlocks}`);
+    if (st.secPerQ !== null) lines.push(`- 1問あたりの時間：${Math.round(st.secPerQ)}秒`);
+    section('## 本番模試のブロック別（時間と正答率・持ち時間より早く終えたら次へ進んでいる）', lines);
+  }
+
   // 間違いの傾向
   {
     const lines = [];
@@ -14161,7 +14445,16 @@ function formatAiExportMarkdown(data) {
     '3. 今やめる・減らすべきこと',
     '4. 直近1週間の日別プラン（時間配分つき）',
     '5. データに含まれていない項目や判断に足りない点があれば、推測で埋めずに質問してください'
-  ].concat(data.today ? ['6. 今日の学習の振り返り（計画・目標との差、うまくいった点、明日変えること）'] : [], ['']);
+  ];
+  // 条件つきの依頼は、あるものだけ続き番号で足す
+  const extra = [];
+  if (data.today) extra.push('今日の学習の振り返り（計画・目標との差、うまくいった点、明日変えること）');
+  if (data.mockBlocks && data.mockBlocks.hasData) {
+    extra.push('「本番模試のブロック別」から、時間配分（余った時間・時間切れ）と後半ブロックでの正答率の落ち方を評価し、' +
+               '本番での時間の使い方（見直しに回すか、ペースを上げるか）とブロック間の休憩の取り方を提案してください');
+  }
+  extra.forEach((t, i) => head.push(`${6 + i}. ${t}`));
+  head.push('');
   if (omitted.length) {
     head.push(`※次の情報はこのデータに含まれていません：${omitted.join('、')}。` +
               '分析に必要なものだけ、最初に質問してください。', '');
